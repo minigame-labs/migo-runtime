@@ -1171,16 +1171,7 @@ impl AudioThread {
                     let _interruptions = crate::apple_session::watch_interruptions(host_tx.clone());
                     // A device, or silence until one appears: never no output, so a
                     // game's audio runs on a machine that cannot play it.
-                    let output = match AudioOutput::new(cpu.clone()) {
-                        Ok(output) => output,
-                        Err(error) => {
-                            // Preserve queued payload custody on startup refusal.
-                            let _inbox =
-                                crate::command_inbox::Inbox::new(rx, startup_backlog, cpu.clone());
-                            warn!("AudioThread output startup admission rejected: {error}");
-                            return;
-                        }
-                    };
+                    let output = AudioOutput::new();
 
                     info!("AudioThread (lazy) started");
                     run_audio_thread(
@@ -1586,14 +1577,11 @@ fn run_audio_thread(
     let mut sample_rate = output.sample_rate();
     let mut channels = output.channels();
 
-    let index = match output.storage_host() {
-        Some(host) => NodeContextIndex::with_host(host.for_channels(channels)),
-        None => NodeContextIndex::new_managed(
-            cpu.clone(),
-            AudioAggregateLedger::process_global(),
-            channels,
-        ),
-    };
+    let index = NodeContextIndex::new_managed(
+        cpu.clone(),
+        AudioAggregateLedger::process_global(),
+        channels,
+    );
     let mut node_index = match index {
         Ok(index) => index,
         Err(error) => {
@@ -2717,9 +2705,9 @@ fn run_audio_thread(
             let now = Instant::now();
             let replacement = output_retry.attempt(now, || {
                 let replacement = if !output.is_alive() {
-                    Some(AudioOutput::with_host(&node_index.storage_host())?)
+                    Some(AudioOutput::new())
                 } else if output.is_silent() && device_search.is_due(now) {
-                    match AudioOutput::open_device(&node_index.storage_host()) {
+                    match AudioOutput::open_device() {
                         Ok(device) => Some(device),
                         Err(e) => {
                             tracing::debug!("AudioThread: still no audio output device: {}", e);

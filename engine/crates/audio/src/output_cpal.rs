@@ -15,13 +15,7 @@ use tracing::info;
 
 use super::{AudioSync, FromNormalizedF32, OutputCallback, RING_BUFFER_FRAMES, ring};
 
-#[path = "output_error_storage.rs"]
-mod error_storage;
-type StreamErrorRef = error_storage::Reference;
-
-fn shared_stream_errors(host: &crate::node_retirement::Host) -> EngineResult<StreamErrorRef> {
-    error_storage::Reference::new(Some(host), StreamErrors::new)
-}
+type StreamErrorRef = std::sync::Arc<StreamErrors>;
 
 /// Audio output handle
 pub struct AudioOutput {
@@ -35,7 +29,7 @@ pub struct AudioOutput {
 
 impl AudioOutput {
     /// Create a new audio output
-    pub fn new(storage: &crate::node_retirement::Host) -> EngineResult<Self> {
+    pub fn new() -> EngineResult<Self> {
         // Migo supplies the mini-game category; CPAL activates the session
         // when starting and owns subsequent system interruption recovery.
         #[cfg(target_os = "ios")]
@@ -67,9 +61,9 @@ impl AudioOutput {
         );
 
         let ring_size = RING_BUFFER_FRAMES * channels as usize;
-        let stream_errors = shared_stream_errors(storage)?;
-        let sync = AudioSync::with_host(Some(storage))?;
-        let (producer, consumer) = ring::new(ring_size, Some(storage))?;
+        let stream_errors = StreamErrorRef::new(StreamErrors::new()?);
+        let sync = AudioSync::new();
+        let (producer, consumer) = ring::new(ring_size)?;
 
         let stream = match config.sample_format() {
             SampleFormat::F32 => build_stream_f32(
@@ -121,10 +115,6 @@ impl AudioOutput {
             sync,
             stream_errors,
         })
-    }
-
-    pub(super) fn storage_host(&self) -> Option<crate::node_retirement::Host> {
-        ring::host(&self.producer)
     }
 
     /// Get the sample rate
