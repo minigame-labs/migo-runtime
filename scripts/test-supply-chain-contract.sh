@@ -62,6 +62,8 @@ mkdir -p "$WORK/actions" "$WORK/scripts/ci"
 cat > "$WORK/actions/pinned.yml" <<'EOF'
 jobs:
   pinned:
+    # Naming ubuntu-latest in a comment pins nothing and is not a violation.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: ./.github/actions/local
@@ -101,6 +103,24 @@ jobs:
           --requirement scripts/ci/unhashed.txt
 EOF
 printf 'PyYAML==6.0.3\n' > "$WORK/scripts/ci/unhashed.txt"
+mkdir -p "$WORK/actions-runner" "$WORK/actions-runner-matrix"
+cat > "$WORK/actions-runner/workflow.yml" <<'EOF2'
+jobs:
+  floating:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+EOF2
+cat > "$WORK/actions-runner-matrix/workflow.yml" <<'EOF2'
+jobs:
+  floating:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+EOF2
 
 mkdir -p "$WORK/actions-spaced-use" "$WORK/actions-spaced-run"
 cat > "$WORK/actions-spaced-use/workflow.yml" <<'EOF'
@@ -143,6 +163,10 @@ if [[ -f "$CHECKER" ]]; then
         python3 "$CHECKER" actions --workflows-dir "$WORK/actions-spaced-use"
     expect_fail "YAML whitespace cannot hide an unpinned installer" \
         python3 "$CHECKER" actions --workflows-dir "$WORK/actions-spaced-run"
+    expect_fail "a floating hosted runner image is rejected" \
+        python3 "$CHECKER" actions --workflows-dir "$WORK/actions-runner"
+    expect_fail "a floating runner image in a matrix is rejected" \
+        python3 "$CHECKER" actions --workflows-dir "$WORK/actions-runner-matrix"
 fi
 
 mkdir -p "$WORK/crates/root" "$WORK/crates/dep"

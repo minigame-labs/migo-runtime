@@ -11,7 +11,7 @@ permissions:
 jobs:
   # ── Job 1: Quality gate (same as PR CI, ensures tag is clean) ───────
   quality-gate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Cold, which it now always is (no Rust cache; see the note where one was):
     # the first cold run went past an hour (2026-10-20, #570), cancelled in its
     # last Rust tests with the Performance+ contract behind it. The ceiling is
@@ -1052,7 +1052,7 @@ jobs:
   # librusty_v8.a while keeping the fingerprint fresh, which fails the link on
   # the second run.
   host-engine-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
 
     steps:
@@ -1135,7 +1135,7 @@ jobs:
   # ── Job 5: Release AAR build ────────────────────────────────────────
   release-android:
     needs: [quality-gate, linux-qt-host-kit, host-engine-tests]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
 
     steps:
@@ -1584,7 +1584,7 @@ jobs:
   # HarmonyOS devices are arm64.
   release-ohos:
     needs: [quality-gate, host-engine-tests]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
 
     steps:
@@ -1668,7 +1668,7 @@ jobs:
   # Same job as pr-ci.yml's; see the comment there. A Windows SDK is not
   # published on the strength of a sandbox the runner never executed.
   windows-unit-tests:
-    runs-on: windows-latest
+    runs-on: windows-2025
     timeout-minutes: 30
 
     steps:
@@ -1691,7 +1691,7 @@ jobs:
 
   release-windows:
     needs: [quality-gate, host-engine-tests, windows-unit-tests]
-    runs-on: windows-latest
+    runs-on: windows-2025
     timeout-minutes: 90
 
     steps:
@@ -2023,7 +2023,7 @@ jobs:
     # its own comment) and cannot run until its runner and suite exist. Add it
     # back here the moment MIGO_DEVICE_EVIDENCE is set.
     needs: [release-android, release-linux, release-ohos, release-windows, release-windows-arm64, release-apple-package]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: write
@@ -2204,7 +2204,7 @@ jobs:
   # right to: the step was in the wrong place, not the gate too strict.)
   verify-published:
     needs: [publish]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:

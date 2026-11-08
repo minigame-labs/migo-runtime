@@ -20,7 +20,7 @@ permissions:
 jobs:
   # ── Job 1: Quality gates (fast, no NDK needed) ──────────────────────
   quality-gate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Cold, which it now always is (no Rust cache; see the note where one was):
     # the first cold run went past an hour (2026-10-20, #570), cancelled in its
     # last Rust tests with the Performance+ contract behind it. The ceiling is
@@ -1130,7 +1130,7 @@ jobs:
   # every PR skipped this job, and master stopped building an Android libmigo.so
   # (V8 components, Skia's triple, deno_core's errno) with no check reporting it.
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
 
     steps:
@@ -1360,7 +1360,7 @@ jobs:
   # have caught a defect sit after an unrelated failure in the same job and never
   # run, and a presentation regression is the worst kind to hide that way.
   presentation-paths:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
 
     steps:
@@ -1427,7 +1427,7 @@ jobs:
   # examples repository on its first run against v0.9.7, not here. Neither crate
   # links V8 or Skia, so this is a plain cargo test on the stock runner.
   windows-unit-tests:
-    runs-on: windows-latest
+    runs-on: windows-2025
     timeout-minutes: 30
 
     steps:
@@ -1449,7 +1449,7 @@ jobs:
           python scripts/testing/check_cpal_scheduling.py "$PWD" "$RUNNER_TEMP/migo-wasapi-scheduling" --native
 
   host-engine-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
 
     steps:
@@ -1564,7 +1564,7 @@ jobs:
   # slow runner: #636's run was cancelled mid-suite with every test so far
   # passing. In their own jobs they rebuild in parallel with the full one.
   host-engine-tests-slim:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
 
     steps:
@@ -1595,7 +1595,7 @@ jobs:
           RUST_BACKTRACE: 1
 
   host-engine-tests-external-frames:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
 
     steps:
