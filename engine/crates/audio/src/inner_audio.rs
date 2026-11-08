@@ -448,8 +448,6 @@ pub struct InnerAudioPlayer {
     loading_url: Option<String>,
     aggregate: Arc<AudioAggregateLedger>,
     stream_permit: Option<AudioAggregatePermit>,
-    retirement_cpu: Option<migo_io::audio_cpu::AudioCpu>,
-    source_retirement: Option<source_retirement::Slot>,
     rate_converter: Option<crate::variable_rate::Converter>,
 }
 impl InnerAudioPlayer {
@@ -494,20 +492,8 @@ impl InnerAudioPlayer {
             loading_url: None,
             aggregate,
             stream_permit: None,
-            retirement_cpu: None,
-            source_retirement: None,
             rate_converter: None,
         }
-    }
-
-    pub(crate) fn new_with_cpu(
-        id: InnerAudioId,
-        channels: u32,
-        cpu: migo_io::audio_cpu::AudioCpu,
-    ) -> Self {
-        let mut player = Self::new(id, channels);
-        player.retirement_cpu = Some(cpu);
-        player
     }
 
     fn prepare_rate_converter(
@@ -581,25 +567,9 @@ impl InnerAudioPlayer {
     fn replace_source(&mut self, source: AudioSource, permit: Option<AudioAggregatePermit>) {
         self.rate_converter = None;
         self.buffered_loops = 0;
-        let next = match (&source, self.retirement_cpu.as_ref()) {
-            (AudioSource::Owned(samples), Some(cpu))
-                if samples.capacity() >= 4096 / size_of::<f32>() =>
-            {
-                Some(source_retirement::Slot::new(cpu.clone()))
-            }
-            _ => None,
-        };
-        let source = std::mem::replace(&mut self.source, source);
-        let permit = std::mem::replace(&mut self.stream_permit, permit);
-        let retired = std::mem::replace(&mut self.source_retirement, next);
-        match source {
-            AudioSource::Owned(samples) => source_retirement::dispose(samples, permit, retired),
-            AudioSource::Cached(audio) => {
-                drop(audio);
-                drop(permit);
-                drop(retired);
-            }
-        }
+        // Release the old PCM before its aggregate permit.
+        drop(std::mem::replace(&mut self.source, source));
+        drop(std::mem::replace(&mut self.stream_permit, permit));
     }
     /// The raw cursor remains absolute for trimming, interpolation and
     /// monotonic progress. Only the public media time wraps, before conversion
@@ -969,18 +939,13 @@ impl InnerAudioPlayer {
             return None;
         }
         let permit = self.stream_permit.take()?;
-        let retired = self.source_retirement.take();
         let samples = match std::mem::replace(&mut self.source, AudioSource::Owned(Vec::new())) {
             AudioSource::Owned(samples) => samples,
             AudioSource::Cached(_) => return None,
         };
         if samples.is_empty() {
-            source_retirement::dispose(samples, Some(permit), retired);
             return None;
         }
-        // The raw transfer now owns both PCM and its permit; cache admission
-        // installs its already-validated CPU owner before any metadata refusal.
-        drop(retired);
         Some((
             DecodedAudio {
                 samples,
@@ -3068,7 +3033,6 @@ mod tests {
 
     #[test]
     fn attaching_cached_backing_preserves_stream_playback_state() {
-        super::source_retirement_tests::lifetime();
         let mut player = InnerAudioPlayer::new(1, 2);
         player.shared.set_sample_rate(48_000);
         player.shared.set_channels(2);
@@ -3140,21 +3104,4 @@ mod tests {
                 .any(|event| event.event_type == InnerAudioEventType::Error)
         );
     }
-}
-
-#[path = "inner_source_retirement.rs"]
-mod source_retirement;
-#[cfg(test)]
-#[path = "inner_source_retirement_tests.rs"]
-mod source_retirement_tests;
-
-#[cfg(test)]
-pub(crate) fn physical_custody_player(
-    id: InnerAudioId,
-    cpu: migo_io::audio_cpu::AudioCpu,
-    ledger: Arc<AudioAggregateLedger>,
-) -> InnerAudioPlayer {
-    let mut player = InnerAudioPlayer::new_with_cpu(id, 2, cpu);
-    player.aggregate = ledger;
-    player
 }

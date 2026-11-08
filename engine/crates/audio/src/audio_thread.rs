@@ -1450,7 +1450,7 @@ fn run_audio_thread(
     let mut media_players = media_membership::MediaPlayers::new();
 
     // Cache backing keeps its physical credit through final CPU disposal.
-    let audio_cache = GlobalAudioCache::managed(cpu.clone(), storage_host.clone());
+    let audio_cache = GlobalAudioCache::new();
 
     // Per-host and lazy: local audio never builds an HTTP pool, while every
     // remote cache miss after the first reuses the same DNS/TCP/TLS/H2 state.
@@ -2122,8 +2122,7 @@ fn run_audio_thread(
 
                 // ==================== InnerAudioContext ====================
                 AudioCmd::CreateInnerAudio { id } => {
-                    match inner_players
-                        .create_with(id, || Ok(new_inner_audio_player(id, channels, &cpu)))
+                    match inner_players.create_with(id, || Ok(new_inner_audio_player(id, channels)))
                     {
                         Ok(true) => tracing::debug!("Created InnerAudioContext {}", id),
                         Ok(false) => {}
@@ -4317,102 +4316,8 @@ fn service_players_caches_and_attaches_the_source_timeline() {
     assert!(players[&908].loading_url().is_none());
 }
 
-#[cfg(test)]
-pub(crate) fn cache_retirement_service_probe(
-    cpu: migo_io::audio_cpu::AudioCpu,
-    ledger: Arc<AudioAggregateLedger>,
-) -> (GlobalAudioCache, HashMap<InnerAudioId, InnerAudioPlayer>) {
-    use crate::streaming::{
-        PcmPool, StreamMsg, StreamRevision, StreamTimeline, StreamingState, stream_channel,
-    };
-    let rate = 768000;
-    let frames = (4 << 20) / 8;
-    let timeline = StreamTimeline::new(frames as u64, rate, rate, 2).unwrap();
-    let state = StreamingState::new();
-    state.bind_timeline(timeline).unwrap();
-    let (tx, rx) = stream_channel();
-    let mut player = InnerAudioPlayer::new_with_aggregate(909, 2, ledger.clone());
-    player
-        .start_streaming("cached retirement".into(), rx, state)
-        .unwrap();
-    assert!(
-        tx.try_send(StreamMsg::Ready {
-            revision: StreamRevision::INITIAL,
-            sample_rate: rate,
-            channels: 2
-        })
-        .is_ok()
-    );
-    let mut pool = PcmPool::new();
-    let mut pcm = pool.take();
-    pcm.buffer_mut().extend((0..frames * 2).map(|i| {
-        if i == 0 {
-            -0.0
-        } else {
-            (i % 31) as f32 / 32.0 - 0.5
-        }
-    }));
-    assert!(
-        tx.try_send(StreamMsg::Samples {
-            revision: StreamRevision::INITIAL,
-            pcm
-        })
-        .is_ok()
-    );
-    assert!(
-        tx.try_send(StreamMsg::Done {
-            revision: StreamRevision::INITIAL
-        })
-        .is_ok()
-    );
-    let mut players = HashMap::from([(909, player)]);
-    let cache = GlobalAudioCache::with_cpu(cpu);
-    service_players(&mut players, &cache, |_| {});
-    let cached = cache
-        .get("cached retirement")
-        .expect("production service did not adopt completed PCM");
-    assert_eq!(
-        cached.source_timeline(),
-        Some(timeline),
-        "production cache lost source timeline"
-    );
-    assert_eq!(
-        cached.samples.len(),
-        frames * 2,
-        "production cache lost complete PCM"
-    );
-    assert!(
-        cached.samples.iter().enumerate().all(|(i, v)| v.to_bits()
-            == (if i == 0 {
-                -0.0
-            } else {
-                (i % 31) as f32 / 32.0 - 0.5
-            })
-            .to_bits()),
-        "production cache changed complete PCM bits"
-    );
-    assert_eq!(
-        ledger.used_bytes(),
-        cached.samples.capacity() * 4,
-        "production cache duplicated stream credit"
-    );
-    assert!(players[&909].loading_url().is_none());
-    (cache, players)
-}
-
-pub(crate) fn new_inner_audio_player(
-    id: InnerAudioId,
-    channels: u32,
-    cpu: &migo_io::audio_cpu::AudioCpu,
-) -> InnerAudioPlayer {
-    InnerAudioPlayer::new_with_cpu(id, channels, cpu.clone())
-}
-#[cfg(test)]
-pub(crate) fn inner_source_cache_service(
-    players: &mut impl PlayerAccess,
-    cache: &GlobalAudioCache,
-) {
-    service_players(players, cache, |_| {});
+pub(crate) fn new_inner_audio_player(id: InnerAudioId, channels: u32) -> InnerAudioPlayer {
+    InnerAudioPlayer::new(id, channels)
 }
 
 #[cfg(test)]

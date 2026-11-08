@@ -142,8 +142,7 @@ fn setup(
     let cpu = scheduler.audio_cpu();
     let ledger = Arc::new(AudioAggregateLedger::new(32 << 20));
     let host = Host::new(cpu.clone(), ledger.clone(), channels as u32).unwrap();
-    let mut player = InnerAudioPlayer::new_with_aggregate(1, channels as u32, ledger.clone());
-    player.retirement_cpu = Some(cpu);
+    let player = InnerAudioPlayer::new_with_aggregate(1, channels as u32, ledger.clone());
     (scheduler, ledger, host, player)
 }
 fn load(player: &mut InnerAudioPlayer, input: &[f32], channels: usize) {
