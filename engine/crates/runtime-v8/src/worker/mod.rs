@@ -1,7 +1,7 @@
 use std::{cell::RefCell, future::Future, rc::Rc, sync::Arc, time::Duration};
 
 use deno_core::{
-    Extension, ExtensionArguments, FsModuleLoader, JsBuffer, JsRuntime, ModuleLoader, OpState,
+    Extension, ExtensionArguments, JsBuffer, JsRuntime, ModuleLoader, OpState,
     PollEventLoopOptions, RuntimeOptions, SharedArrayBufferStore, op2, resolve_path, v8,
 };
 use tokio::sync::mpsc;
@@ -2885,7 +2885,7 @@ mod watchdog_worker_tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("main.js"), "while (true) {}").unwrap();
 
-        let mut rt = build_worker_rt(Some(Rc::new(FsModuleLoader)));
+        let mut rt = build_worker_rt(Some(Rc::new(deno_core::FsModuleLoader)));
         let sched = Scheduler::new_test();
         let (err_tx, mut err_rx) = worker_error_channel();
         let obs_tx = err_tx.clone();

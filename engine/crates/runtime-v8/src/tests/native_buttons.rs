@@ -335,7 +335,7 @@ fn shown_buttons_are_presented_as_the_overlay_and_hidden_ones_withdrawn() {
         ..Default::default()
     });
     crate::harden_global_scope(&mut runtime);
-    let mut step = |runtime: &mut deno_core::JsRuntime, source: &'static str| {
+    let step = |runtime: &mut deno_core::JsRuntime, source: &'static str| {
         runtime
             .execute_script("<test:step>", deno_core::FastString::from_static(source))
             .expect("test step");
