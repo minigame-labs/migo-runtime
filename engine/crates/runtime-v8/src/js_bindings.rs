@@ -821,6 +821,11 @@ impl JsBindings {
                 let _ = func.call(scope, global.into(), &args);
             });
         }
+        // After content's handler has dropped what it can, let V8 reclaim it:
+        // critical collects now, moderate starts incremental marking. The level
+        // is pulsed back to None so V8 does not stay in its memory-saving mode
+        // (minimal heap growth, frequent GCs) after the platform's warning.
+        relieve_memory_pressure(rt.v8_isolate(), level);
     }
 
     // ---- Keyboard event dispatch ----
@@ -1231,6 +1236,24 @@ impl JsBindings {
     }
 }
 
+/// Pulse V8's memory pressure for one platform warning (see above).
+pub(crate) fn relieve_memory_pressure(isolate: &mut v8::Isolate, level: i32) {
+    if let Some(pressure) = memory_pressure_level(level) {
+        isolate.memory_pressure_notification(pressure);
+        isolate.memory_pressure_notification(v8::MemoryPressureLevel::None);
+    }
+}
+
+/// Android `onTrimMemory` running levels (the three the C ABI accepts):
+/// MODERATE (5) and LOW (10) are moderate pressure, CRITICAL (15) is critical.
+fn memory_pressure_level(level: i32) -> Option<v8::MemoryPressureLevel> {
+    match level {
+        15.. => Some(v8::MemoryPressureLevel::Critical),
+        5..=14 => Some(v8::MemoryPressureLevel::Moderate),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1599,5 +1622,49 @@ mod tests {
                 "case 3: is_last_frame == false propagated to JS"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod memory_pressure_tests {
+    use deno_core::{JsRuntime, RuntimeOptions, v8};
+
+    fn used_heap(runtime: &mut JsRuntime) -> usize {
+        runtime.v8_isolate().get_heap_statistics().used_heap_size()
+    }
+
+    #[test]
+    fn a_critical_warning_collects_garbage_content_already_released() {
+        let executor = crate::tests::support::v8_test_executor();
+        let _enter = executor.as_ref().map(|executor| executor.enter());
+        crate::install_icu_data();
+        let mut runtime = JsRuntime::new(RuntimeOptions::default());
+        // Promote ~32 MiB to old space, then drop the only reference.
+        runtime
+            .execute_script(
+                "garbage",
+                "globalThis.junk = Array.from({length: 4096}, () => new Array(1024).fill(1.5));",
+            )
+            .unwrap();
+        runtime.v8_isolate().low_memory_notification();
+        runtime
+            .execute_script("drop", "globalThis.junk = null;")
+            .unwrap();
+        let before = used_heap(&mut runtime);
+        super::relieve_memory_pressure(runtime.v8_isolate(), 15);
+        let after = used_heap(&mut runtime);
+        assert!(
+            after + 16 * 1024 * 1024 < before,
+            "critical pressure did not collect released garbage: {before} -> {after}"
+        );
+    }
+
+    #[test]
+    fn only_the_platform_running_levels_signal_pressure() {
+        use super::memory_pressure_level as level;
+        assert!(matches!(level(5), Some(v8::MemoryPressureLevel::Moderate)));
+        assert!(matches!(level(10), Some(v8::MemoryPressureLevel::Moderate)));
+        assert!(matches!(level(15), Some(v8::MemoryPressureLevel::Critical)));
+        assert!(level(0).is_none());
     }
 }
