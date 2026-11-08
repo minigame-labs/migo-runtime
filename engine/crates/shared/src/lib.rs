@@ -39,13 +39,11 @@
 //! Each command type flows through dedicated channels, enabling concurrent
 //! processing across specialized threads (main, render, audio, IO).
 
-pub mod audio_analyser_samples;
 pub mod audio_channel;
 pub mod audio_decoded_pcm;
 #[cfg(test)]
 mod audio_decoded_pcm_tests;
 pub mod audio_file;
-pub mod audio_frequency_response;
 pub mod audio_load;
 pub mod audio_physical;
 pub mod audio_resources;

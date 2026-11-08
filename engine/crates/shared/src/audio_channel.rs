@@ -914,7 +914,6 @@ mod tests {
 
     #[test]
     fn shrinking_after_receiver_drop_preserves_live_reservation_accounting() {
-        crate::audio_frequency_response::serialization_owns_storage();
         let (tx, rx) = channel_with_limits(2, 16);
         let mut permit = tx.try_reserve_data(16).unwrap();
         drop(rx);

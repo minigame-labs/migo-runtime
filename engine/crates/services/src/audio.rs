@@ -1179,8 +1179,8 @@ pub enum AnalyserRead {
 
 /// What an analyser read answers: bytes, or `f32`s.
 pub enum AnalyserData {
-    Bytes(shared::audio_analyser_samples::AnalyserSamples<u8>),
-    Floats(shared::audio_analyser_samples::AnalyserSamples<f32>),
+    Bytes(Vec<u8>),
+    Floats(Vec<f32>),
 }
 
 pub fn read_analyser(
@@ -1189,8 +1189,8 @@ pub fn read_analyser(
     node_id: AudioNodeId,
 ) -> Result<impl Future<Output = Result<AnalyserData, ServiceError>> + use<>, ServiceError> {
     enum Reading {
-        Bytes(Pending<shared::audio_analyser_samples::AnalyserSamples<u8>>),
-        Floats(Pending<shared::audio_analyser_samples::AnalyserSamples<f32>>),
+        Bytes(Pending<Vec<u8>>),
+        Floats(Pending<Vec<f32>>),
     }
     let reading = match read {
         AnalyserRead::ByteTimeDomain => Reading::Bytes(request(tx, |resp| {
@@ -1219,7 +1219,7 @@ pub fn get_frequency_response(
     tx: &AudioSender,
     node_id: AudioNodeId,
     frequencies: &[u8],
-) -> Result<Pending<shared::audio_frequency_response::FrequencyResponse>, ServiceError> {
+) -> Result<Pending<(Vec<f32>, Vec<f32>)>, ServiceError> {
     validate_frequency_response_bytes(frequencies.len())?;
     let permit = reserve(tx, frequencies.len())?;
     let (resp, answer) = oneshot::channel();

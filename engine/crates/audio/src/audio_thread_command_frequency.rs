@@ -2,14 +2,13 @@
 use super::*;
 
 type Data = (Vec<f32>, Vec<f32>);
-use shared::audio_frequency_response::FrequencyResponse;
 
 pub(super) fn query(
     contexts: &mut impl ContextAccess,
     index: &NodeContextIndex,
     node_id: AudioNodeId,
     frequencies: &[f32],
-) -> EngineResult<FrequencyResponse> {
+) -> EngineResult<Data> {
     let missing = || {
         EngineError::from_detail(
             ErrorCode::NotFound,
@@ -35,7 +34,7 @@ pub(super) fn query(
         ));
     }
     let data = compute(ctx, node_id, frequencies).expect("checked filter node disappeared");
-    Ok(FrequencyResponse::new(data))
+    Ok(data)
 }
 
 fn compute(ctx: &mut AudioContext, node_id: AudioNodeId, frequencies: &[f32]) -> Option<Data> {

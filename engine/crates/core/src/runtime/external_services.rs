@@ -4764,7 +4764,3 @@ mod tests {
         println!("wrote {written} host-event messages");
     }
 }
-
-#[cfg(test)]
-#[path = "audio_frequency_wire_tests.rs"]
-mod audio_frequency_wire_tests;

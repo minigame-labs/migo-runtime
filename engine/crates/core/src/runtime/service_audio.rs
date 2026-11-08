@@ -247,8 +247,7 @@ pub(crate) fn frequency_wire_reply(
     let frequencies = bytes(id::op_audio_get_frequency_response, 1, frequencies)?;
     let pending = service::get_frequency_response(&audio.sender, node_id, &frequencies)?;
     Ok(Box::pin(async move {
-        let response = pending.answer().await?;
-        let (magnitude, phase) = response.values();
+        let (magnitude, phase) = pending.answer().await?;
         let size_error = || service::audio_error("frequency wire response size overflow");
         let magnitude_bytes = magnitude.len().checked_mul(4).ok_or_else(size_error)?;
         let phase_bytes = phase.len().checked_mul(4).ok_or_else(size_error)?;
@@ -283,9 +282,9 @@ pub(crate) fn frequency_wire_reply(
             frame_wire::service::SERVICE_DOWN_HEADER_BYTES,
             &[
                 AudioWirePart::Bytes(&prefix),
-                AudioWirePart::Floats(magnitude),
+                AudioWirePart::Floats(&magnitude),
                 AudioWirePart::Bytes(&phase_prefix),
-                AudioWirePart::Floats(phase),
+                AudioWirePart::Floats(&phase),
             ],
         )
         .map_err(service::engine_error)
@@ -421,9 +420,8 @@ pub(crate) fn call_async(
             let frequencies = bytes(op, 1, frequencies)?;
             let pending = service::get_frequency_response(tx, node_id, &frequencies)?;
             Box::pin(async move {
-                pending.answer().await.map(|response| {
-                    let (magnitude, phase) = response.values();
-                    OwnedValue::Array(vec![le_bytes(magnitude), le_bytes(phase)])
+                pending.answer().await.map(|(magnitude, phase)| {
+                    OwnedValue::Array(vec![le_bytes(&magnitude), le_bytes(&phase)])
                 })
             })
         }

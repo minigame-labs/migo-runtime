@@ -460,27 +460,7 @@ fn start_time_configuration_is_an_ordered_f64_command_without_an_implicit_seek()
 }
 
 #[test]
-fn frequency_response_serializes_owned_arrays_to_the_original_little_endian_shape() {
-    use shared::audio_frequency_response::{FrequencyResponse, FrequencyResponseStorage};
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-    struct Storage {
-        data: (Vec<f32>, Vec<f32>),
-        dropped: Arc<AtomicBool>,
-    }
-    impl FrequencyResponseStorage for Storage {
-        fn values(&self) -> (&[f32], &[f32]) {
-            assert!(!self.dropped.load(Ordering::Acquire));
-            (&self.data.0, &self.data.1)
-        }
-    }
-    impl Drop for Storage {
-        fn drop(&mut self) {
-            self.dropped.store(true, Ordering::Release);
-        }
-    }
+fn frequency_response_serializes_to_the_original_little_endian_shape() {
     let (audio, rx) = binding();
     let values = vec![0.0_f32, -0.0, 1.5, f32::INFINITY, f32::NAN];
     let bytes = values
@@ -507,13 +487,7 @@ fn frequency_response_serializes_owned_arrays_to_the_original_little_endian_shap
         frequencies.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
         values.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
     );
-    let dropped = Arc::new(AtomicBool::new(false));
-    resp.send(Ok(FrequencyResponse::new(Storage {
-        data: (values.clone(), values),
-        dropped: dropped.clone(),
-    })))
-    .unwrap();
-    assert!(!dropped.load(Ordering::Acquire));
+    resp.send(Ok((values.clone(), values))).unwrap();
     let result = runtime().block_on(future).unwrap();
     assert_eq!(
         result,
@@ -522,9 +496,5 @@ fn frequency_response_serializes_owned_arrays_to_the_original_little_endian_shap
             OwnedValue::Bytes(bytes)
         ]),
         "external response bytes changed"
-    );
-    assert!(
-        dropped.load(Ordering::Acquire),
-        "external conversion retained native arrays"
     );
 }

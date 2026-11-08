@@ -1,13 +1,12 @@
 //! Analyser getters for the audio thread's command dispatch.
 use super::*;
-use shared::audio_analyser_samples::AnalyserSamples;
 
 pub(super) fn bytes(
     contexts: &mut impl ContextAccess,
     index: &NodeContextIndex,
     node_id: AudioNodeId,
     frequency: bool,
-) -> EngineResult<AnalyserSamples<u8>> {
+) -> EngineResult<Vec<u8>> {
     read(contexts, index, node_id, |node| {
         if frequency {
             node.get_byte_frequency_data()
@@ -21,7 +20,7 @@ pub(super) fn floats(
     index: &NodeContextIndex,
     node_id: AudioNodeId,
     frequency: bool,
-) -> EngineResult<AnalyserSamples<f32>> {
+) -> EngineResult<Vec<f32>> {
     read(contexts, index, node_id, |node| {
         if frequency {
             node.get_float_frequency_data()
@@ -35,7 +34,7 @@ fn read<T: Send + 'static>(
     index: &NodeContextIndex,
     node_id: AudioNodeId,
     getter: impl FnOnce(&mut AnalyserNode) -> Vec<T>,
-) -> EngineResult<AnalyserSamples<T>> {
+) -> EngineResult<Vec<T>> {
     let missing = || {
         EngineError::from_detail(
             ErrorCode::NotFound,
@@ -49,5 +48,5 @@ fn read<T: Send + 'static>(
     let data = ctx
         .with_node_typed::<AnalyserNode, _>(node_id, getter)
         .ok_or_else(missing)?;
-    Ok(data.into())
+    Ok(data)
 }
