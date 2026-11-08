@@ -321,7 +321,7 @@ async fn large_product(packaged: bool) {
             let mut task = tokio::spawn(work);
             let end = Instant::now() + WAIT;
             let delivery = loop {
-                if let Ok(c) = rx.try_recv_owned() {
+                if let Ok(c) = rx.try_recv() {
                     break c;
                 }
                 if task.is_finished() {
@@ -333,7 +333,7 @@ async fn large_product(packaged: bool) {
                 assert!(Instant::now() < end);
                 tokio::task::yield_now().await;
             };
-            let (cmd, permit) = delivery.into_parts();
+            let cmd = delivery;
             let AudioCmd::InnerAudioLoadFile {
                 load, source, resp, ..
             } = cmd
@@ -356,7 +356,6 @@ async fn large_product(packaged: bool) {
                 source,
                 resp,
             );
-            drop(permit);
             let mut actual = Vec::new();
             let mut output = vec![0.; (expected.channels as usize) * 257];
             loop {

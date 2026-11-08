@@ -1,32 +1,5 @@
-//! A completed borrowed copy still owned a large input on the audio caller.
-//! Keep its original delivery until the copy answers and CPU drops that input.
+//! `copyToChannel` for the audio thread's command dispatch.
 use super::*;
-
-pub(super) fn forward(
-    delivery: AudioCommandDelivery,
-    contexts: &mut impl ContextAccess,
-    inbox: &mut crate::command_inbox::Inbox,
-) -> Option<AudioCommandDelivery> {
-    let AudioCmd::CopyToChannel {
-        ctx_id,
-        buffer_id,
-        data,
-        channel,
-        start,
-        ..
-    } = delivery.command()
-    else {
-        return Some(delivery);
-    };
-    if !delivery.has_queue_permit()
-        || data.capacity().saturating_mul(std::mem::size_of::<f32>()) < 4096
-    {
-        return Some(delivery);
-    }
-    let result = copy(contexts, *ctx_id, *buffer_id, data, *channel, *start);
-    inbox.finish_copy(delivery, result);
-    None
-}
 
 pub(super) fn copy(
     contexts: &mut impl ContextAccess,

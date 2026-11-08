@@ -1,22 +1,5 @@
-//! Borrowed parameter Strings retained their allocation until the audio match ended.
-//! Preserve each original effect and hand only large admitted inputs to CPU drop.
+//! AudioParam and node-scalar commands for the audio thread's dispatch.
 use super::*;
-
-pub(super) fn forward(
-    delivery: AudioCommandDelivery,
-    contexts: &mut impl ContextAccess,
-    index: &NodeContextIndex,
-    inbox: &mut crate::command_inbox::Inbox,
-) -> Option<AudioCommandDelivery> {
-    if !delivery.has_queue_permit() || delivery.command().queued_payload_bytes() < 4096 {
-        return Some(delivery);
-    }
-    if !apply(delivery.command(), contexts, index) {
-        return Some(delivery);
-    }
-    inbox.finish_parameters(delivery);
-    None
-}
 
 fn owner<'a>(
     contexts: &'a mut impl ContextAccess,

@@ -98,7 +98,6 @@ pub mod apple_session;
 mod apple_session_policy;
 mod audio_thread;
 pub mod cache;
-mod command_inbox;
 mod context;
 mod decoder;
 mod device_prepare;

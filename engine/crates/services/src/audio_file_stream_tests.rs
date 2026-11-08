@@ -223,7 +223,7 @@ fn actual_large_file_command_holds_a_sealed_capability_and_waits_for_native_read
     let message = rt.block_on(async {
         tokio::time::timeout(WAIT, async {
             loop {
-                if let Ok(value) = rx.try_recv_owned() {
+                if let Ok(value) = rx.try_recv() {
                     break value;
                 }
                 tokio::task::yield_now().await;
@@ -232,8 +232,6 @@ fn actual_large_file_command_holds_a_sealed_capability_and_waits_for_native_read
         .await
         .unwrap()
     });
-    assert!(message.has_queue_permit());
-    let (message, permit) = message.into_parts();
     let AudioCmd::InnerAudioLoadFile {
         source, load, resp, ..
     } = message
@@ -257,7 +255,7 @@ fn actual_large_file_command_holds_a_sealed_capability_and_waits_for_native_read
         CLASS_ENCODING_ERROR,
         "local file codec failure lost its original class"
     );
-    drop((source, permit));
+    drop(source);
     let _ = fs::remove_dir_all(base);
 }
 

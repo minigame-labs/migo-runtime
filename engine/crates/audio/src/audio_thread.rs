@@ -4,9 +4,7 @@ use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use shared::audio_channel::{
-    AUDIO_COMMANDS_PER_DRAIN, AudioCommandDelivery, AudioCommandReceiver, AudioCommandSender,
-};
+use shared::audio_channel::{AUDIO_COMMANDS_PER_DRAIN, AudioCommandReceiver, AudioCommandSender};
 use shared::audio_resources::AudioSnapshot;
 use shared::channel::ThreadWakeup;
 use shared::error::{EngineError, EngineResult, ErrorCode};
@@ -28,18 +26,10 @@ mod analyser_output;
 mod command_copy;
 #[path = "audio_thread_command_frequency.rs"]
 mod command_frequency;
-#[path = "audio_thread_command_iir.rs"]
-mod command_iir;
 #[path = "audio_thread_command_parameters.rs"]
 mod command_parameters;
-#[path = "audio_thread_command_rejection.rs"]
-mod command_rejection;
-#[path = "audio_thread_decode_rejection.rs"]
-mod decode_rejection;
 #[path = "audio_thread_node_index.rs"]
 mod node_index;
-#[path = "audio_thread_replacement_input.rs"]
-mod replacement_input;
 use node_index::NodeContextIndex;
 #[path = "audio_thread_context_table.rs"]
 mod context_table;
@@ -856,7 +846,6 @@ fn release_context_scoped(
 /// not yet executed is dropped first, then every retained WebAudio context is
 /// closed and the ownership index is cleared. The acknowledgement is published
 /// last so a replacement isolate cannot race any of those old commands.
-#[cfg(test)]
 fn handle_release_all_contexts(
     startup_backlog: &mut std::vec::IntoIter<AudioCmd>,
     rx: &AudioCommandReceiver,
@@ -870,19 +859,6 @@ fn handle_release_all_contexts(
     }
     node_index.clear_all();
     rx.complete_release_all_contexts();
-}
-
-fn handle_owned_release_all_contexts(
-    inbox: &mut crate::command_inbox::Inbox,
-    contexts: &mut impl ContextAccess,
-    node_index: &mut NodeContextIndex,
-) {
-    inbox.discard_pending();
-    for (_, mut context) in contexts.drain() {
-        context.close();
-    }
-    node_index.clear_all();
-    inbox.complete_release_all_contexts();
 }
 
 /// Remove only the claimed context's map reference. Missing contexts/buffers
@@ -1086,39 +1062,6 @@ impl AudioThread {
         http_client_factory: StreamingHttpClientFactory,
         cpu: migo_io::audio_cpu::AudioCpu,
     ) -> EngineResult<Self> {
-        Self::spawn_with_owned_channel(
-            tx,
-            rx,
-            startup_backlog
-                .into_iter()
-                .map(AudioCommandDelivery::unmanaged)
-                .collect(),
-            wakeup,
-            host_tx,
-            http_client_factory,
-            cpu,
-        )
-    }
-
-    /// Production lazy startup preserves each queued command's original credit.
-    pub fn spawn_with_owned_channel(
-        tx: AudioCommandSender,
-        rx: AudioCommandReceiver,
-        startup_backlog: Vec<AudioCommandDelivery>,
-        wakeup: ThreadWakeup,
-        host_tx: HostTx,
-        http_client_factory: StreamingHttpClientFactory,
-        cpu: migo_io::audio_cpu::AudioCpu,
-    ) -> EngineResult<Self> {
-        if startup_backlog
-            .iter()
-            .any(|delivery| !rx.owns_delivery(delivery))
-        {
-            return Err(EngineError::from_detail(
-                ErrorCode::InvalidArgument,
-                "audio startup delivery belongs to another channel",
-            ));
-        }
         let wakeup_for_thread = wakeup.clone();
         let handle = thread::Builder::new()
             .name("Migo-AudioThread".into())
@@ -1430,7 +1373,6 @@ fn wait_for_audio_work(wakeup: &ThreadWakeup, mode: AudioWaitMode) {
 ///
 /// Its own function so that ordering is observable without an audio device, which
 /// `run_audio_thread` needs and a host test cannot provide.
-#[cfg(test)]
 fn next_command(
     startup_backlog: &mut std::vec::IntoIter<AudioCmd>,
     rx: &AudioCommandReceiver,
@@ -1523,7 +1465,7 @@ impl DeviceSearch {
 /// wake it without waiting for the next timed tick.
 fn run_audio_thread(
     rx: AudioCommandReceiver,
-    startup_backlog: Vec<AudioCommandDelivery>,
+    startup_backlog: Vec<AudioCmd>,
     mut output: AudioOutput,
     host_tx: HostTx,
     wakeup: ThreadWakeup,
@@ -1534,7 +1476,7 @@ fn run_audio_thread(
     output.bind_wakeup(&wakeup);
     // Consumed ahead of the channel in the drain below, so the commands the
     // service buffered before this thread existed keep their place in the order.
-    let mut inbox = crate::command_inbox::Inbox::new(rx, startup_backlog, cpu.clone());
+    let mut startup_backlog = startup_backlog.into_iter();
     let mut sample_rate = output.sample_rate();
     let mut channels = output.channels();
 
@@ -1629,65 +1571,11 @@ fn run_audio_thread(
         }
         let mut cmd_count = 0usize;
         while cmd_count < AUDIO_COMMANDS_PER_DRAIN {
-            let delivery = match inbox.next() {
+            let cmd = match next_command(&mut startup_backlog, &rx) {
                 Some(c) => c,
                 None => break,
             };
             cmd_count += 1;
-            let Some(delivery) = command_rejection::forward(
-                delivery,
-                &mut contexts,
-                &node_index,
-                &inner_players,
-                &mut inbox,
-            ) else {
-                continue;
-            };
-            let Some(delivery) = decode_rejection::forward(
-                delivery,
-                &contexts,
-                &mut inner_players,
-                &mut decode_pool,
-                &mut inbox,
-            ) else {
-                continue;
-            };
-            let delivery = match replacement_input::forward(
-                delivery,
-                &mut contexts,
-                &node_index,
-                &mut inbox,
-            ) {
-                replacement_input::Forward::Next(delivery) => delivery,
-                replacement_input::Forward::Handled(started) => {
-                    #[cfg(any(target_os = "ios", test))]
-                    if let Some((ctx_id, node_id)) = started {
-                        request_playback_resume!(PlaybackIntent::Source(ctx_id, node_id));
-                    }
-                    #[cfg(not(any(target_os = "ios", test)))]
-                    let _ = started;
-                    continue;
-                }
-            };
-            let Some(delivery) = command_copy::forward(delivery, &mut contexts, &mut inbox) else {
-                continue;
-            };
-            let Some(delivery) =
-                command_parameters::forward(delivery, &mut contexts, &node_index, &mut inbox)
-            else {
-                continue;
-            };
-            let Some(delivery) =
-                command_frequency::forward(delivery, &mut contexts, &node_index, &mut inbox)
-            else {
-                continue;
-            };
-            let Some(delivery) =
-                command_iir::forward(delivery, &mut contexts, &mut node_index, &mut inbox)
-            else {
-                continue;
-            };
-            let (cmd, _command_credit) = delivery.into_parts();
             match cmd {
                 AudioCmd::Shutdown => {
                     return;
@@ -1731,7 +1619,12 @@ fn run_audio_thread(
                 }
 
                 AudioCmd::ReleaseAllContexts => {
-                    handle_owned_release_all_contexts(&mut inbox, &mut contexts, &mut node_index);
+                    handle_release_all_contexts(
+                        &mut startup_backlog,
+                        &rx,
+                        &mut contexts,
+                        &mut node_index,
+                    );
                 }
 
                 AudioCmd::CloseContext { ctx_id, resp } => {

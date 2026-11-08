@@ -1,33 +1,5 @@
-//! A filter query borrows its frequency Vec. Keep the original queue ticket
-//! until large admitted inputs are destroyed on the existing AudioCpu lane.
+//! `getFrequencyResponse` for the audio thread's command dispatch.
 use super::*;
-
-pub(super) fn forward(
-    delivery: AudioCommandDelivery,
-    contexts: &mut impl ContextAccess,
-    index: &NodeContextIndex,
-    inbox: &mut crate::command_inbox::Inbox,
-) -> Option<AudioCommandDelivery> {
-    let AudioCmd::GetFrequencyResponse {
-        node_id,
-        frequencies,
-        ..
-    } = delivery.command()
-    else {
-        return Some(delivery);
-    };
-    if !delivery.has_queue_permit()
-        || frequencies
-            .capacity()
-            .saturating_mul(std::mem::size_of::<f32>())
-            < 4096
-    {
-        return Some(delivery);
-    }
-    let result = query(contexts, index, *node_id, frequencies);
-    inbox.finish_frequency(delivery, result);
-    None
-}
 
 type Data = (Vec<f32>, Vec<f32>);
 use shared::audio_frequency_response::FrequencyResponse;

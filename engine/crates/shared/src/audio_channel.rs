@@ -291,272 +291,6 @@ impl AudioCommandEntry {
         drop(_permit);
         command
     }
-
-    fn into_delivery(self) -> AudioCommandDelivery {
-        AudioCommandDelivery {
-            command: self.command,
-            permit: Some(self._permit),
-        }
-    }
-}
-
-/// One admitted command. Its count/byte credit follows the actual payload
-/// through startup handoff and processing, rather than ending at queue removal.
-pub struct AudioCommandDelivery {
-    command: AudioCmd,
-    permit: Option<AudioCommandPermit>,
-}
-impl AudioCommandDelivery {
-    /// Compatibility for caller-owned startup commands and fixed control lanes.
-    pub fn unmanaged(command: AudioCmd) -> Self {
-        Self {
-            command,
-            permit: None,
-        }
-    }
-
-    pub fn command(&self) -> &AudioCmd {
-        &self.command
-    }
-
-    pub fn has_queue_permit(&self) -> bool {
-        self.permit.is_some()
-    }
-
-    pub fn into_parts(self) -> (AudioCmd, Option<AudioCommandPermit>) {
-        (self.command, self.permit)
-    }
-
-    /// CopyToChannel borrows its input. Answer the completed copy before
-    /// retaining that input and its original admission for CPU disposal.
-    pub fn finish_copy_to_channel(
-        self,
-        result: crate::error::EngineResult<()>,
-    ) -> Option<AudioDiscardedPayload> {
-        let (command, permit) = self.into_parts();
-        let AudioCmd::CopyToChannel { data, resp, .. } = command else {
-            unreachable!("copy completion requires CopyToChannel");
-        };
-        let _ = resp.send(result);
-        if permit.is_none() || data.capacity().saturating_mul(std::mem::size_of::<f32>()) < 4096 {
-            drop(data);
-            drop(permit);
-            return None;
-        }
-        Some(AudioDiscardedPayload {
-            _payload: Box::new(data),
-            _permit: permit,
-        })
-    }
-
-    /// A frequency query borrows its input. Publish the original response now,
-    /// then retain a large admitted input and its ticket until CPU disposal.
-    pub fn finish_frequency_response(
-        self,
-        result: crate::error::EngineResult<crate::audio_frequency_response::FrequencyResponse>,
-    ) -> Option<AudioDiscardedPayload> {
-        let (command, permit) = self.into_parts();
-        let AudioCmd::GetFrequencyResponse {
-            frequencies, resp, ..
-        } = command
-        else {
-            unreachable!("frequency completion requires GetFrequencyResponse");
-        };
-        let _ = resp.send(result);
-        if permit.is_none()
-            || frequencies
-                .capacity()
-                .saturating_mul(std::mem::size_of::<f32>())
-                < 4096
-        {
-            drop(frequencies);
-            drop(permit);
-            return None;
-        }
-        Some(AudioDiscardedPayload {
-            _payload: Box::new(frequencies),
-            _permit: permit,
-        })
-    }
-
-    /// Accepted decoding owns its input under the existing decoder allowance.
-    /// A refusal returns the same command, so its original transport ticket
-    /// survives the immediate typed reply through actual bulk CPU destruction.
-    pub fn finish_decode_submission(
-        self,
-        submit: impl FnOnce(AudioCmd) -> Option<(AudioCmd, crate::error::EngineError)>,
-    ) -> Option<AudioDiscardedPayload> {
-        assert!(
-            matches!(
-                self.command,
-                AudioCmd::DecodeAudioData { .. }
-                    | AudioCmd::InnerAudioLoad { .. }
-                    | AudioCmd::InnerAudioCompleteLoad { .. }
-            ),
-            "decode completion requires a whole-file command"
-        );
-        let (command, permit) = self.into_parts();
-        if let Some((command, error)) = submit(command) {
-            Self { command, permit }.into_rejected_payload(error)
-        } else {
-            drop(permit);
-            None
-        }
-    }
-
-    /// A replacement callback may take the selected payload only after its
-    /// original destination admits it. Any residual input keeps this ticket
-    /// through real CPU disposal; consumed input leaves no bulk data here.
-    pub fn finish_replacement<R>(
-        mut self,
-        apply: impl FnOnce(&mut AudioCmd) -> R,
-    ) -> (R, Option<AudioDiscardedPayload>) {
-        assert!(
-            matches!(
-                self.command,
-                AudioCmd::SetWaveShaperCurve { .. }
-                    | AudioCmd::SetStartedBuffer { .. }
-                    | AudioCmd::StartBuffer { .. }
-            ),
-            "replacement completion requires a curve or snapshot command"
-        );
-        let result = apply(&mut self.command);
-        (result, self.into_discarded_payload())
-    }
-
-    /// Answer a command rejected before execution, then retain only its data
-    /// and original admission for CPU disposal. Responses never wait for drop.
-    pub fn into_rejected_payload(
-        self,
-        error: crate::error::EngineError,
-    ) -> Option<AudioDiscardedPayload> {
-        fn reply<T, P: Send + 'static>(
-            resp: crate::protocol::audio_cmd::AudioResp<T>,
-            payload: P,
-            permit: Option<AudioCommandPermit>,
-            bytes: usize,
-            error: crate::error::EngineError,
-        ) -> Option<AudioDiscardedPayload> {
-            let _ = resp.send(Err(error));
-            if permit.is_none() || bytes < 4096 {
-                drop(payload);
-                drop(permit);
-                return None;
-            }
-            Some(AudioDiscardedPayload {
-                _payload: Box::new(payload),
-                _permit: permit,
-            })
-        }
-        let bytes = self.command.queued_payload_bytes();
-        let (command, permit) = self.into_parts();
-        match command {
-            AudioCmd::DecodeAudioData { data, resp, .. } => reply(resp, data, permit, bytes, error),
-            AudioCmd::CopyToChannel { data, resp, .. } => reply(resp, data, permit, bytes, error),
-            AudioCmd::GetFrequencyResponse {
-                frequencies, resp, ..
-            } => reply(resp, frequencies, permit, bytes, error),
-            AudioCmd::InnerAudioLoad { data, resp, .. }
-            | AudioCmd::InnerAudioCompleteLoad { data, resp, .. } => {
-                reply(resp, data, permit, bytes, error)
-            }
-            AudioCmd::InnerAudioLoadUrl { url, resp, .. } => reply(resp, url, permit, bytes, error),
-            AudioCmd::InnerAudioLoadFile { source, resp, .. } => {
-                reply(resp, source, permit, bytes, error)
-            }
-            command => Self { command, permit }.into_discarded_payload(),
-        }
-    }
-
-    /// Detach only bulk data from cancelled work. Unselected response senders
-    /// and small load-generation metadata are dropped before returning, so a
-    /// restart can acknowledge logical cancellation without waiting for CPU drop.
-    pub fn into_discarded_payload(self) -> Option<AudioDiscardedPayload> {
-        let bytes = match &self.command {
-            AudioCmd::SetStartedBuffer { buffer, .. } | AudioCmd::StartBuffer { buffer, .. } => {
-                buffer
-                    .as_ref()
-                    .map_or(0, |b| std::mem::size_of_val(b.samples()))
-            }
-            command => command.queued_payload_bytes(),
-        };
-        // Raw caller-owned startup commands have no queue admission. Preserve
-        // their legacy synchronous path; production lazy startup uses deliveries.
-        if self.permit.is_none() || bytes < 4096 {
-            return None;
-        }
-        let (command, permit) = self.into_parts();
-        let payload: Box<dyn Send> = match command {
-            AudioCmd::DecodeAudioData { data, .. } => Box::new(data),
-            AudioCmd::SetStartedBuffer { buffer, .. } | AudioCmd::StartBuffer { buffer, .. } => {
-                Box::new(buffer)
-            }
-            AudioCmd::SetWaveShaperCurve { curve, .. } => Box::new(curve),
-            AudioCmd::CopyToChannel { data, .. }
-            | AudioCmd::GetFrequencyResponse {
-                frequencies: data, ..
-            } => Box::new(data),
-            AudioCmd::InnerAudioLoad { data, .. }
-            | AudioCmd::InnerAudioCompleteLoad { data, .. } => Box::new(data),
-            AudioCmd::InnerAudioLoadFile { source, .. } => Box::new(source),
-            AudioCmd::CreateIIRFilter {
-                feedforward,
-                feedback,
-                ..
-            } => Box::new((feedforward, feedback)),
-            AudioCmd::SetNodeParam {
-                param_name: value, ..
-            }
-            | AudioCmd::AudioParamSetValueAtTime {
-                param_name: value, ..
-            }
-            | AudioCmd::AudioParamLinearRamp {
-                param_name: value, ..
-            }
-            | AudioCmd::AudioParamExponentialRamp {
-                param_name: value, ..
-            }
-            | AudioCmd::AudioParamSetTarget {
-                param_name: value, ..
-            }
-            | AudioCmd::AudioParamCancelScheduled {
-                param_name: value, ..
-            }
-            | AudioCmd::SetOscillatorType {
-                osc_type: value, ..
-            }
-            | AudioCmd::SetBiquadFilterType {
-                filter_type: value, ..
-            }
-            | AudioCmd::SetWaveShaperOversample {
-                oversample: value, ..
-            }
-            | AudioCmd::SetPanningModel { model: value, .. }
-            | AudioCmd::SetDistanceModel { model: value, .. }
-            | AudioCmd::SetPannerScalar { prop: value, .. }
-            | AudioCmd::SetAnalyserScalar { prop: value, .. }
-            | AudioCmd::InnerAudioLoadUrl { url: value, .. } => Box::new(value),
-            _ => unreachable!("bulk audio command has no discard payload"),
-        };
-        Some(AudioDiscardedPayload {
-            _payload: payload,
-            _permit: permit,
-        })
-    }
-
-    /// Only the legacy raw-command receiver releases credit at dequeue.
-    fn into_command(self) -> AudioCmd {
-        let (command, permit) = self.into_parts();
-        drop(permit);
-        command
-    }
-}
-
-/// Field order is part of the transport contract: real data dies first, then
-/// its original count/byte permit. No replacement quota or unbounded mailbox.
-pub struct AudioDiscardedPayload {
-    _payload: Box<dyn Send>,
-    _permit: Option<AudioCommandPermit>,
 }
 
 pub struct AudioCommandSender {
@@ -598,15 +332,14 @@ impl Drop for AudioCommandReceiver {
     fn drop(&mut self) {
         self.close();
         // Crossbeam senders may still retain the channel allocation. Destroy
-        // queued entries now, without resetting credit owned by deliveries.
-        // The production inbox has already moved bulk cancelled data to CPU.
+        // queued entries now; outstanding reservations release their own credit.
         self.discard_data_queue();
     }
 }
 
 impl AudioCommandReceiver {
-    /// Fence publication first. Outstanding deliveries/reservations keep their
-    /// original credit until their owners actually drop; never reset it here.
+    /// Fence publication first. Outstanding reservations keep their credit
+    /// until they drop, so the counters are never reset here.
     pub fn close(&self) {
         // Linearize receiver teardown with an admitted sender's commit+send.
         // Once this lock is held, no callback can detach a V8 backing store
@@ -890,15 +623,9 @@ impl AudioCommandReceiver {
     /// Terminal control takes priority over ordinary data backlog.
     #[inline]
     pub fn try_recv(&self) -> Result<AudioCmd, crossbeam_channel::TryRecvError> {
-        self.try_recv_owned()
-            .map(AudioCommandDelivery::into_command)
-    }
-
-    /// Receive without releasing the command's count/byte admission.
-    pub fn try_recv_owned(&self) -> Result<AudioCommandDelivery, crossbeam_channel::TryRecvError> {
         loop {
             let shutdown_disconnected = match self.shutdown.try_recv() {
-                Ok(command) => return Ok(AudioCommandDelivery::unmanaged(command)),
+                Ok(command) => return Ok(command),
                 Err(crossbeam_channel::TryRecvError::Empty) => false,
                 Err(crossbeam_channel::TryRecvError::Disconnected) => true,
             };
@@ -925,16 +652,16 @@ impl AudioCommandReceiver {
                                 }
                                 _ => unreachable!("invalid audio lifecycle level"),
                             };
-                            command.map(|command| Ok(AudioCommandDelivery::unmanaged(command)))
+                            command.map(Ok)
                         }
                         Err(error) => Some(Err(error)),
                     },
-                    LANE_DATA => Some(self.data.try_recv().map(AudioCommandEntry::into_delivery)),
-                    LANE_CLEANUP => {
-                        Some(self.cleanup.try_recv().map(|()| {
-                            AudioCommandDelivery::unmanaged(AudioCmd::ReleaseAllContexts)
-                        }))
-                    }
+                    LANE_DATA => Some(self.data.try_recv().map(AudioCommandEntry::into_command)),
+                    LANE_CLEANUP => Some(
+                        self.cleanup
+                            .try_recv()
+                            .map(|()| AudioCmd::ReleaseAllContexts),
+                    ),
                     _ => unreachable!("invalid audio command lane"),
                 };
 
@@ -980,25 +707,13 @@ impl AudioCommandReceiver {
     /// Drop every ordinary command currently waiting behind a restart barrier.
     /// Dropping entries releases response senders and queue byte/count permits.
     pub fn discard_data_queue(&self) {
-        self.discard_data_queue_with(drop);
-    }
-
-    /// Move discarded entries and their original credit to the caller's sink.
-    pub fn discard_data_queue_with(&self, mut discard: impl FnMut(AudioCommandDelivery)) {
         while let Ok(entry) = self.data.try_recv() {
-            discard(entry.into_delivery());
+            drop(entry);
         }
     }
 
     pub fn data_capacity(&self) -> usize {
         self.usage.max_items
-    }
-
-    pub fn owns_delivery(&self, delivery: &AudioCommandDelivery) -> bool {
-        delivery
-            .permit
-            .as_ref()
-            .is_none_or(|permit| std::sync::Arc::ptr_eq(&self.usage, &permit.usage))
     }
 
     /// Pre-start restart cleanup: no native context exists, so discard all
@@ -1093,10 +808,6 @@ pub fn disconnected() -> AudioCommandSender {
     drop(rx);
     tx
 }
-
-#[cfg(test)]
-#[path = "audio_channel_ownership_tests.rs"]
-mod ownership_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1204,7 +915,6 @@ mod tests {
     #[test]
     fn shrinking_after_receiver_drop_preserves_live_reservation_accounting() {
         crate::audio_frequency_response::serialization_owns_storage();
-        super::ownership_tests::physical_lifetime_and_origin();
         let (tx, rx) = channel_with_limits(2, 16);
         let mut permit = tx.try_reserve_data(16).unwrap();
         drop(rx);

@@ -660,41 +660,33 @@ fn local_file_product(packaged: bool) {
             });
             let mut delivery = None;
             until(|| {
-                delivery = rx.try_recv_owned().ok();
+                delivery = rx.try_recv().ok();
                 delivery.is_some()
             });
-            let delivery = delivery.unwrap();
-            assert!(
-                delivery
-                    .finish_decode_submission(|command| {
-                        let AudioCmd::InnerAudioCompleteLoad {
-                            id,
-                            load,
-                            data,
-                            resp,
-                        } = command
-                        else {
-                            panic!("local source did not preserve whole-file M4A/decode dispatch")
-                        };
-                        assert_eq!(data, bytes, "local service changed complete encoded bytes");
-                        assert_eq!(
-                            load.source_id(),
-                            3701,
-                            "local service changed source identity"
-                        );
-                        // Later host/source writes cannot retarget the accepted input.
-                        std::fs::write(&source, b"replacement after source publication").unwrap();
-                        pool.submit(DecodeJob::InnerAudio {
-                            id,
-                            load,
-                            target_rate: target,
-                            data,
-                            resp,
-                        });
-                        None
-                    })
-                    .is_none()
+            let AudioCmd::InnerAudioCompleteLoad {
+                id,
+                load,
+                data,
+                resp,
+            } = delivery.unwrap()
+            else {
+                panic!("local source did not preserve whole-file M4A/decode dispatch")
+            };
+            assert_eq!(data, bytes, "local service changed complete encoded bytes");
+            assert_eq!(
+                load.source_id(),
+                3701,
+                "local service changed source identity"
             );
+            // Later host/source writes cannot retarget the accepted input.
+            std::fs::write(&source, b"replacement after source publication").unwrap();
+            pool.submit(DecodeJob::InnerAudio {
+                id,
+                load,
+                target_rate: target,
+                data,
+                resp,
+            });
             let DecodeResult::InnerAudio {
                 id,
                 load,
