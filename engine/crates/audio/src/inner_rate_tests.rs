@@ -184,8 +184,7 @@ fn web_context(
         Arc::new(crate::limits::PcmUsage::new(32 << 20, 32)),
         ledger.clone(),
     );
-    let ctx =
-        crate::context::AudioContext::new_with_pcm_budget(1, 48000, channels as u32, budget);
+    let ctx = crate::context::AudioContext::new_with_pcm_budget(1, 48000, channels as u32, budget);
     (io, ledger, ctx)
 }
 
