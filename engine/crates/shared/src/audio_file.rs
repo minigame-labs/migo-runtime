@@ -58,6 +58,9 @@ pub trait AudioFile: Send + Sync {
     /// physical credit separately; this is the transport's backlog allowance.
     fn queued_bytes(&self) -> usize;
     fn is_closed(&self) -> bool;
+    /// Fill `output` from `offset` on the calling thread. Only for a dedicated
+    /// decode thread, never an async executor: this is ordinary blocking file IO.
+    fn read_blocking(&self, offset: u64, output: &mut [u8]) -> EngineResult<()>;
     /// Register and enable before checking is_closed(), as for AudioLoadWatch.
     fn closed_signal(&self) -> &Notify;
     /// Enqueue one bounded read. The original source and its credit must survive

@@ -207,6 +207,9 @@ struct Observed {
     backwards: std::sync::atomic::AtomicUsize,
 }
 impl AudioFile for Observed {
+    fn read_blocking(&self, _offset: u64, _output: &mut [u8]) -> shared::error::EngineResult<()> {
+        unimplemented!("the stepped pipeline never reads on the calling thread")
+    }
     fn length(&self) -> u64 {
         self.file.length()
     }
