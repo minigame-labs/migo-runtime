@@ -134,3 +134,29 @@ fn checked_lengths_reject_overflow_before_native_write_or_quota_change() {
     drop(held);
     assert_eq!(budget.usage(), (0, 0));
 }
+
+#[test]
+fn sparse_spool_holds_out_of_order_extents_and_its_quota_for_its_life() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("sparse");
+    let budget = SpoolBudget::new(1000, 2).unwrap();
+    let spool = SparseSpool::create(&dir, &budget, 600, 1000).unwrap();
+    assert_eq!(budget.usage(), (600, 1));
+    // A second object cannot overcommit the remaining quota.
+    assert!(SparseSpool::create(&dir, &budget, 401, 1000).is_err());
+    spool.write_at(500, &[9; 100]).unwrap();
+    spool.write_at(0, &[1; 10]).unwrap();
+    let mut tail = [0; 100];
+    spool.read_at(500, &mut tail).unwrap();
+    assert_eq!(tail, [9; 100]);
+    let mut head = [0; 12];
+    spool.read_at(0, &mut head).unwrap();
+    assert_eq!(&head[..10], &[1; 10]);
+    assert_eq!(&head[10..], &[0; 2], "an unwritten hole reads as zeros");
+    assert!(spool.write_at(550, &[0; 51]).is_err());
+    assert!(spool.read_at(u64::MAX, &mut [0; 1]).is_err());
+    assert!(SparseSpool::create(&dir, &budget, 0, 1000).is_err());
+    assert!(SparseSpool::create(&dir, &budget, 1001, 1000).is_err());
+    drop(spool);
+    assert_eq!(budget.usage(), (0, 0));
+}

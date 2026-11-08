@@ -94,6 +94,54 @@ fn invalid(message: &'static str) -> io::Error {
 /// unmapped directory; this is not an API for a game-writable VFS pathname.
 /// No file handle or temporary pathname is exposed, and seal consumes write
 /// authority. Any failed append permanently poisons this writer.
+/// A fixed-size spool file written and read at arbitrary offsets, for a media
+/// object fetched out of order (HTTP ranges). The caller tracks which extents
+/// hold data; the disk quota covers the whole object from creation.
+pub struct SparseSpool {
+    file: File,
+    _ticket: DiskTicket,
+    len: u64,
+}
+impl SparseSpool {
+    pub fn create(dir: &Path, budget: &SpoolBudget, len: u64, max_bytes: u64) -> io::Result<Self> {
+        if !dir.is_absolute() {
+            return Err(invalid("spool directory must be host-private and absolute"));
+        }
+        if len == 0 || len > max_bytes {
+            return Err(invalid("spool object length exceeds limit"));
+        }
+        let ticket = budget.reserve(len)?;
+        std::fs::create_dir_all(dir)?;
+        let file = tempfile::tempfile_in(dir)?;
+        file.set_len(len)?;
+        Ok(Self {
+            file,
+            _ticket: ticket,
+            len,
+        })
+    }
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+    fn extent(&self, offset: u64, n: usize) -> io::Result<()> {
+        match offset.checked_add(n as u64) {
+            Some(end) if end <= self.len => Ok(()),
+            _ => Err(invalid("sparse spool access outside the object")),
+        }
+    }
+    pub fn write_at(&self, offset: u64, bytes: &[u8]) -> io::Result<()> {
+        self.extent(offset, bytes.len())?;
+        shared::vfs::file_io::write_all_at(&self.file, bytes, offset)
+    }
+    pub fn read_at(&self, offset: u64, output: &mut [u8]) -> io::Result<()> {
+        self.extent(offset, output.len())?;
+        shared::vfs::file_io::read_exact_at(&self.file, output, offset)
+    }
+}
+
 pub struct SpoolWriter {
     // Drop/close the file before returning its disk credit.
     file: File,

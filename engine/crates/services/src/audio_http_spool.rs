@@ -181,7 +181,33 @@ impl Spool {
         .map_err(|_| error())
     }
 }
+struct Sparse(migo_io::spool::SparseSpool);
+impl shared::audio_file::AudioSparseSpool for Sparse {
+    fn len(&self) -> u64 {
+        self.0.len()
+    }
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> Result<(), EngineError> {
+        self.0.write_at(offset, bytes).map_err(|_| error())
+    }
+    fn read_at(&self, offset: u64, output: &mut [u8]) -> Result<(), EngineError> {
+        self.0.read_at(offset, output).map_err(|_| error())
+    }
+}
+
 impl AudioHttpSpool for Spool {
+    fn sparse(
+        &self,
+        len: u64,
+    ) -> Result<Box<dyn shared::audio_file::AudioSparseSpool>, EngineError> {
+        migo_io::spool::SparseSpool::create(
+            &self.context.spool_dir,
+            &self.budget,
+            len,
+            self.maximum,
+        )
+        .map(|spool| Box::new(Sparse(spool)) as Box<dyn shared::audio_file::AudioSparseSpool>)
+        .map_err(|error| EngineError::from_detail(ErrorCode::InputSaturated, error.to_string()))
+    }
     fn prepare(
         self: Arc<Self>,
         body: Box<dyn AudioSpoolBody>,

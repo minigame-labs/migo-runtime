@@ -24,6 +24,23 @@ pub trait AudioHttpSpool: Send + Sync {
         cancel: Arc<dyn AudioFileCancel>,
         deadline: Instant,
     ) -> AudioSpoolFuture<'static, Arc<dyn AudioFile>>;
+    /// A disk-backed object of exactly `len` bytes for a body fetched out of
+    /// order. Blocking file creation: call it on a decode thread.
+    fn sparse(&self, len: u64) -> EngineResult<Box<dyn AudioSparseSpool>> {
+        let _ = len;
+        Err(EngineError::from_detail(
+            crate::error::ErrorCode::Unsupported,
+            "this audio spool cannot hold an out-of-order object",
+        ))
+    }
+}
+
+/// Positioned storage for one HTTP media object; which extents hold data is the
+/// caller's record. Blocking IO: decode and fetch threads only.
+pub trait AudioSparseSpool: Send + Sync {
+    fn len(&self) -> u64;
+    fn write_at(&self, offset: u64, bytes: &[u8]) -> EngineResult<()>;
+    fn read_at(&self, offset: u64, output: &mut [u8]) -> EngineResult<()>;
 }
 
 /// A single immutable loan. Its owner may retain the file and physical credit;
