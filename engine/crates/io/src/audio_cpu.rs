@@ -24,43 +24,6 @@ pub struct AudioCpu {
     priority: PriorityClass,
 }
 
-/// Drop-only access to the same host registration, Audio class and background
-/// queue after host cancellation. It cannot submit general work or reopen IO.
-pub struct AudioRetirement {
-    cpu: AudioCpu,
-}
-
-impl AudioRetirement {
-    /// Retain the value across queue rejection until an existing CPU worker
-    /// destroys it. The caller must drive this future to completion on a runtime
-    /// with time enabled. Audio uses its process-lifetime, unabortable receiver;
-    /// its physical owner quota bounds both waiting values and retry tasks.
-    pub async fn retire<T: Send + 'static>(self, value: T) {
-        // Share one cleanup turn across this executor's hosts, including the
-        // running destructor. Original Audio/Background queue limits still apply.
-        let _permit = self.cpu.pools.audio_retirement_permit().await;
-        let pending = Arc::new(Mutex::new(Some(value)));
-        loop {
-            let work = Arc::clone(&pending);
-            let _ = self
-                .cpu
-                .run(move || {
-                    let value = work.lock().take();
-                    // Custom destructors may reenter IO. Never hold the cell
-                    // lock while running them on the existing CPU worker.
-                    drop(value);
-                })
-                .await;
-            if pending.lock().is_none() {
-                return;
-            }
-            // A rejected closure owns only an Arc; the heavy value and its
-            // physical credit remain here. Do not spin on the async worker.
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-        }
-    }
-}
-
 // Execution and publication are separate so admission is returned before any
 // waiter can observe or wake for the completed result.
 pub(crate) trait CpuJob: Send + Sync {
@@ -198,18 +161,6 @@ impl AudioCpu {
         Ok(permit)
     }
 
-    /// Reserve drop-only access without extending the host's IO domain. Keep
-    /// the existing executor/host registration, queue caps and CPU concurrency.
-    pub fn retirement(&self) -> AudioRetirement {
-        AudioRetirement {
-            cpu: Self::new(
-                self.pools.clone(),
-                Arc::new(IoDomain::new()),
-                PriorityClass::Background,
-            ),
-        }
-    }
-
     /// Check the same close level used by CPU admission and completion.
     pub fn is_closed(&self) -> bool {
         self.domain.is_closed()
@@ -286,10 +237,6 @@ impl AudioCpu {
 #[cfg(test)]
 #[path = "audio_preparation_tests.rs"]
 mod preparation_tests;
-
-#[cfg(test)]
-#[path = "audio_retirement_tests.rs"]
-mod retirement_tests;
 
 #[cfg(test)]
 mod tests {

@@ -174,7 +174,6 @@ REQUIRED = [
     "scripts/testing/check_audio_paced_retirement.py",
     "scripts/testing/fixtures/audio-codec-probe/device_retirement_load.rs",
     "scripts/testing/fixtures/audio-codec-probe/streaming_retirement_pressure.rs",
-    "engine/crates/io/src/audio_retirement_tests.rs",
     "scripts/testing/check_audio_device_retirement.py",
     "engine/crates/audio/src/device_mixer.rs",
     "engine/crates/audio/src/device_mixer_tests.rs",

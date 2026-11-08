@@ -583,7 +583,6 @@ struct ExecutorShared {
     audio_refills: Arc<AudioRefillActivity>,
     // A close burst must not fill ordinary Audio admission or occupy both
     // heavy workers. Waiting physical owners stay with their bounded receiver.
-    audio_retirement: Arc<tokio::sync::Semaphore>,
     // Bound device preparation owners before they enqueue CPU steps. Use the
     // existing class parallelism; ordinary Audio operation limits still apply.
     audio_preparation: Arc<tokio::sync::Semaphore>,
@@ -772,7 +771,6 @@ impl ProcessIoExecutor {
                 condvar: ParkingCondvar::new(),
                 config,
                 audio_refills: Arc::new(AudioRefillActivity::default()),
-                audio_retirement: Arc::new(tokio::sync::Semaphore::new(1)),
                 audio_preparation,
             }),
             workers: OnceLock::new(),
@@ -1174,13 +1172,6 @@ impl IoPools {
             .acquire_owned()
             .await
             .expect("private audio preparation admission is never closed")
-    }
-
-    pub(crate) async fn audio_retirement_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
-        Arc::clone(&self.registration.executor.shared.audio_retirement)
-            .acquire_owned()
-            .await
-            .expect("private audio retirement admission is never closed")
     }
 
     pub(crate) fn track_audio_refill(&self, priority: PriorityClass) -> Option<AudioRefillTicket> {
