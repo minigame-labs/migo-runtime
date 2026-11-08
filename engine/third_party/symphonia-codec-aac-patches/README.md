@@ -38,6 +38,4 @@ The pull path shares timebase/max-packet initialization and signal checks;
 it rejects a truncated final header and keeps bitrate duration estimates out
 of exact num_frames. Errors in the push state machine are terminal.
 
-The library/probe/compiled-control checkpoint is replayable with
-`scripts/testing/check_audio_adts_streaming.py`. It is candidate evidence;
-HTTP/DSP/player, product selection and platform/device acceptance remain open.
+The ADTS streaming path is covered by the audio crate's AAC streaming tests.

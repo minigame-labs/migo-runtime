@@ -28,12 +28,9 @@ a correctness oracle through the original full reader. Run tests with one
 thread. Entry hooks count actual `mp3dec_decode_frame` calls in debug/release;
 the oracle is unbounded and never counted as a scheduling step.
 
-Run `python3 scripts/testing/check_audio_minimp3_presentation.py --output /tmp/NAME
---target-dir /tmp/TARGET`. `--sanitize` uses native ASan/UBSan and a separate target
-folder. `--plain` verifies the release ABI/PCM without test hooks. No mode changes the product manifest/lock or creates a new runtime
-backend. The native gate alone does not validate the product cursor or scheduler.
-Use the separate product gate for cursor/job cancellation and complete PCM;
-platform/device and equal-PCM performance remain separate acceptance.
+The presentation contracts live in
+`scripts/testing/fixtures/minimp3-presentation/`; the product cursor, job
+cancellation and complete PCM are covered by the audio crate's MP3 tests.
 
 The upstream MIT/CC0 notices stay in the extracted source. This additive patch
 follows the repository's licensing; it does not replace those notices.
