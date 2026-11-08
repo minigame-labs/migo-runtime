@@ -21,13 +21,7 @@ use tracing::{error, info};
 
 use super::{AudioSync, OutputCallback, RING_BUFFER_FRAMES};
 
-#[path = "output_ohaudio_error_storage.rs"]
-mod error_storage;
-type StreamErrorRef = error_storage::Reference;
-
-fn shared_stream_error(host: &crate::node_retirement::Host) -> EngineResult<StreamErrorRef> {
-    error_storage::Reference::new(Some(host), || AtomicBool::new(false))
-}
+type StreamErrorRef = std::sync::Arc<AtomicBool>;
 
 /// What this stream asks the device for.
 ///
@@ -231,11 +225,11 @@ unsafe impl Send for AudioOutput {}
 
 impl AudioOutput {
     /// Create a new audio output
-    pub fn new(host: &crate::node_retirement::Host) -> EngineResult<Self> {
+    pub fn new() -> EngineResult<Self> {
         let ring_size = RING_BUFFER_FRAMES * OHOS_CHANNELS as usize;
-        let stream_error = shared_stream_error(host)?;
-        let sync = AudioSync::with_host(Some(host))?;
-        let (producer, consumer) = super::ring::new(ring_size, Some(host))?;
+        let stream_error = StreamErrorRef::default();
+        let sync = AudioSync::new();
+        let (producer, consumer) = super::ring::new(ring_size)?;
 
         let state = Box::into_raw(Box::new(CallbackState {
             render: OutputCallback::new(consumer, sync.clone(), 0),
@@ -268,9 +262,6 @@ impl AudioOutput {
 
     /// Get the sample rate
     #[inline]
-    pub(super) fn storage_host(&self) -> Option<crate::node_retirement::Host> {
-        super::ring::host(&self.producer)
-    }
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
@@ -508,5 +499,4 @@ const _: () = {
     let _ = AudioOutput::is_alive;
     let _ = AudioOutput::pause_stream;
     let _ = AudioOutput::resume_stream;
-    let _ = AudioOutput::storage_host;
 };

@@ -209,8 +209,7 @@ fn cold_cycle_rebuild_and_full_budget_closed_cpu_render_do_not_allocate() {
     use crate::limits::AudioAggregateLedger;
     let scheduler = migo_io::scheduler::IoScheduler::new(1);
     let ledger = Arc::new(AudioAggregateLedger::new(64 << 20));
-    let mut ctx =
-        AudioContext::new_managed(1, 48000, 1, scheduler.audio_cpu(), ledger.clone()).unwrap();
+    let mut ctx = AudioContext::new(1, 48000, 1);
     constant(&mut ctx, 50, 1.0);
     assert!(ctx.add_node(Box::new(DelayNode::new(10, 0.001, 48000, 1))));
     ctx.connect(50, 10);

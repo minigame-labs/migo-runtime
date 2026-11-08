@@ -1598,18 +1598,31 @@ mod tests {
 
         // Stand-in for `GothamState`: same container, same key type, sized to
         // the number of types this extension installs.
+        #[allow(dead_code)]
         struct T0(u64);
+        #[allow(dead_code)]
         struct T1(u64);
+        #[allow(dead_code)]
         struct T2(u64);
+        #[allow(dead_code)]
         struct T3(u64);
+        #[allow(dead_code)]
         struct T4(u64);
+        #[allow(dead_code)]
         struct T5(u64);
+        #[allow(dead_code)]
         struct T6(u64);
+        #[allow(dead_code)]
         struct T7(u64);
+        #[allow(dead_code)]
         struct T8(u64);
+        #[allow(dead_code)]
         struct T9(u64);
+        #[allow(dead_code)]
         struct T10(u64);
+        #[allow(dead_code)]
         struct T11(u64);
+        #[allow(dead_code)]
         struct Collector(u64);
 
         let mut store: BTreeMap<TypeId, Box<dyn Any>> = BTreeMap::new();

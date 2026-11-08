@@ -2,7 +2,6 @@ use std::{env, fs, path::PathBuf};
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(migo_native_alloc_probe)");
-    graph_table_layout();
     variable_rate();
     println!("cargo:rerun-if-changed=build.rs");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("android") {
@@ -49,7 +48,7 @@ fn variable_rate() {
         format!(
             "#define PACKAGE \"libsamplerate\"\n#define VERSION \"0.2.2\"\n\
          #define HAVE_STDBOOL_H 1\n#define HAVE_STDINT_H 1\n\
-         #define ENABLE_SINC_BEST_CONVERTER 1\n\
+         #define ENABLE_SINC_FAST_CONVERTER 1\n\
          #define CPU_CLIPS_NEGATIVE 0\n#define CPU_CLIPS_POSITIVE 0\n\
          #define CPU_IS_LITTLE_ENDIAN {}\n#define CPU_IS_BIG_ENDIAN {}\n",
             u8::from(little),
@@ -73,45 +72,4 @@ fn variable_rate() {
         .file(root.join("native/variable_rate.c"))
         .compile("migo_variable_rate");
     println!("cargo:rustc-link-lib=m");
-}
-
-// The model follows the pinned compiler's std/hashbrown, whose target features
-// are those used to build std, not arbitrary consumer -C target-feature flags.
-fn graph_table_layout() {
-    use std::process::Command;
-    println!("cargo:rerun-if-env-changed=RUSTC");
-    let rustc = env::var_os("RUSTC").expect("Cargo RUSTC");
-    let version = Command::new(&rustc)
-        .arg("--version")
-        .output()
-        .expect("rustc version");
-    assert!(version.status.success());
-    let version = String::from_utf8(version.stdout).unwrap();
-    assert_eq!(
-        version.split_whitespace().nth(1),
-        Some("1.95.0"),
-        "review graph hash allocation layout before changing Rust"
-    );
-    let cfg = Command::new(rustc)
-        .args(["--print", "cfg", "--target", &env::var("TARGET").unwrap()])
-        .output()
-        .expect("standard target cfg");
-    assert!(cfg.status.success(), "standard target cfg failed");
-    let cfg = String::from_utf8(cfg.stdout).unwrap();
-    let has = |key: &str| cfg.lines().any(|line| line == key);
-    let group = if (has("target_arch=\"x86_64\"") || has("target_arch=\"x86\""))
-        && has("target_feature=\"sse2\"")
-        || has("target_arch=\"loongarch64\"") && has("target_feature=\"lsx\"")
-    {
-        16
-    } else if has("target_pointer_width=\"64\"")
-        || has("target_arch=\"aarch64\"")
-        || has("target_arch=\"x86_64\"")
-        || has("target_arch=\"wasm32\"")
-    {
-        8
-    } else {
-        4
-    };
-    println!("cargo:rustc-env=MIGO_HASH_GROUP_WIDTH={group}");
 }

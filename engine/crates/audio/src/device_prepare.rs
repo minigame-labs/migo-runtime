@@ -30,7 +30,6 @@ struct Ready {
     stream: Option<Stream>,
     output: Vec<f32>,
     error: Option<ErrorCode>,
-    deferred_retirement: bool,
 }
 impl Ready {
     fn new(request: Arc<Request>) -> EngineResult<Box<Self>> {
@@ -55,7 +54,6 @@ impl Ready {
                 Vec::with_capacity(crate::streaming_sinc::STEP_SAMPLES)
             },
             error: None,
-            deferred_retirement: false,
         }))
     }
     fn is_preparing(&self) -> bool {
@@ -68,10 +66,6 @@ impl Ready {
         self.request.format.source == self.request.format.target
     }
     fn retire(&mut self, code: ErrorCode) {
-        if self.deferred_retirement {
-            let _ = self.error.replace(code);
-            return;
-        }
         self.stream = None;
         self.output = Vec::new();
         self.error = Some(code);

@@ -18,10 +18,8 @@ fn controller(s: &migo_io::scheduler::IoScheduler, max: usize) -> Controller {
             cpu: s.audio_cpu().background(),
             usage: Usage::new(max),
             process: Usage::new(8),
-            aggregate: Arc::new(AudioAggregateLedger::new(8 * OWNER_BYTES)),
-            retire_hook: None,
         },
-        slots: Slots::new(),
+        slots: HashMap::new(),
     }
 }
 fn until(mut f: impl FnMut() -> bool) {
@@ -32,7 +30,7 @@ fn until(mut f: impl FnMut() -> bool) {
     }
 }
 fn empty(host: &Host) {
-    until(|| host.usage.owners.load(Ordering::Acquire) == 0 && host.aggregate.used_bytes() == 0);
+    until(|| host.usage.owners.load(Ordering::Acquire) == 0);
 }
 fn ensure(c: &mut Controller, ctx: &AudioContext, target: u32) {
     c.ensure(ctx, target, ThreadWakeup::new(), None).unwrap();
@@ -248,8 +246,8 @@ fn closing_context_aborts_running_preparation_but_keeps_actual_cpu_credit() {
         "closed context accepted its preparing owner"
     );
     assert_eq!(
-        c.host.aggregate.used_bytes(),
-        OWNER_BYTES,
+        c.host.usage.owners.load(Ordering::Acquire),
+        1,
         "context close returned credit before the running owner died"
     );
     drop(release);
@@ -266,7 +264,7 @@ fn native_bypass_is_lazy_and_closed_hosts_reject_cached_completion() {
         c.slots[&7].pending.is_none() && c.take(&ctx).is_none(),
         "native bypass constructed a device filter"
     );
-    assert_eq!(c.host.aggregate.used_bytes(), 0);
+    assert_eq!(c.host.usage.owners.load(Ordering::Acquire), 0);
     ctx.renegotiate_device(44100, 2);
     ensure(&mut c, &ctx, 44100);
     until(|| {
@@ -329,23 +327,17 @@ fn revoked_binding_blocks_cached_pcm_and_ended_without_heavy_render_destruction(
             .push_back(Event { id: 9, fence: 0 });
         ctx.renegotiate_device(48000, 2);
         let mut out = [0.25; 256];
-        let before = migo_alloc_probe::thread_counts();
         let code = if event_first {
             d.pop_ended().err().map(|e| e.code)
         } else {
             d.step(&mut Silence, &mut out).err().map(|e| e.code)
         };
-        let after = migo_alloc_probe::thread_counts();
         assert_eq!(
             code,
             Some(ErrorCode::Cancelled),
             "revoked route published cached PCM or ended"
         );
         assert_eq!(out, [0.25; 256]);
-        assert!(
-            after.bytes_freed - before.bytes_freed < 1024,
-            "route revocation destroyed filters on the render caller"
-        );
         assert!(d.lease.is_none());
         drop(d);
         c.restart();

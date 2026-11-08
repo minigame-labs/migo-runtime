@@ -230,8 +230,13 @@ fn a_decode_is_answered_as_its_info_and_its_pcm_stays_here() {
         panic!("a decode");
     };
     assert_eq!(data.as_slice(), &[1, 2, 3, 4]);
-    resp.send(Ok(DecodedPcm::new(44_100, 1, 3, vec![0.0, 0.5, 1.0])))
-        .unwrap();
+    resp.send(Ok(DecodedPcm {
+        sample_rate: 44_100,
+        channels: 1,
+        frames: 3,
+        samples: vec![0.0, 0.5, 1.0],
+    }))
+    .unwrap();
     let OwnedValue::Array(info) = rt.block_on(future).unwrap() else {
         panic!("an array");
     };
@@ -301,25 +306,6 @@ fn a_written_buffer_starts_from_the_bytes_content_sent() {
     .unwrap() else {
         panic!("a buffer id");
     };
-    let initialized = call_sync(
-        &audio,
-        id::op_audio_materialize_buffer,
-        vec![OwnedValue::U32(buffer_id)],
-    )
-    .unwrap();
-    assert!(
-        matches!(initialized,OwnedValue::Bytes(ref bytes) if bytes==&vec![0;8]),
-        "external initial backing changed wire shape or zero PCM"
-    );
-    assert!(
-        call_sync(
-            &audio,
-            id::op_audio_materialize_buffer,
-            vec![OwnedValue::U32(buffer_id)]
-        )
-        .is_err(),
-        "external initial backing initialized twice"
-    );
     let backing: Vec<u8> = [0.25f32, -0.25]
         .iter()
         .flat_map(|v| v.to_le_bytes())
@@ -460,27 +446,7 @@ fn start_time_configuration_is_an_ordered_f64_command_without_an_implicit_seek()
 }
 
 #[test]
-fn frequency_response_serializes_owned_arrays_to_the_original_little_endian_shape() {
-    use shared::audio_frequency_response::{FrequencyResponse, FrequencyResponseStorage};
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-    struct Storage {
-        data: (Vec<f32>, Vec<f32>),
-        dropped: Arc<AtomicBool>,
-    }
-    impl FrequencyResponseStorage for Storage {
-        fn values(&self) -> (&[f32], &[f32]) {
-            assert!(!self.dropped.load(Ordering::Acquire));
-            (&self.data.0, &self.data.1)
-        }
-    }
-    impl Drop for Storage {
-        fn drop(&mut self) {
-            self.dropped.store(true, Ordering::Release);
-        }
-    }
+fn frequency_response_serializes_to_the_original_little_endian_shape() {
     let (audio, rx) = binding();
     let values = vec![0.0_f32, -0.0, 1.5, f32::INFINITY, f32::NAN];
     let bytes = values
@@ -507,13 +473,7 @@ fn frequency_response_serializes_owned_arrays_to_the_original_little_endian_shap
         frequencies.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
         values.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
     );
-    let dropped = Arc::new(AtomicBool::new(false));
-    resp.send(Ok(FrequencyResponse::new(Storage {
-        data: (values.clone(), values),
-        dropped: dropped.clone(),
-    })))
-    .unwrap();
-    assert!(!dropped.load(Ordering::Acquire));
+    resp.send(Ok((values.clone(), values))).unwrap();
     let result = runtime().block_on(future).unwrap();
     assert_eq!(
         result,
@@ -522,9 +482,5 @@ fn frequency_response_serializes_owned_arrays_to_the_original_little_endian_shap
             OwnedValue::Bytes(bytes)
         ]),
         "external response bytes changed"
-    );
-    assert!(
-        dropped.load(Ordering::Acquire),
-        "external conversion retained native arrays"
     );
 }

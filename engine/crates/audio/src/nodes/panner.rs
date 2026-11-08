@@ -365,23 +365,6 @@ impl AudioNodeProcessor for PannerNode {
         frames
     }
 
-    fn prepare_params(
-        &mut self,
-        host: &crate::node_retirement::Host,
-    ) -> shared::error::EngineResult<()> {
-        for param in [
-            &mut self.position_x,
-            &mut self.position_y,
-            &mut self.position_z,
-            &mut self.orientation_x,
-            &mut self.orientation_y,
-            &mut self.orientation_z,
-        ] {
-            param.prepare_storage(host)?;
-        }
-        Ok(())
-    }
-
     fn get_param_mut(&mut self, name: &str) -> Option<&mut AudioParamTimeline> {
         match name {
             "positionX" => Some(&mut self.position_x),

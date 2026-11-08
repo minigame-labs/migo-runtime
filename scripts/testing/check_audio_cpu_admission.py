@@ -79,6 +79,9 @@ def prepare(output: Path, target: Path, extra_inputs=()):
     package.mkdir()
     io = ROOT / 'engine/crates/io'
     shutil.copytree(io / 'src', package / 'src')
+    # Unit tests include fixtures from the crate's tests/ tree (include_bytes!).
+    if (io / 'tests').is_dir():
+        shutil.copytree(io / 'tests', package / 'tests')
     root_manifest = (ROOT / 'engine/Cargo.toml').read_text()
     manifest = rebase((io / 'Cargo.toml').read_text(), io)
     manifest += '\n[workspace]\n[workspace.package]\n' + section(root_manifest, 'workspace.package')

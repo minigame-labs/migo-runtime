@@ -4,9 +4,7 @@ use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use shared::audio_channel::{
-    AUDIO_COMMANDS_PER_DRAIN, AudioCommandDelivery, AudioCommandReceiver, AudioCommandSender,
-};
+use shared::audio_channel::{AUDIO_COMMANDS_PER_DRAIN, AudioCommandReceiver, AudioCommandSender};
 use shared::audio_resources::AudioSnapshot;
 use shared::channel::ThreadWakeup;
 use shared::error::{EngineError, EngineResult, ErrorCode};
@@ -28,18 +26,10 @@ mod analyser_output;
 mod command_copy;
 #[path = "audio_thread_command_frequency.rs"]
 mod command_frequency;
-#[path = "audio_thread_command_iir.rs"]
-mod command_iir;
 #[path = "audio_thread_command_parameters.rs"]
 mod command_parameters;
-#[path = "audio_thread_command_rejection.rs"]
-mod command_rejection;
-#[path = "audio_thread_decode_rejection.rs"]
-mod decode_rejection;
 #[path = "audio_thread_node_index.rs"]
 mod node_index;
-#[path = "audio_thread_replacement_input.rs"]
-mod replacement_input;
 use node_index::NodeContextIndex;
 #[path = "audio_thread_context_table.rs"]
 mod context_table;
@@ -166,13 +156,6 @@ const DECODE_RESULT_BYTE_LIMIT_DETAIL: &str = "audio decode result queue byte li
 const DECODE_QUEUE_DISCONNECTED_DETAIL: &str = "audio decode queue is disconnected";
 
 trait DecodeQueuePayload: Send + 'static {
-    fn retire_parts(self, lease: result_custody::Lease) -> Box<dyn Send>
-    where
-        Self: Sized,
-    {
-        result_custody::boxed(self, lease)
-    }
-
     fn queued_bytes(&self) -> usize;
 }
 
@@ -276,20 +259,6 @@ impl DecodeJob {
 }
 
 impl DecodeQueuePayload for DecodeResult {
-    fn retire_parts(self, lease: result_custody::Lease) -> Box<dyn Send> {
-        match self {
-            Self::AudioBuffer { result, resp, .. } => {
-                drop(resp);
-                result_custody::boxed(result, lease)
-            }
-            Self::InnerAudio {
-                result, resp, load, ..
-            } => {
-                drop(resp);
-                result_custody::boxed((result, load), lease)
-            }
-        }
-    }
     fn queued_bytes(&self) -> usize {
         let result = match self {
             Self::AudioBuffer { result, .. } | Self::InnerAudio { result, .. } => result,
@@ -393,12 +362,22 @@ impl DecodeQueueUsage {
     }
 }
 
-use result_custody::Owned as DecodeQueueEntry;
+struct DecodeQueueEntry<T> {
+    value: T,
+    _permit: DecodeQueuePermit,
+}
+
+impl<T> DecodeQueueEntry<T> {
+    fn into_value(self) -> T {
+        let Self { value, _permit } = self;
+        drop(_permit);
+        value
+    }
+}
 
 struct DecodeQueueSender<T: DecodeQueuePayload> {
     tx: std_mpsc::SyncSender<DecodeQueueEntry<T>>,
     usage: Arc<DecodeQueueUsage>,
-    retirement: Option<result_custody::Retirement>,
 }
 
 impl<T: DecodeQueuePayload> Clone for DecodeQueueSender<T> {
@@ -406,7 +385,6 @@ impl<T: DecodeQueuePayload> Clone for DecodeQueueSender<T> {
         Self {
             tx: self.tx.clone(),
             usage: Arc::clone(&self.usage),
-            retirement: self.retirement.clone(),
         }
     }
 }
@@ -421,18 +399,16 @@ impl<T: DecodeQueuePayload> Drop for DecodeQueueReceiver<T> {
         self.usage
             .closed
             .store(true, std::sync::atomic::Ordering::Release);
-        // Actual queued/retiring owners retain their original physical ticket.
+        // Queued entries release their own credit when they drop.
     }
 }
 
-#[cfg(test)]
 enum DecodeQueueSendError<T> {
     Full(T),
     ByteLimit(T),
     Disconnected(T),
 }
 
-#[cfg(test)]
 impl<T> std::fmt::Debug for DecodeQueueSendError<T> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
@@ -444,7 +420,6 @@ impl<T> std::fmt::Debug for DecodeQueueSendError<T> {
 }
 
 impl<T: DecodeQueuePayload> DecodeQueueSender<T> {
-    #[cfg(test)]
     fn try_send(&self, value: T) -> Result<(), DecodeQueueSendError<T>> {
         let reservation = self.usage.try_reserve(value.queued_bytes());
         let permit = match reservation {
@@ -459,11 +434,10 @@ impl<T: DecodeQueuePayload> DecodeQueueSender<T> {
                 return Err(DecodeQueueSendError::Disconnected(value));
             }
         };
-        match self.tx.try_send(result_custody::entry(
+        match self.tx.try_send(DecodeQueueEntry {
             value,
-            permit,
-            self.retirement.as_ref(),
-        )) {
+            _permit: permit,
+        }) {
             Ok(()) => Ok(()),
             Err(std_mpsc::TrySendError::Full(entry)) => {
                 Err(DecodeQueueSendError::Full(entry.into_value()))
@@ -476,11 +450,6 @@ impl<T: DecodeQueuePayload> DecodeQueueSender<T> {
 }
 
 impl<T: DecodeQueuePayload> DecodeQueueReceiver<T> {
-    fn try_recv_owned(&self) -> Result<DecodeQueueEntry<T>, std_mpsc::TryRecvError> {
-        self.rx.try_recv()
-    }
-
-    #[cfg(test)]
     fn try_recv(&self) -> Result<T, std_mpsc::TryRecvError> {
         self.rx.try_recv().map(DecodeQueueEntry::into_value)
     }
@@ -509,7 +478,6 @@ fn decode_queue<T: DecodeQueuePayload>(
         DecodeQueueSender {
             tx,
             usage: Arc::clone(&usage),
-            retirement: None,
         },
         DecodeQueueReceiver { rx, usage },
     )
@@ -532,118 +500,51 @@ fn reject_decode_job(job: DecodeJob, code: ErrorCode, detail: &'static str) {
 }
 
 fn reject_decode_result(result: DecodeResult, code: ErrorCode, detail: &'static str) {
-    reject_decode_result_after(result, code, detail, || {});
-}
-
-fn reject_decode_result_after(
-    result: DecodeResult,
-    code: ErrorCode,
-    detail: &'static str,
-    retire: impl FnOnce(),
-) {
     let error = EngineError::from_detail(code, detail);
     match result {
         DecodeResult::AudioBuffer { resp, result, .. } => {
             drop(result);
-            retire();
             let _ = resp.send(Err(error));
         }
         DecodeResult::InnerAudio {
             resp, result, load, ..
         } => {
             drop((result, load));
-            retire();
             let _ = resp.send(Err(error));
         }
     }
 }
 
-#[cfg(test)]
 fn publish_decode_result(result_tx: &DecodeQueueSender<DecodeResult>, result: DecodeResult) {
-    publish_decode_result_after(result_tx, result, || {});
-}
-
-fn publish_decode_result_after(
-    result_tx: &DecodeQueueSender<DecodeResult>,
-    result: DecodeResult,
-    retire: impl FnOnce() + Send + 'static,
-) {
-    publish_decode_result_handoff(result_tx, result, || {
-        retire();
-        None
-    });
-}
-
-// The producer returns the original physical reservation after all other
-// completion resources retire; this ticket follows the same PCM allocation.
-fn publish_decode_result_handoff(
-    result_tx: &DecodeQueueSender<DecodeResult>,
-    result: DecodeResult,
-    retire: impl FnOnce() -> Option<AudioAggregatePermit> + Send + 'static,
-) {
     let cancelled = match &result {
         DecodeResult::InnerAudio { load, resp, .. } => !load.is_current() || resp.is_closed(),
         DecodeResult::AudioBuffer { resp, .. } => resp.is_closed(),
     };
     if cancelled {
-        inner_custody::reject_unadmitted(
+        reject_decode_result(
             result,
             ErrorCode::Cancelled,
             "audio decode request cancelled",
-            || drop(retire()),
-            result_tx.retirement.as_ref(),
         );
         return;
     }
-    let permit = match result_tx.usage.try_reserve(result.queued_bytes()) {
-        Ok(permit) => permit,
-        Err(error) => {
-            let (code, detail) = match error {
-                DecodeQueueReserveError::Full => {
-                    (ErrorCode::InputSaturated, DECODE_RESULT_QUEUE_FULL_DETAIL)
-                }
-                DecodeQueueReserveError::ByteLimit => {
-                    (ErrorCode::InputSaturated, DECODE_RESULT_BYTE_LIMIT_DETAIL)
-                }
-                DecodeQueueReserveError::Disconnected => {
-                    (ErrorCode::Disconnected, DECODE_QUEUE_DISCONNECTED_DETAIL)
-                }
-            };
-            inner_custody::reject_unadmitted(
-                result,
-                code,
-                detail,
-                || drop(retire()),
-                result_tx.retirement.as_ref(),
-            );
-            return;
-        }
-    };
-    // The result queue now owns a byte/item allowance for this PCM. Return
-    // the in-flight lease before making the queue entry visible to audio.
-    let mut physical = retire();
-    if let Some(physical) = &mut physical {
-        physical.shrink_to(result.queued_bytes());
-    }
-    if let Err(error) = result_tx.tx.try_send(result_custody::entry_charged(
-        result,
-        permit,
-        result_tx.retirement.as_ref(),
-        physical,
-    )) {
-        let (entry, code, detail) = match error {
-            std_mpsc::TrySendError::Full(entry) => (
-                entry,
-                ErrorCode::InputSaturated,
-                DECODE_RESULT_QUEUE_FULL_DETAIL,
-            ),
-            std_mpsc::TrySendError::Disconnected(entry) => (
-                entry,
-                ErrorCode::Disconnected,
-                DECODE_QUEUE_DISCONNECTED_DETAIL,
-            ),
-        };
-        result_custody::reject(entry, code, detail);
+    match result_tx.try_send(result) {
+        Ok(()) => {}
+        Err(DecodeQueueSendError::Full(result)) => reject_decode_result(
+            result,
+            ErrorCode::InputSaturated,
+            DECODE_RESULT_QUEUE_FULL_DETAIL,
+        ),
+        Err(DecodeQueueSendError::ByteLimit(result)) => reject_decode_result(
+            result,
+            ErrorCode::InputSaturated,
+            DECODE_RESULT_BYTE_LIMIT_DETAIL,
+        ),
+        Err(DecodeQueueSendError::Disconnected(result)) => reject_decode_result(
+            result,
+            ErrorCode::Disconnected,
+            DECODE_QUEUE_DISCONNECTED_DETAIL,
+        ),
     }
 }
 
@@ -816,47 +717,8 @@ fn create_context_scoped(
     ctx_id: AudioContextId,
     sample_rate: u32,
     channels: u32,
-    cpu: Option<&migo_io::audio_cpu::AudioCpu>,
 ) -> bool {
-    contexts.create_context(
-        ctx_id,
-        sample_rate,
-        channels,
-        cpu,
-        crate::limits::AudioAggregateLedger::process_global,
-    )
-}
-
-#[cfg(test)]
-fn create_context_scoped_with_ledger(
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
-    ctx_id: AudioContextId,
-    sample_rate: u32,
-    channels: u32,
-    cpu: Option<&migo_io::audio_cpu::AudioCpu>,
-    aggregate: impl FnOnce() -> Arc<crate::limits::AudioAggregateLedger>,
-) -> bool {
-    if contexts.contains_key(&ctx_id) {
-        return false;
-    }
-    let context = match cpu {
-        Some(cpu) => {
-            match AudioContext::new_managed(ctx_id, sample_rate, channels, cpu.clone(), aggregate())
-            {
-                Ok(context) => context,
-                Err(error) => {
-                    tracing::warn!(
-                        "AudioContext {ctx_id} construction admission rejected: {error}"
-                    );
-                    return false;
-                }
-            }
-        }
-        None => AudioContext::new(ctx_id, sample_rate, channels),
-    };
-    // Preserve the legacy native/test map path and its standard allocation.
-    contexts.insert(ctx_id, context);
-    true
+    contexts.create_context(ctx_id, sample_rate, channels)
 }
 
 /// Every replacement backend is a new route, even when its format repeats.
@@ -895,7 +757,6 @@ fn release_context_scoped(
 /// not yet executed is dropped first, then every retained WebAudio context is
 /// closed and the ownership index is cleared. The acknowledgement is published
 /// last so a replacement isolate cannot race any of those old commands.
-#[cfg(test)]
 fn handle_release_all_contexts(
     startup_backlog: &mut std::vec::IntoIter<AudioCmd>,
     rx: &AudioCommandReceiver,
@@ -909,19 +770,6 @@ fn handle_release_all_contexts(
     }
     node_index.clear_all();
     rx.complete_release_all_contexts();
-}
-
-fn handle_owned_release_all_contexts(
-    inbox: &mut crate::command_inbox::Inbox,
-    contexts: &mut impl ContextAccess,
-    node_index: &mut NodeContextIndex,
-) {
-    inbox.discard_pending();
-    for (_, mut context) in contexts.drain() {
-        context.close();
-    }
-    node_index.clear_all();
-    inbox.complete_release_all_contexts();
 }
 
 /// Remove only the claimed context's map reference. Missing contexts/buffers
@@ -1035,7 +883,6 @@ fn start_buffer_scoped(
 /// as the `AudioBuffer`'s frozen snapshot in the host registry, which is what
 /// playback shares (see `AudioResourceRegistry::adopt_frozen`). The context is
 /// consulted only to refuse a decode it did not live to see.
-#[cfg(test)]
 fn integrate_audio_buffer_decode_result(
     contexts: &impl ContextView,
     ctx_id: AudioContextId,
@@ -1055,6 +902,45 @@ fn integrate_audio_buffer_decode_result(
         decoded_pcm(decoded)
     });
     let _ = resp.send(answer);
+}
+
+fn integrate_decode_result(
+    result: DecodeResult,
+    contexts: &impl ContextView,
+    players: &mut impl PlayerAccess,
+) {
+    match result {
+        DecodeResult::AudioBuffer {
+            ctx_id,
+            result,
+            resp,
+        } => integrate_audio_buffer_decode_result(contexts, ctx_id, result, resp),
+        DecodeResult::InnerAudio {
+            id,
+            load,
+            result,
+            resp,
+        } => {
+            let response = match players.get_mut(&id) {
+                Some(player) if player.shared.owns_load(&load) && !resp.is_closed() => {
+                    let response = result.and_then(|mut audio| {
+                        let info = InnerAudioInfo {
+                            duration: audio.duration(),
+                            sample_rate: audio.sample_rate,
+                            channels: audio.channels,
+                        };
+                        player.try_complete_load(&load, &mut audio).map(|()| info)
+                    });
+                    if response.is_err() {
+                        player.discard_loading_controls();
+                    }
+                    response
+                }
+                _ => Err(crate::inner_audio::InnerAudioLoadToken::cancelled_error()),
+            };
+            let _ = resp.send(response);
+        }
+    }
 }
 
 /// A decode's samples with their shape, refusing one no `AudioBuffer` can hold:
@@ -1080,15 +966,14 @@ fn decoded_pcm_frames(decoded: &DecodedAudio) -> EngineResult<u32> {
     Ok(frames)
 }
 
-#[cfg(test)]
 fn decoded_pcm(decoded: DecodedAudio) -> EngineResult<DecodedPcm> {
     let frames = decoded_pcm_frames(&decoded)?;
-    Ok(DecodedPcm::new(
-        decoded.sample_rate,
-        decoded.channels,
+    Ok(DecodedPcm {
+        sample_rate: decoded.sample_rate,
+        channels: decoded.channels,
         frames,
-        decoded.samples,
-    ))
+        samples: decoded.samples,
+    })
 }
 
 pub struct AudioThread {
@@ -1125,39 +1010,6 @@ impl AudioThread {
         http_client_factory: StreamingHttpClientFactory,
         cpu: migo_io::audio_cpu::AudioCpu,
     ) -> EngineResult<Self> {
-        Self::spawn_with_owned_channel(
-            tx,
-            rx,
-            startup_backlog
-                .into_iter()
-                .map(AudioCommandDelivery::unmanaged)
-                .collect(),
-            wakeup,
-            host_tx,
-            http_client_factory,
-            cpu,
-        )
-    }
-
-    /// Production lazy startup preserves each queued command's original credit.
-    pub fn spawn_with_owned_channel(
-        tx: AudioCommandSender,
-        rx: AudioCommandReceiver,
-        startup_backlog: Vec<AudioCommandDelivery>,
-        wakeup: ThreadWakeup,
-        host_tx: HostTx,
-        http_client_factory: StreamingHttpClientFactory,
-        cpu: migo_io::audio_cpu::AudioCpu,
-    ) -> EngineResult<Self> {
-        if startup_backlog
-            .iter()
-            .any(|delivery| !rx.owns_delivery(delivery))
-        {
-            return Err(EngineError::from_detail(
-                ErrorCode::InvalidArgument,
-                "audio startup delivery belongs to another channel",
-            ));
-        }
         let wakeup_for_thread = wakeup.clone();
         let handle = thread::Builder::new()
             .name("Migo-AudioThread".into())
@@ -1171,16 +1023,7 @@ impl AudioThread {
                     let _interruptions = crate::apple_session::watch_interruptions(host_tx.clone());
                     // A device, or silence until one appears: never no output, so a
                     // game's audio runs on a machine that cannot play it.
-                    let output = match AudioOutput::new(cpu.clone()) {
-                        Ok(output) => output,
-                        Err(error) => {
-                            // Preserve queued payload custody on startup refusal.
-                            let _inbox =
-                                crate::command_inbox::Inbox::new(rx, startup_backlog, cpu.clone());
-                            warn!("AudioThread output startup admission rejected: {error}");
-                            return;
-                        }
-                    };
+                    let output = AudioOutput::new();
 
                     info!("AudioThread (lazy) started");
                     run_audio_thread(
@@ -1478,7 +1321,6 @@ fn wait_for_audio_work(wakeup: &ThreadWakeup, mode: AudioWaitMode) {
 ///
 /// Its own function so that ordering is observable without an audio device, which
 /// `run_audio_thread` needs and a host test cannot provide.
-#[cfg(test)]
 fn next_command(
     startup_backlog: &mut std::vec::IntoIter<AudioCmd>,
     rx: &AudioCommandReceiver,
@@ -1571,7 +1413,7 @@ impl DeviceSearch {
 /// wake it without waiting for the next timed tick.
 fn run_audio_thread(
     rx: AudioCommandReceiver,
-    startup_backlog: Vec<AudioCommandDelivery>,
+    startup_backlog: Vec<AudioCmd>,
     mut output: AudioOutput,
     host_tx: HostTx,
     wakeup: ThreadWakeup,
@@ -1582,68 +1424,27 @@ fn run_audio_thread(
     output.bind_wakeup(&wakeup);
     // Consumed ahead of the channel in the drain below, so the commands the
     // service buffered before this thread existed keep their place in the order.
-    let mut inbox = crate::command_inbox::Inbox::new(rx, startup_backlog, cpu.clone());
+    let mut startup_backlog = startup_backlog.into_iter();
     let mut sample_rate = output.sample_rate();
     let mut channels = output.channels();
 
-    let index = match output.storage_host() {
-        Some(host) => NodeContextIndex::with_host(host.for_channels(channels)),
-        None => NodeContextIndex::new_managed(
-            cpu.clone(),
-            AudioAggregateLedger::process_global(),
-            channels,
-        ),
-    };
-    let mut node_index = match index {
-        Ok(index) => index,
-        Err(error) => {
-            warn!("AudioThread node index startup admission rejected: {error}");
-            return;
-        }
-    };
-
-    // Pre-allocate with reasonable capacity to avoid rehashing
-    let mut contexts = match context_table::ContextTable::new(node_index.storage_host()) {
-        Ok(contexts) => contexts,
-        Err(error) => {
-            warn!("AudioThread context table startup admission rejected: {error}");
-            return;
-        }
-    };
-    let mut device_mixer =
-        crate::device_prepare::DeviceMixer::managed(cpu.clone(), node_index.storage_host());
-
-    // InnerAudioContext players with pre-allocated capacity
-    let mut inner_players = match inner_collection::InnerPlayers::new(node_index.storage_host()) {
-        Ok(players) => players,
-        Err(error) => {
-            warn!("AudioThread inner player startup admission rejected: {error}");
-            return;
-        }
-    };
-
+    let mut node_index = NodeContextIndex::new();
+    let mut contexts: HashMap<AudioContextId, AudioContext> = HashMap::with_capacity(4);
+    let mut device_mixer = crate::device_prepare::DeviceMixer::new(cpu.clone());
+    let mut inner_players = inner_collection::InnerPlayers::new();
     // MediaAudioPlayer: maps player_id -> list of InnerAudioContext source IDs
-    let mut media_players = match media_membership::MediaPlayers::new(node_index.storage_host()) {
-        Ok(players) => players,
-        Err(error) => {
-            warn!("AudioThread media membership startup admission rejected: {error}");
-            return;
-        }
-    };
+    let mut media_players = media_membership::MediaPlayers::new();
 
     // Cache backing keeps its physical credit through final CPU disposal.
-    let audio_cache = GlobalAudioCache::managed(cpu.clone(), node_index.storage_host());
+    let audio_cache = GlobalAudioCache::new();
 
     // Per-host and lazy: local audio never builds an HTTP pool, while every
     // remote cache miss after the first reuses the same DNS/TCP/TLS/H2 state.
     let mut streaming_client = LazyStreamingClient::new(http_client_factory);
 
     // Channel for receiving decode+resample results from worker threads.
-    let (decode_tx, decode_rx) = result_custody::channel::<DecodeResult>(
-        DECODE_RESULT_QUEUE_CAPACITY,
-        MAX_DECODE_RESULT_QUEUED_BYTES,
-        cpu.clone(),
-    );
+    let (decode_tx, decode_rx) =
+        decode_queue::<DecodeResult>(DECODE_RESULT_QUEUE_CAPACITY, MAX_DECODE_RESULT_QUEUED_BYTES);
 
     // The fixed-size pool starts only if a decode job arrives. Once started,
     // its two workers persist for the audio thread's lifetime.
@@ -1652,14 +1453,7 @@ fn run_audio_thread(
     // One render quantum, resized only when device channel layout changes.
     let mut process_frames = calculate_process_frames(sample_rate);
     let mut buffer_size = process_frames * channels as usize;
-    let mut process_buffer =
-        match mix_buffer::MixBuffer::new(node_index.storage_host(), buffer_size) {
-            Ok(buffer) => buffer,
-            Err(error) => {
-                warn!("AudioThread mix buffer startup admission rejected: {error}");
-                return;
-            }
-        };
+    let mut process_buffer = mix_buffer::MixBuffer::new(buffer_size);
 
     // Get sync handle for callback-driven wakeup
     let mut sync = output.sync().clone();
@@ -1708,65 +1502,11 @@ fn run_audio_thread(
         }
         let mut cmd_count = 0usize;
         while cmd_count < AUDIO_COMMANDS_PER_DRAIN {
-            let delivery = match inbox.next() {
+            let cmd = match next_command(&mut startup_backlog, &rx) {
                 Some(c) => c,
                 None => break,
             };
             cmd_count += 1;
-            let Some(delivery) = command_rejection::forward(
-                delivery,
-                &mut contexts,
-                &node_index,
-                &inner_players,
-                &mut inbox,
-            ) else {
-                continue;
-            };
-            let Some(delivery) = decode_rejection::forward(
-                delivery,
-                &contexts,
-                &mut inner_players,
-                &mut decode_pool,
-                &mut inbox,
-            ) else {
-                continue;
-            };
-            let delivery = match replacement_input::forward(
-                delivery,
-                &mut contexts,
-                &node_index,
-                &mut inbox,
-            ) {
-                replacement_input::Forward::Next(delivery) => delivery,
-                replacement_input::Forward::Handled(started) => {
-                    #[cfg(any(target_os = "ios", test))]
-                    if let Some((ctx_id, node_id)) = started {
-                        request_playback_resume!(PlaybackIntent::Source(ctx_id, node_id));
-                    }
-                    #[cfg(not(any(target_os = "ios", test)))]
-                    let _ = started;
-                    continue;
-                }
-            };
-            let Some(delivery) = command_copy::forward(delivery, &mut contexts, &mut inbox) else {
-                continue;
-            };
-            let Some(delivery) =
-                command_parameters::forward(delivery, &mut contexts, &node_index, &mut inbox)
-            else {
-                continue;
-            };
-            let Some(delivery) =
-                command_frequency::forward(delivery, &mut contexts, &node_index, &mut inbox)
-            else {
-                continue;
-            };
-            let Some(delivery) =
-                command_iir::forward(delivery, &mut contexts, &mut node_index, &mut inbox)
-            else {
-                continue;
-            };
-            let (cmd, _command_credit) = delivery.into_parts();
             match cmd {
                 AudioCmd::Shutdown => {
                     return;
@@ -1798,7 +1538,7 @@ fn run_audio_thread(
                     sample_rate: req_rate,
                 } => {
                     let rate = req_rate.unwrap_or(sample_rate);
-                    if !create_context_scoped(&mut contexts, ctx_id, rate, channels, Some(&cpu)) {
+                    if !create_context_scoped(&mut contexts, ctx_id, rate, channels) {
                         warn!(
                             "CreateContext rejected duplicate or unavailable AudioContext id {ctx_id}"
                         );
@@ -1810,7 +1550,12 @@ fn run_audio_thread(
                 }
 
                 AudioCmd::ReleaseAllContexts => {
-                    handle_owned_release_all_contexts(&mut inbox, &mut contexts, &mut node_index);
+                    handle_release_all_contexts(
+                        &mut startup_backlog,
+                        &rx,
+                        &mut contexts,
+                        &mut node_index,
+                    );
                 }
 
                 AudioCmd::CloseContext { ctx_id, resp } => {
@@ -2335,17 +2080,12 @@ fn run_audio_thread(
                 }
 
                 // ==================== MediaAudioPlayer ====================
-                AudioCmd::CreateMediaAudioPlayer { id } => match media_players.create(id) {
-                    Ok(()) => tracing::debug!("Created MediaAudioPlayer {}", id),
-                    Err(error) => warn!("MediaAudioPlayer {id} admission rejected: {error}"),
-                },
+                AudioCmd::CreateMediaAudioPlayer { id } => media_players.create(id),
                 AudioCmd::MediaAudioPlayerAddSource {
                     player_id,
                     source_id,
                 } => {
-                    if let Err(error) = media_players.add_source(player_id, source_id) {
-                        warn!("MediaAudioPlayer {player_id} source admission rejected: {error}");
-                    }
+                    media_players.add_source(player_id, source_id);
                 }
                 AudioCmd::MediaAudioPlayerRemoveSource {
                     player_id,
@@ -2368,10 +2108,8 @@ fn run_audio_thread(
 
                 // ==================== InnerAudioContext ====================
                 AudioCmd::CreateInnerAudio { id } => {
-                    match inner_players.create_with(id, || {
-                        Ok(new_inner_audio_player(id, channels, &cpu)
-                            .with_rate_host(node_index.storage_host()))
-                    }) {
+                    match inner_players.create_with(id, || Ok(new_inner_audio_player(id, channels)))
+                    {
                         Ok(true) => tracing::debug!("Created InnerAudioContext {}", id),
                         Ok(false) => {}
                         Err(error) => warn!("InnerAudioContext {id} admission rejected: {error}"),
@@ -2603,8 +2341,8 @@ fn run_audio_thread(
         //     Worker threads send decoded audio back here so we can
         //     integrate the buffers without blocking the audio loop.
         // -----------------------------------------------------------------
-        while let Ok(result) = decode_rx.try_recv_owned() {
-            result_custody::integrate(result, &contexts, &mut inner_players);
+        while let Ok(result) = decode_rx.try_recv() {
+            integrate_decode_result(result, &contexts, &mut inner_players);
         }
 
         device_mixer.service(
@@ -2717,9 +2455,9 @@ fn run_audio_thread(
             let now = Instant::now();
             let replacement = output_retry.attempt(now, || {
                 let replacement = if !output.is_alive() {
-                    Some(AudioOutput::with_host(&node_index.storage_host())?)
+                    Some(AudioOutput::new())
                 } else if output.is_silent() && device_search.is_due(now) {
-                    match AudioOutput::open_device(&node_index.storage_host()) {
+                    match AudioOutput::open_device() {
                         Ok(device) => Some(device),
                         Err(e) => {
                             tracing::debug!("AudioThread: still no audio output device: {}", e);
@@ -2905,26 +2643,6 @@ fn run_audio_thread(
         );
     }
 }
-
-#[cfg(test)]
-#[path = "audio_thread_command_ownership_tests.rs"]
-mod command_ownership_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_parameter_retirement_tests.rs"]
-pub(crate) mod parameter_retirement_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_binding_retirement_tests.rs"]
-mod binding_retirement_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_context_retirement_tests.rs"]
-mod context_retirement_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_node_retirement_tests.rs"]
-mod node_retirement_tests;
 
 #[cfg(test)]
 mod tests {
@@ -3511,8 +3229,6 @@ mod tests {
 
     #[test]
     fn decode_job_and_result_transports_are_bounded_and_nonblocking() {
-        super::decode_rejection::tests::decode_refusals();
-        super::command_copy::tests::completed_inputs();
         let host = migo_io::scheduler::IoScheduler::new(0);
         let (tx, _rx) = decode_queue(8, MAX_DECODE_RESULT_QUEUED_BYTES);
         let mut pool = DecodePool::new(0, tx, ThreadWakeup::new(), host.audio_cpu());
@@ -3705,7 +3421,6 @@ mod tests {
 
     #[test]
     fn decode_receiver_exit_releases_queued_permits() {
-        super::result_custody_tests::custody();
         let (job_tx, job_rx) = decode_queue(2, 8);
         job_tx.try_send(inner_decode_job(30).0).unwrap();
         assert_eq!(
@@ -3746,7 +3461,6 @@ mod tests {
 
     #[test]
     fn release_buffer_is_idempotent_and_never_scans_other_contexts() {
-        super::context_retirement_tests::registry_and_cow();
         let mut contexts = HashMap::new();
         let mut first = AudioContext::new(1, 48_000, 2);
         let mut second = AudioContext::new(2, 48_000, 2);
@@ -3765,7 +3479,6 @@ mod tests {
 
     #[test]
     fn release_context_is_idempotent_and_clears_the_node_index() {
-        super::context_retirement_tests::close_and_drop();
         let mut contexts = HashMap::new();
         let mut context = AudioContext::new(7, 48_000, 2);
         context.create_buffer_source(70);
@@ -3784,7 +3497,6 @@ mod tests {
 
     #[test]
     fn release_all_barrier_discards_old_backlog_and_full_queue_before_ack() {
-        super::command_ownership_tests::restart_and_shutdown();
         let (tx, rx) = shared::audio_channel::channel();
         for ctx_id in 100..100 + shared::audio_channel::AUDIO_COMMAND_CAPACITY as u32 {
             tx.try_send(create_context(ctx_id))
@@ -3834,13 +3546,7 @@ mod tests {
                 sample_rate,
             } = cmd
             {
-                create_context_scoped(
-                    &mut contexts,
-                    ctx_id,
-                    sample_rate.unwrap_or(48_000),
-                    2,
-                    None,
-                );
+                create_context_scoped(&mut contexts, ctx_id, sample_rate.unwrap_or(48_000), 2);
             }
         }
         assert!(
@@ -3853,8 +3559,8 @@ mod tests {
     fn duplicate_create_context_is_a_no_op_that_preserves_the_original() {
         let mut contexts = HashMap::new();
 
-        assert!(create_context_scoped(&mut contexts, 9, 44_100, 2, None));
-        assert!(!create_context_scoped(&mut contexts, 9, 48_000, 1, None));
+        assert!(create_context_scoped(&mut contexts, 9, 44_100, 2));
+        assert!(!create_context_scoped(&mut contexts, 9, 48_000, 1));
 
         let context = contexts.get(&9).unwrap();
         assert_eq!(context.sample_rate(), 44_100);
@@ -3880,7 +3586,6 @@ mod tests {
 
     #[test]
     fn a_live_decode_answers_its_samples_and_leaves_the_context_untouched() {
-        super::response_custody_tests::ownership();
         let mut contexts = HashMap::new();
         contexts.insert(13, AudioContext::new(13, 48_000, 2));
         let (resp, mut receiver) = tokio::sync::oneshot::channel();
@@ -4103,7 +3808,6 @@ mod tests {
 
     #[test]
     fn production_context_mix_uses_mature_sinc_and_unregisters_real_node_ids() {
-        super::node_retirement_tests::production_drop_and_overflow();
         let owner = migo_io::scheduler::IoScheduler::new(0);
         let mut mixer = crate::device_prepare::DeviceMixer::new(owner.audio_cpu());
         let mut context = AudioContext::new(1, 44_100, 1);
@@ -4218,8 +3922,6 @@ mod tests {
 
     #[test]
     fn set_buffer_rejects_claimed_context_that_does_not_own_node() {
-        super::command_iir::tests::construction_inputs();
-        super::binding_retirement_tests::legacy_rebindings();
         let mut contexts = HashMap::new();
         let mut first = AudioContext::new(1, 48_000, 2);
         let mut second = AudioContext::new(2, 48_000, 2);
@@ -4254,9 +3956,6 @@ mod tests {
 
     #[test]
     fn snapshot_buffer_commands_validate_context_and_node_ownership() {
-        super::replacement_input::tests::replacement_inputs();
-        super::command_rejection::tests::rejected_payloads();
-        super::binding_retirement_tests::snapshot_rebindings();
         let mut contexts = HashMap::new();
         let mut first = AudioContext::new(1, 48_000, 2);
         first.create_buffer_source(10);
@@ -4314,9 +4013,6 @@ mod tests {
     /// behind a newer one.
     #[test]
     fn the_startup_backlog_runs_before_anything_still_in_the_channel() {
-        super::command_ownership_tests::owned_fifo();
-        super::command_frequency::tests::frequency_inputs();
-        super::command_parameters::tests::parameter_inputs();
         let (tx, rx) = shared::audio_channel::channel();
         tx.try_send(create_context(30)).unwrap();
         tx.try_send(create_context(40)).unwrap();
@@ -4388,8 +4084,6 @@ mod tests {
     /// measured window is genuine steady state rather than a drain.
     #[test]
     fn a_steady_state_audio_thread_tick_never_reaches_the_heap() {
-        super::binding_retirement_tests::curve_replacements();
-        super::node_retirement_tests::held_credit_and_closed_host();
         const OUTPUT_CHANNELS: u32 = 2;
         const SAMPLE_RATE: u32 = 48_000;
         // One block per tick, and one chunk in per block out, so nothing drifts.
@@ -4608,166 +4302,10 @@ fn service_players_caches_and_attaches_the_source_timeline() {
     assert!(players[&908].loading_url().is_none());
 }
 
-#[cfg(test)]
-pub(crate) fn cache_retirement_service_probe(
-    cpu: migo_io::audio_cpu::AudioCpu,
-    ledger: Arc<AudioAggregateLedger>,
-) -> (GlobalAudioCache, HashMap<InnerAudioId, InnerAudioPlayer>) {
-    use crate::streaming::{
-        PcmPool, StreamMsg, StreamRevision, StreamTimeline, StreamingState, stream_channel,
-    };
-    let rate = 768000;
-    let frames = (4 << 20) / 8;
-    let timeline = StreamTimeline::new(frames as u64, rate, rate, 2).unwrap();
-    let state = StreamingState::new();
-    state.bind_timeline(timeline).unwrap();
-    let (tx, rx) = stream_channel();
-    let mut player = InnerAudioPlayer::new_with_aggregate(909, 2, ledger.clone());
-    player
-        .start_streaming("cached retirement".into(), rx, state)
-        .unwrap();
-    assert!(
-        tx.try_send(StreamMsg::Ready {
-            revision: StreamRevision::INITIAL,
-            sample_rate: rate,
-            channels: 2
-        })
-        .is_ok()
-    );
-    let mut pool = PcmPool::new();
-    let mut pcm = pool.take();
-    pcm.buffer_mut().extend((0..frames * 2).map(|i| {
-        if i == 0 {
-            -0.0
-        } else {
-            (i % 31) as f32 / 32.0 - 0.5
-        }
-    }));
-    assert!(
-        tx.try_send(StreamMsg::Samples {
-            revision: StreamRevision::INITIAL,
-            pcm
-        })
-        .is_ok()
-    );
-    assert!(
-        tx.try_send(StreamMsg::Done {
-            revision: StreamRevision::INITIAL
-        })
-        .is_ok()
-    );
-    let mut players = HashMap::from([(909, player)]);
-    let cache = GlobalAudioCache::with_cpu(cpu);
-    service_players(&mut players, &cache, |_| {});
-    let cached = cache
-        .get("cached retirement")
-        .expect("production service did not adopt completed PCM");
-    assert_eq!(
-        cached.source_timeline(),
-        Some(timeline),
-        "production cache lost source timeline"
-    );
-    assert_eq!(
-        cached.samples.len(),
-        frames * 2,
-        "production cache lost complete PCM"
-    );
-    assert!(
-        cached.samples.iter().enumerate().all(|(i, v)| v.to_bits()
-            == (if i == 0 {
-                -0.0
-            } else {
-                (i % 31) as f32 / 32.0 - 0.5
-            })
-            .to_bits()),
-        "production cache changed complete PCM bits"
-    );
-    assert_eq!(
-        ledger.used_bytes(),
-        cached.samples.capacity() * 4,
-        "production cache duplicated stream credit"
-    );
-    assert!(players[&909].loading_url().is_none());
-    (cache, players)
+pub(crate) fn new_inner_audio_player(id: InnerAudioId, channels: u32) -> InnerAudioPlayer {
+    InnerAudioPlayer::new(id, channels)
 }
-
-#[path = "decode_result_custody.rs"]
-mod result_custody;
-#[cfg(test)]
-#[path = "decode_result_custody_tests.rs"]
-mod result_custody_tests;
-
-#[path = "decode_response_custody.rs"]
-mod response_custody;
-#[cfg(test)]
-#[path = "decode_response_custody_tests.rs"]
-mod response_custody_tests;
-
-#[path = "decode_inner_custody.rs"]
-mod inner_custody;
-#[cfg(test)]
-#[path = "decode_inner_custody_tests.rs"]
-mod inner_custody_tests;
-
-pub(crate) fn new_inner_audio_player(
-    id: InnerAudioId,
-    channels: u32,
-    cpu: &migo_io::audio_cpu::AudioCpu,
-) -> InnerAudioPlayer {
-    InnerAudioPlayer::new_with_cpu(id, channels, cpu.clone())
-}
-#[cfg(test)]
-pub(crate) fn inner_source_cache_service(
-    players: &mut impl PlayerAccess,
-    cache: &GlobalAudioCache,
-) {
-    service_players(players, cache, |_| {});
-}
-
-#[cfg(test)]
-#[path = "decode_physical_custody_tests.rs"]
-mod physical_custody_tests;
 
 #[cfg(test)]
 #[path = "audio_thread_filter_storage_tests.rs"]
 mod filter_storage_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_waveshaper_storage_tests.rs"]
-mod waveshaper_storage_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_param_storage_tests.rs"]
-mod param_storage_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_render_buffer_tests.rs"]
-mod render_buffer_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_graph_storage_tests.rs"]
-mod graph_storage_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_graph_table_tests.rs"]
-mod graph_table_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_context_construction_tests.rs"]
-mod context_construction_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_node_index_tests.rs"]
-mod node_index_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_media_players_tests.rs"]
-mod media_membership_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_inner_players_tests.rs"]
-mod inner_collection_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_context_table_tests.rs"]
-mod context_table_tests;

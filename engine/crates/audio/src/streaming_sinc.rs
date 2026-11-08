@@ -70,7 +70,6 @@ pub(crate) struct Stream {
     eof: bool,
     finished: bool,
     error: Option<ErrorCode>,
-    pub(crate) deferred_retirement: bool,
 }
 impl Stream {
     pub(crate) fn new(
@@ -128,7 +127,6 @@ impl Stream {
             eof: false,
             finished: false,
             error: None,
-            deferred_retirement: false,
         })
     }
     pub(crate) fn is_preparing(&self) -> bool {
@@ -180,10 +178,6 @@ impl Stream {
             .transpose()
     }
     fn retire(&mut self, code: ErrorCode) {
-        if self.deferred_retirement {
-            let _ = self.error.replace(code);
-            return;
-        }
         self.layers = Vec::new();
         self.rates = Vec::new();
         self.error = Some(code);

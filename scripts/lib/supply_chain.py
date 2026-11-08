@@ -125,6 +125,10 @@ def validate_actions(
     use_line = re.compile(
         r"^\s*(?:-\s*)?(?:uses|['\"]uses['\"])\s*:\s*([^\s#]+)"
     )
+    # A hosted runner image is a CI input like an Action revision. `*-latest`
+    # moved ubuntu to 26.04 in 2026-10, which dropped the clang-18 that
+    # engine/.cargo/config.toml names, and every host job turned red at once.
+    floating_runner = re.compile(r"\b(?:ubuntu|windows|macos)-latest\b")
     for path in files:
         relative = path.relative_to(workflows_dir).as_posix()
         if relative in excluded or path.name in excluded:
@@ -135,6 +139,13 @@ def validate_actions(
             errors.append(f"{relative}: cannot read: {exc}")
             continue
         for number, line in enumerate(lines, start=1):
+            code = re.sub(r"(?:^|\s)#.*$", "", line)
+            runner = floating_runner.search(code)
+            if runner:
+                errors.append(
+                    f"{relative}:{number}: hosted runner image must be pinned, "
+                    f"not {runner.group(0)}"
+                )
             match = use_line.match(line)
             if not match:
                 continue

@@ -45,24 +45,13 @@ pub struct SilentOutput {
 }
 
 impl SilentOutput {
-    #[cfg(test)]
-    pub fn new() -> Self {
-        Self::with_host(None).unwrap()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn managed_for_test(host: &crate::node_retirement::Host) -> Self {
-        Self::with_host(Some(host)).unwrap()
-    }
-
-    pub(super) fn with_host(
-        host: Option<&crate::node_retirement::Host>,
-    ) -> shared::error::EngineResult<Self> {
+    pub(crate) fn new() -> Self {
         let channels = SILENT_CHANNELS as usize;
-        let sync = AudioSync::with_host(host)?;
-        let (producer, consumer) = ring::new(RING_BUFFER_FRAMES * channels, host)?;
+        let sync = AudioSync::new();
+        let (producer, consumer) =
+            ring::new(RING_BUFFER_FRAMES * channels).expect("the silent ring has a fixed size");
         let low_watermark_samples = LOW_WATERMARK_FRAMES * channels;
-        Ok(Self {
+        Self {
             producer,
             callback: OutputCallback::new(consumer, sync.clone(), low_watermark_samples),
             sync,
@@ -70,11 +59,7 @@ impl SilentOutput {
             high_watermark_samples: HIGH_WATERMARK_FRAMES * channels,
             started: None,
             consumed: 0,
-        })
-    }
-
-    pub(super) fn storage_host(&self) -> Option<crate::node_retirement::Host> {
-        ring::host(&self.producer)
+        }
     }
 
     #[inline]

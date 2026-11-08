@@ -9,7 +9,7 @@
 
 use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use shared::error::{EngineError, EngineResult, ErrorCode};
 
@@ -43,11 +43,6 @@ pub const MAX_AUDIO_CACHE_BYTES: usize = MAX_CONTEXT_RETAINED_PCM_BYTES;
 pub const MAX_AUDIO_AGGREGATE_PHYSICAL_BYTES: usize = MAX_PROCESS_RETAINED_PCM_BYTES
     + MAX_CONTEXT_RETAINED_PCM_BYTES
     + (MAX_AUDIO_PCM_BYTES as usize * 2);
-
-const _: () = assert!(
-    MAX_AUDIO_AGGREGATE_PHYSICAL_BYTES
-        == shared::audio_physical::MAX_AUDIO_AGGREGATE_PHYSICAL_BYTES
-);
 
 /// Maximum channel count accepted for a buffer (Web Audio permits up to 32).
 pub const MAX_AUDIO_CHANNELS: u32 = 32;
@@ -134,7 +129,105 @@ pub(crate) struct PcmUsageSnapshot {
     pub buffers: usize,
 }
 
-pub(crate) use shared::audio_physical::{AudioAggregateLedger, AudioAggregatePermit};
+/// Process-wide physical PCM ledger shared by every audio allocation domain.
+#[derive(Debug)]
+pub(crate) struct AudioAggregateLedger {
+    max_bytes: usize,
+    bytes: AtomicUsize,
+}
+
+impl AudioAggregateLedger {
+    pub(crate) fn new(max_bytes: usize) -> Self {
+        Self {
+            max_bytes,
+            bytes: AtomicUsize::new(0),
+        }
+    }
+
+    pub(crate) fn process_global() -> Arc<Self> {
+        static PROCESS_LEDGER: LazyLock<Arc<AudioAggregateLedger>> = LazyLock::new(|| {
+            Arc::new(AudioAggregateLedger::new(
+                MAX_AUDIO_AGGREGATE_PHYSICAL_BYTES,
+            ))
+        });
+        Arc::clone(&PROCESS_LEDGER)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn used_bytes(&self) -> usize {
+        self.bytes.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn try_reserve(
+        self: &Arc<Self>,
+        bytes: usize,
+        scope: &'static str,
+    ) -> EngineResult<AudioAggregatePermit> {
+        self.bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                used.checked_add(bytes)
+                    .filter(|next| *next <= self.max_bytes)
+            })
+            .map_err(|_| {
+                EngineError::from_detail(
+                    ErrorCode::InputSaturated,
+                    format!("{scope} aggregate physical PCM limit exceeded"),
+                )
+            })?;
+        Ok(AudioAggregatePermit {
+            ledger: Arc::clone(self),
+            bytes,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct AudioAggregatePermit {
+    ledger: Arc<AudioAggregateLedger>,
+    bytes: usize,
+}
+
+impl Drop for AudioAggregatePermit {
+    fn drop(&mut self) {
+        self.ledger.bytes.fetch_sub(self.bytes, Ordering::AcqRel);
+    }
+}
+
+impl AudioAggregatePermit {
+    pub(crate) fn try_grow_to(
+        &mut self,
+        new_bytes: usize,
+        scope: &'static str,
+    ) -> EngineResult<()> {
+        if new_bytes <= self.bytes {
+            return Ok(());
+        }
+        let additional = new_bytes - self.bytes;
+        self.ledger
+            .bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                used.checked_add(additional)
+                    .filter(|next| *next <= self.ledger.max_bytes)
+            })
+            .map_err(|_| {
+                EngineError::from_detail(
+                    ErrorCode::InputSaturated,
+                    format!("{scope} aggregate physical PCM limit exceeded"),
+                )
+            })?;
+        self.bytes = new_bytes;
+        Ok(())
+    }
+
+    pub(crate) fn shrink_to(&mut self, new_bytes: usize) {
+        if new_bytes < self.bytes {
+            self.ledger
+                .bytes
+                .fetch_sub(self.bytes - new_bytes, Ordering::AcqRel);
+            self.bytes = new_bytes;
+        }
+    }
+}
 
 /// One atomic aggregate counter. Process usage is shared across audio threads;
 /// context usage uses the same implementation so permits can outlive the map.

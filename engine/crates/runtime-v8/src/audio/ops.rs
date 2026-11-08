@@ -399,31 +399,20 @@ pub fn op_audio_release_buffer(state: Rc<RefCell<OpState>>, #[smi] buffer_id: Au
     release_global_audio_buffer(&state, buffer_id);
 }
 
-pub struct MaterializedAudioBacking(shared::audio_resources::AudioPlanarBacking);
-impl<'a> deno_core::ToV8<'a> for MaterializedAudioBacking {
-    type Error = AudioError;
-    fn to_v8<'i>(
-        self,
-        scope: &mut v8::PinScope<'a, 'i>,
-    ) -> Result<v8::Local<'a, v8::Value>, Self::Error> {
-        let backing = v8::ArrayBuffer::new_backing_store_from_bytes(Box::new(self.0)).make_shared();
-        Ok(v8::ArrayBuffer::with_backing_store(scope, &backing).into())
-    }
-}
-
 #[op2]
+#[arraybuffer]
 pub fn op_audio_materialize_buffer(
     state: Rc<RefCell<OpState>>,
     #[smi] buffer_id: AudioBufferId,
-) -> Result<MaterializedAudioBacking, AudioError> {
+) -> Result<Vec<f32>, AudioError> {
     let (tx, runtime_generation) = audio_scope(&state);
-    Ok(MaterializedAudioBacking(service::materialize_owned_buffer(
+    Ok(service::materialize_buffer(
         BufferScope {
             tx: &tx,
             runtime_generation,
         },
         buffer_id,
-    )?))
+    )?)
 }
 
 #[op2(fast)]
@@ -1033,8 +1022,8 @@ pub struct AnalyserBuffer(service::AnalyserData);
 impl AsMut<[u8]> for AnalyserBuffer {
     fn as_mut(&mut self) -> &mut [u8] {
         match &mut self.0 {
-            service::AnalyserData::Bytes(bytes) => bytes.as_mut(),
-            service::AnalyserData::Floats(floats) => bytemuck::cast_slice_mut(floats.as_mut()),
+            service::AnalyserData::Bytes(bytes) => bytes,
+            service::AnalyserData::Floats(floats) => bytemuck::cast_slice_mut(floats),
         }
     }
 }
@@ -1057,7 +1046,7 @@ impl<'a> deno_core::ToV8<'a> for AnalyserBuffer {
 }
 fn analyser_buffer(mut data: service::AnalyserData) -> AnalyserBuffer {
     if let service::AnalyserData::Floats(floats) = &mut data {
-        for sample in floats.as_mut() {
+        for sample in floats.iter_mut() {
             *sample = f32::from_bits(sample.to_bits().to_le());
         }
     }
@@ -1090,7 +1079,7 @@ pub async fn op_audio_analyser_float_time_domain(
 pub async fn op_audio_analyser_byte_frequency(
     state: Rc<RefCell<OpState>>,
     #[smi] node_id: AudioNodeId,
-) -> Result<shared::audio_analyser_samples::AnalyserSamples<u8>, AudioError> {
+) -> Result<Vec<u8>, AudioError> {
     match read_analyser(state, service::AnalyserRead::ByteFrequency, node_id).await? {
         service::AnalyserData::Bytes(bytes) => Ok(bytes),
         service::AnalyserData::Floats(_) => unreachable!("a byte read answers bytes"),
@@ -1103,7 +1092,7 @@ pub async fn op_audio_analyser_byte_frequency(
 pub async fn op_audio_analyser_float_frequency(
     state: Rc<RefCell<OpState>>,
     #[smi] node_id: AudioNodeId,
-) -> Result<shared::audio_analyser_samples::AnalyserSamples<f32>, AudioError> {
+) -> Result<Vec<f32>, AudioError> {
     match read_analyser(state, service::AnalyserRead::FloatFrequency, node_id).await? {
         service::AnalyserData::Floats(floats) => Ok(floats),
         service::AnalyserData::Bytes(_) => unreachable!("a float read answers floats"),
@@ -1118,7 +1107,7 @@ pub async fn op_audio_get_frequency_response(
     state: Rc<RefCell<OpState>>,
     #[smi] node_id: AudioNodeId,
     #[buffer] frequencies: JsBuffer,
-) -> Result<shared::audio_frequency_response::FrequencyResponse, AudioError> {
+) -> Result<(Vec<f32>, Vec<f32>), AudioError> {
     let tx = get_audio_tx(state);
     Ok(service::get_frequency_response(&tx, node_id, &frequencies)?
         .answer()
@@ -1716,13 +1705,10 @@ mod tests {
         assert!(buffer.contains("internal.token !== DECODED_BUFFER_TOKEN"));
         assert!(!buffer.contains("static _fromDecoded"));
         let reserve = buffer.find("op_audio_reserve_buffer").unwrap();
-        let allocate = buffer.find("op_audio_materialize_buffer(id)").unwrap();
-        let initialize = buffer
-            .find("this.#initialize(id, numberOfChannels, length, sampleRate, backing)")
-            .unwrap();
+        let allocate = buffer.find("new ArrayBuffer").unwrap();
         let abort = buffer.find("op_audio_abort_buffer(id)").unwrap();
         assert!(
-            reserve < allocate && allocate < initialize && initialize < abort,
+            reserve < allocate && allocate < abort,
             "reserve/allocate/abort ordering"
         );
         assert!(
@@ -2150,69 +2136,4 @@ mod tests {
             .expect("remote audio must use the shared gate");
         assert!(admit < gate);
     }
-    #[test]
-    fn frequency_response_serde_v8_keeps_owned_arrays_until_conversion_finishes() {
-        use shared::audio_frequency_response::{FrequencyResponse, FrequencyResponseStorage};
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        };
-        struct Storage {
-            data: (Vec<f32>, Vec<f32>),
-            dropped: Arc<AtomicBool>,
-        }
-        impl FrequencyResponseStorage for Storage {
-            fn values(&self) -> (&[f32], &[f32]) {
-                assert!(!self.dropped.load(Ordering::Acquire));
-                (&self.data.0, &self.data.1)
-            }
-        }
-        impl Drop for Storage {
-            fn drop(&mut self) {
-                self.dropped.store(true, Ordering::Release);
-            }
-        }
-        crate::install_icu_data();
-        let executor = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let _guard = executor.enter();
-        let mut runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions::default());
-        let dropped = Arc::new(AtomicBool::new(false));
-        let response = FrequencyResponse::new(Storage {
-            data: (
-                vec![0.0, -0.0, 1.5, f32::INFINITY, f32::NAN],
-                vec![-2.0, 0.5, 3.25, f32::NEG_INFINITY, 0.0],
-            ),
-            dropped: dropped.clone(),
-        });
-        deno_core::scope!(scope, runtime);
-        let value = deno_core::serde_v8::to_v8(scope, &response).unwrap();
-        assert!(
-            !dropped.load(Ordering::Acquire),
-            "V8 serialization detached response storage"
-        );
-        let (mag, phase): (Vec<f32>, Vec<f32>) =
-            deno_core::serde_v8::from_v8(scope, value).unwrap();
-        assert_eq!(
-            mag[..4].iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-            [0.0_f32, -0.0, 1.5, f32::INFINITY].map(f32::to_bits)
-        );
-        assert!(mag[4].is_nan());
-        assert_eq!(
-            phase.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-            [-2.0_f32, 0.5, 3.25, f32::NEG_INFINITY, 0.0].map(f32::to_bits)
-        );
-        drop(response);
-        assert!(dropped.load(Ordering::Acquire), "V8 response owner leaked");
-    }
 }
-
-#[cfg(test)]
-#[path = "materialized_tests.rs"]
-mod materialized_tests;
-
-#[cfg(test)]
-#[path = "analyser_backing_tests.rs"]
-mod analyser_backing_tests;

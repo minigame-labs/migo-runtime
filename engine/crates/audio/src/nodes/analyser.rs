@@ -18,25 +18,13 @@ pub struct AnalyserNode {
     smoothing_time_constant: f32,
     write_pos: usize,
     channels: u32,
-    workspace: crate::node_retirement::Value<workspace::Workspace>,
-    workspace_host: Option<crate::node_retirement::Host>,
+    workspace: workspace::Workspace,
 }
 
 impl AnalyserNode {
-    #[cfg(test)]
     pub fn new(id: AudioNodeId, channels: u32) -> Self {
-        Self::new_with_retirement(id, channels, None).expect("unmanaged analyser admission")
-    }
-
-    pub(crate) fn new_with_retirement(
-        id: AudioNodeId,
-        channels: u32,
-        host: Option<&crate::node_retirement::Host>,
-    ) -> shared::error::EngineResult<Self> {
         let fft_size = 2048;
-        let reservation = workspace::Workspace::reserve(host, fft_size)?;
-        let workspace = reservation.finish(workspace::Workspace::new(fft_size));
-        Ok(Self {
+        Self {
             id,
             fft_size,
             min_decibels: -100.0,
@@ -44,48 +32,17 @@ impl AnalyserNode {
             smoothing_time_constant: 0.8,
             write_pos: 0,
             channels,
-            workspace,
-            workspace_host: host.cloned(),
-        })
-    }
-    pub(crate) fn prepare_workspace(
-        &mut self,
-        host: &crate::node_retirement::Host,
-    ) -> shared::error::EngineResult<()> {
-        if let Some(previous) = &self.workspace_host
-            && !previous.shares_physical_ledger(host)
-        {
-            return Err(shared::error::EngineError::from_detail(
-                shared::error::ErrorCode::InvalidArgument,
-                "analyser workspace belongs to another physical ledger",
-            ));
+            workspace: workspace::Workspace::new(fft_size),
         }
-        self.workspace
-            .prepare_with_bytes(host, self.workspace.capacity_bytes())?;
-        self.workspace_host = Some(host.clone());
-        Ok(())
     }
-    pub(crate) fn fft_size(&self) -> usize {
-        self.fft_size
-    }
-    #[cfg(test)]
     pub fn set_fft_size(&mut self, size: usize) {
-        if let Err(error) = self.try_set_fft_size(size) {
-            tracing::warn!("FFT workspace admission rejected: {error}");
-        }
-    }
-    pub(crate) fn try_set_fft_size(&mut self, size: usize) -> shared::error::EngineResult<()> {
         let size = size.next_power_of_two().clamp(32, 32768);
         if size == self.fft_size {
-            return Ok(());
+            return;
         }
-        let next =
-            workspace::Workspace::replacement(&self.workspace, size, self.workspace_host.as_ref())?;
-        let previous = std::mem::replace(&mut self.workspace, next);
+        self.workspace = workspace::Workspace::replacement(&self.workspace, size);
         self.fft_size = size;
         self.write_pos = 0;
-        previous.retire_replacement();
-        Ok(())
     }
 
     #[allow(dead_code)]
@@ -209,7 +166,7 @@ impl AnalyserNode {
             self.workspace.fft_im[i] = 0.0;
         }
 
-        let workspace = &mut *self.workspace;
+        let workspace = &mut self.workspace;
         Self::fft(
             &mut workspace.fft_re,
             &mut workspace.fft_im,
@@ -418,7 +375,3 @@ mod tests {
         assert_eq!(node.workspace.twiddles.len(), 2048);
     }
 }
-
-#[cfg(test)]
-#[path = "analyser_workspace_tests.rs"]
-mod workspace_tests;

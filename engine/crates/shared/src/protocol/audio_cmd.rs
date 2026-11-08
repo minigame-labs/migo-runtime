@@ -83,7 +83,17 @@ pub struct AudioBufferInfo {
     pub length: u32,
 }
 
-pub use crate::audio_decoded_pcm::DecodedPcm;
+/// A finished decode: interleaved samples at the context's rate.
+///
+/// `frames * channels == samples.len()`, which the decoder guarantees and the
+/// registry checks again when it adopts them.
+#[derive(Debug)]
+pub struct DecodedPcm {
+    pub sample_rate: u32,
+    pub channels: u32,
+    pub frames: u32,
+    pub samples: Vec<f32>,
+}
 
 /// Playback state of an AudioContext.
 ///
@@ -385,13 +395,13 @@ pub enum AudioCmd {
     /// Get AnalyserNode time domain data (byte)
     GetAnalyserByteTimeDomainData {
         node_id: AudioNodeId,
-        resp: AudioResp<crate::audio_analyser_samples::AnalyserSamples<u8>>,
+        resp: AudioResp<Vec<u8>>,
     },
 
     /// Get AnalyserNode time domain data (float)
     GetAnalyserFloatTimeDomainData {
         node_id: AudioNodeId,
-        resp: AudioResp<crate::audio_analyser_samples::AnalyserSamples<f32>>,
+        resp: AudioResp<Vec<f32>>,
     },
 
     // ==================== Phase 3 Nodes ====================
@@ -459,7 +469,7 @@ pub enum AudioCmd {
     GetFrequencyResponse {
         node_id: AudioNodeId,
         frequencies: Vec<f32>,
-        resp: AudioResp<crate::audio_frequency_response::FrequencyResponse>,
+        resp: AudioResp<(Vec<f32>, Vec<f32>)>,
     },
 
     /// Get current compression reduction from DynamicsCompressorNode
@@ -471,13 +481,13 @@ pub enum AudioCmd {
     /// Get frequency domain data from AnalyserNode (byte, after FFT)
     GetAnalyserByteFrequencyData {
         node_id: AudioNodeId,
-        resp: AudioResp<crate::audio_analyser_samples::AnalyserSamples<u8>>,
+        resp: AudioResp<Vec<u8>>,
     },
 
     /// Get frequency domain data from AnalyserNode (float, after FFT)
     GetAnalyserFloatFrequencyData {
         node_id: AudioNodeId,
-        resp: AudioResp<crate::audio_analyser_samples::AnalyserSamples<f32>>,
+        resp: AudioResp<Vec<f32>>,
     },
 
     // ==================== AudioParam Automation ====================

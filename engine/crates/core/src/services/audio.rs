@@ -2,7 +2,7 @@
 use audio::AudioThread;
 
 #[cfg(feature = "host-audio")]
-use shared::audio_channel::{AudioCommandDelivery, AudioCommandReceiver, AudioCommandSender};
+use shared::audio_channel::{AudioCommandReceiver, AudioCommandSender};
 // The restart barrier's: only an execution whose runtime restarts in place has
 // one. The external execution's generation is fixed for the session's life --
 // a restart there is a new session -- so it neither sends nor awaits it.
@@ -57,7 +57,7 @@ pub(crate) struct AudioService {
     /// Receiver end — held until the thread is started, then handed off.
     rx: Option<AudioCommandReceiver>,
     /// Commands dequeued before the thread starts (replayed on start).
-    pending: Vec<AudioCommandDelivery>,
+    pending: Vec<AudioCmd>,
     /// Handle to the spawned `AudioThread` (Some once started).
     thread: Option<AudioThread>,
     /// Host command sender — needed to construct `AudioThread`.
@@ -122,23 +122,17 @@ pub(crate) fn streaming_http_client_factory(
 ///
 /// Extracted because the handover itself needs an audio device and a host test
 /// cannot provide one, while this can be observed exactly.
-fn take_startup_backlog(
-    pending: &mut Vec<AudioCommandDelivery>,
-    is_paused: bool,
-) -> Vec<AudioCommandDelivery> {
-    let mut backlog: Vec<AudioCommandDelivery> = pending.drain(..).collect();
+fn take_startup_backlog(pending: &mut Vec<AudioCmd>, is_paused: bool) -> Vec<AudioCmd> {
+    let mut backlog: Vec<AudioCmd> = pending.drain(..).collect();
     if is_paused {
         // Last, so it wins over anything that asked for playback.
-        backlog.push(AudioCommandDelivery::unmanaged(AudioCmd::PauseAll));
+        backlog.push(AudioCmd::PauseAll);
     }
     backlog
 }
 
 #[cfg(feature = "host-audio")]
-fn complete_prestart_release_all_contexts(
-    rx: &AudioCommandReceiver,
-    pending: &mut Vec<AudioCommandDelivery>,
-) {
+fn complete_prestart_release_all_contexts(rx: &AudioCommandReceiver, pending: &mut Vec<AudioCmd>) {
     pending.clear();
     rx.discard_prestart_commands();
     rx.complete_release_all_contexts();
@@ -252,13 +246,13 @@ impl AudioService {
         }
 
         if let Some(ref mut rx) = self.rx {
-            while let Ok(cmd) = rx.try_recv_owned() {
-                if matches!(cmd.command(), AudioCmd::ReleaseAllContexts) {
+            while let Ok(cmd) = rx.try_recv() {
+                if matches!(cmd, AudioCmd::ReleaseAllContexts) {
                     complete_prestart_release_all_contexts(rx, &mut self.pending);
                     continue;
                 }
                 let is_lifecycle = matches!(
-                    cmd.command(),
+                    cmd,
                     AudioCmd::PauseAll | AudioCmd::ResumeAll | AudioCmd::Shutdown
                 );
                 self.pending.push(cmd);
@@ -297,7 +291,7 @@ impl AudioService {
             .rx
             .take()
             .expect("[BUG] AudioService::start_thread called twice");
-        let thread = AudioThread::spawn_with_owned_channel(
+        let thread = AudioThread::spawn_with_channel(
             self.tx.clone(),
             rx,
             startup_backlog,
@@ -529,36 +523,12 @@ mod tests {
     /// error path for.
     #[test]
     fn the_backlog_carries_every_buffered_command_in_arrival_order() {
-        let (tx, rx) = shared::audio_channel::channel();
-        tx.try_send(create_context(77)).unwrap();
-        let mut owned = vec![rx.try_recv_owned().unwrap()];
-        let handed = take_startup_backlog(&mut owned, false);
-        let mut permits = Vec::new();
-        for _ in 1..shared::audio_channel::AUDIO_COMMAND_CAPACITY {
-            permits.push(tx.try_reserve_data(0).unwrap());
-        }
-        assert!(
-            matches!(
-                tx.try_reserve_data(0),
-                Err(shared::audio_channel::AudioCommandReserveError::Full)
-            ),
-            "lazy startup returned command credit before handoff"
-        );
-        drop(handed);
-        assert!(tx.try_reserve_data(0).is_ok());
-
-        let mut pending = vec![create_context(1), create_context(2)]
-            .into_iter()
-            .map(AudioCommandDelivery::unmanaged)
-            .collect();
+        let mut pending = vec![create_context(1), create_context(2)];
 
         let backlog = take_startup_backlog(&mut pending, false);
 
         assert_eq!(
-            backlog
-                .iter()
-                .map(|delivery| label(delivery.command()))
-                .collect::<Vec<_>>(),
+            backlog.iter().map(label).collect::<Vec<_>>(),
             vec!["create(1)", "create(2)"]
         );
         assert!(
@@ -571,30 +541,24 @@ mod tests {
     /// goes last: ahead of the buffered commands it would be undone by them.
     #[test]
     fn a_backgrounded_app_hands_over_its_pause_last() {
-        let mut pending = vec![AudioCommandDelivery::unmanaged(create_context(1))];
+        let mut pending = vec![create_context(1)];
 
         let backlog = take_startup_backlog(&mut pending, true);
 
         assert_eq!(
-            backlog
-                .iter()
-                .map(|delivery| label(delivery.command()))
-                .collect::<Vec<_>>(),
+            backlog.iter().map(label).collect::<Vec<_>>(),
             vec!["create(1)", "pause"]
         );
     }
 
     #[test]
     fn a_foreground_app_hands_over_no_pause() {
-        let mut pending = vec![AudioCommandDelivery::unmanaged(create_context(1))];
+        let mut pending = vec![create_context(1)];
 
         let backlog = take_startup_backlog(&mut pending, false);
 
         assert_eq!(
-            backlog
-                .iter()
-                .map(|delivery| label(delivery.command()))
-                .collect::<Vec<_>>(),
+            backlog.iter().map(label).collect::<Vec<_>>(),
             vec!["create(1)"]
         );
     }
@@ -610,10 +574,7 @@ mod tests {
             .request_release_all_contexts()
             .expect("cleanup bypasses full data");
         let (resp, mut response) = tokio::sync::oneshot::channel();
-        let mut pending = vec![AudioCommandDelivery::unmanaged(AudioCmd::CloseContext {
-            ctx_id: 9,
-            resp,
-        })];
+        let mut pending = vec![AudioCmd::CloseContext { ctx_id: 9, resp }];
 
         complete_prestart_release_all_contexts(&rx, &mut pending);
 

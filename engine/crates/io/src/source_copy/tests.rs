@@ -142,9 +142,20 @@ fn directory_source_survives_root_and_overlay_replacement() {
     std::fs::write(code.join("clip"), b"old").unwrap();
     let mounts = MountTable::new(code.clone());
     let source = mounts.open_copy_source("clip").unwrap();
-    std::fs::rename(&code, root.path().join("retired")).unwrap();
-    std::fs::create_dir(&code).unwrap();
-    std::fs::write(code.join("clip"), b"new").unwrap();
+    let retired = root.path().join("retired");
+    // Windows refuses to rename a directory while a file inside it is open, so
+    // a pinned source's root cannot be replaced there at all.
+    #[cfg(windows)]
+    assert_eq!(
+        std::fs::rename(&code, &retired).unwrap_err().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(&code, &retired).unwrap();
+        std::fs::create_dir(&code).unwrap();
+        std::fs::write(code.join("clip"), b"new").unwrap();
+    }
     let target = root.path().join("target");
     PreparedCopy::new(source)
         .unwrap()

@@ -124,7 +124,7 @@ require_literal "$ANDROID_JNI/profile_contract.rs" \
     '("onTouchEvent", "(IIJILjava/nio/ByteBuffer;)Z")' \
     "Rust JNI profile does not declare boolean touch acceptance"
 require_multiline_regex "$ANDROID_JNI/inbound.rs" \
-    'fn onTouch\([^)]*buffer:[[:space:]]*JObject,[[:space:]]*\)[[:space:]]*->[[:space:]]*jboolean' \
+    'fn onTouch\([^)]*buf:[[:space:]]*JByteBuffer,[[:space:]]*\)[[:space:]]*->[[:space:]]*jboolean' \
     "Rust JNI touch entry does not return jboolean"
 require_literal "$ANDROID_JAVA/internal/NativeBridge.java" \
     "static native boolean onTouchEvent" \

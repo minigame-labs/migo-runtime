@@ -22,7 +22,7 @@ fn audio_wake_refill_latency() {
     let sync = AudioSync::new();
     sync.bind_wakeup(&wake);
     sync.set_callback_wakeup_enabled(true);
-    let (mut producer, consumer) = ring::new(SAMPLES, None).unwrap();
+    let (mut producer, consumer) = ring::new(SAMPLES).unwrap();
     let pcm = [0.25f32; SAMPLES];
     assert_eq!(producer.push_slice(&pcm), SAMPLES);
     let mut callback = OutputCallback::new(consumer, sync.clone(), SAMPLES / 4);

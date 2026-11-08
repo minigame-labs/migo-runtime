@@ -1,8 +1,4 @@
-use crate::node_retirement::Host;
 use shared::error::EngineResult;
-#[path = "param_storage.rs"]
-mod storage;
-use storage::Events;
 
 /// Represents a scheduled automation event on an AudioParam timeline.
 #[derive(Debug, Clone)]
@@ -59,8 +55,7 @@ pub struct AudioParamTimeline {
     default_value: f32,
     min_value: f32,
     max_value: f32,
-    events: Events,
-    retirement: Option<Host>,
+    events: Vec<AutomationEvent>,
 }
 
 impl std::fmt::Debug for AudioParamTimeline {
@@ -84,8 +79,7 @@ impl Clone for AudioParamTimeline {
             default_value: self.default_value,
             min_value: self.min_value,
             max_value: self.max_value,
-            events: Events::native(self.events.to_vec()),
-            retirement: None,
+            events: self.events.clone(),
         }
     }
 }
@@ -97,43 +91,8 @@ impl AudioParamTimeline {
             default_value,
             min_value,
             max_value,
-            events: Events::default(),
-            retirement: None,
+            events: Vec::new(),
         }
-    }
-
-    pub(crate) fn prepare_storage(&mut self, host: &Host) -> EngineResult<()> {
-        if self
-            .retirement
-            .as_ref()
-            .is_some_and(|old| !old.shares_physical_ledger(host))
-        {
-            return Err(storage::foreign_ledger());
-        }
-        self.events.prepare(host)?;
-        self.retirement = Some(host.clone());
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn event_identity(&self) -> (usize, usize, usize) {
-        (
-            self.events.len(),
-            self.events.capacity(),
-            self.events.as_ptr() as usize,
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn reserve_native_events(&mut self, capacity: usize) {
-        assert!(self.retirement.is_none());
-        let additional = capacity.saturating_sub(self.events.len());
-        self.events.reserve_exact(additional);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn observe_events(&mut self, hook: std::sync::Arc<dyn Fn() + Send + Sync>) {
-        self.events.observe(hook);
     }
 
     /// Get the current static value (without automation)
@@ -165,19 +124,13 @@ impl AudioParamTimeline {
 
     pub(crate) fn try_set_value_now(&mut self, value: f32, current_time: f64) -> EngineResult<()> {
         let clamped = value.clamp(self.min_value, self.max_value);
-        let mut future = self.events.iter().filter(|e| e.time() > current_time);
-        let retained = future.clone().count();
-        let has_active_ramp = future.any(|e| {
-            matches!(
-                e,
-                AutomationEvent::LinearRamp { .. } | AutomationEvent::ExponentialRamp { .. }
-            )
+        let has_active_ramp = self.events.iter().any(|e| {
+            e.time() > current_time
+                && matches!(
+                    e,
+                    AutomationEvent::LinearRamp { .. } | AutomationEvent::ExponentialRamp { .. }
+                )
         });
-        // A rejected anchor must not discard past events or change the value.
-        self.events.reserve_for(
-            self.retirement.as_ref(),
-            retained + usize::from(has_active_ramp),
-        )?;
         self.events.retain(|e| e.time() > current_time);
         if has_active_ramp {
             self.insert_event(AutomationEvent::SetValue {
@@ -385,13 +338,6 @@ impl AudioParamTimeline {
 
     /// Insert event in sorted order by time
     fn insert_event(&mut self, event: AutomationEvent) -> EngineResult<()> {
-        let required = self
-            .events
-            .len()
-            .checked_add(1)
-            .ok_or_else(crate::node_storage::size_overflow)?;
-        self.events
-            .reserve_for(self.retirement.as_ref(), required)?;
         let time = event.time();
         // Equal-time events retain call order; a later set/target must not be
         // evaluated before the anchor that was scheduled immediately before it.

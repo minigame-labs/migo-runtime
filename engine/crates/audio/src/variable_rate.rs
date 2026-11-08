@@ -1,6 +1,5 @@
-//! Shared playback-rate conversion. Construction/admission stay on the command
-//! path; bounded resets do not allocate. Native storage retires through its Host.
-use crate::node_retirement::{Host, Value};
+//! Shared playback-rate conversion. Construction stays on the command path;
+//! bounded resets do not allocate.
 use shared::error::{EngineError, EngineResult, ErrorCode};
 use std::{
     ffi::{c_int, c_long, c_void},
@@ -8,6 +7,9 @@ use std::{
 };
 
 pub(crate) const BLOCK: usize = 128;
+/// `SRC_SINC_FASTEST`: band-limited (97 dB SNR, 80% bandwidth) at roughly a
+/// ninth of the best-quality kernel's cost; the only converter compiled in.
+pub(crate) const CONVERTER: c_int = 2;
 
 pub(crate) fn history_frames() -> usize {
     unsafe { migo_src_history_frames() }
@@ -24,7 +26,6 @@ struct Data {
     ratio: f64,
 }
 unsafe extern "C" {
-    fn migo_src_required_bytes(channels: c_int) -> usize;
     fn migo_src_history_frames() -> usize;
     fn src_new(kind: c_int, channels: c_int, error: *mut c_int) -> *mut c_void;
     fn src_delete(state: *mut c_void) -> *mut c_void;
@@ -133,14 +134,12 @@ impl Converter {
         }
         Ok(())
     }
-    pub(crate) fn prepare(host: &Host, channels: usize) -> EngineResult<Value<Self>> {
+    pub(crate) fn new(channels: usize) -> EngineResult<Self> {
         if !(1..=32).contains(&channels) {
             return Err(failure());
         }
-        let bytes = unsafe { migo_src_required_bytes(channels as c_int) };
-        let admission = host.reserve_value_with_bytes::<Self>(bytes)?;
         let mut error = 0;
-        let state = native(|| unsafe { src_new(0, channels as c_int, &mut error) });
+        let state = native(|| unsafe { src_new(CONVERTER, channels as c_int, &mut error) });
         let state = NonNull::new(state).ok_or_else(|| {
             EngineError::from_detail(
                 ErrorCode::InputSaturated,
@@ -152,13 +151,13 @@ impl Converter {
         unsafe {
             probe_constructed()
         };
-        Ok(admission.finish(Self {
+        Ok(Self {
             state,
             channels,
             read_frame: 0,
             loop_past: false,
             stream_warm: (0, 0),
-        }))
+        })
     }
     /// Rebuild bounded left history after a seek or activation. The final dummy
     /// step establishes the existing thousandth phase, including frame 0 + phase.

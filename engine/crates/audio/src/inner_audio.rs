@@ -263,11 +263,6 @@ impl InnerAudioSharedState {
         load.matches(self)
     }
 
-    #[cfg(test)]
-    pub(crate) fn exhaust_source_generation_for_test(&self) {
-        self.source_generation.store(u64::MAX, Ordering::Release);
-    }
-
     pub(crate) fn begin_source(
         self: &Arc<Self>,
         source_id: u32,
@@ -448,10 +443,7 @@ pub struct InnerAudioPlayer {
     loading_url: Option<String>,
     aggregate: Arc<AudioAggregateLedger>,
     stream_permit: Option<AudioAggregatePermit>,
-    retirement_cpu: Option<migo_io::audio_cpu::AudioCpu>,
-    source_retirement: Option<source_retirement::Slot>,
-    rate_host: Option<crate::node_retirement::Host>,
-    rate_converter: Option<crate::node_retirement::Value<crate::variable_rate::Converter>>,
+    rate_converter: Option<crate::variable_rate::Converter>,
 }
 impl InnerAudioPlayer {
     pub fn new(id: InnerAudioId, output_channels: u32) -> Self {
@@ -495,40 +487,19 @@ impl InnerAudioPlayer {
             loading_url: None,
             aggregate,
             stream_permit: None,
-            retirement_cpu: None,
-            source_retirement: None,
-            rate_host: None,
             rate_converter: None,
         }
-    }
-
-    pub(crate) fn new_with_cpu(
-        id: InnerAudioId,
-        channels: u32,
-        cpu: migo_io::audio_cpu::AudioCpu,
-    ) -> Self {
-        let mut player = Self::new(id, channels);
-        player.retirement_cpu = Some(cpu);
-        player
-    }
-
-    pub(crate) fn with_rate_host(mut self, host: crate::node_retirement::Host) -> Self {
-        self.rate_host = Some(host);
-        self
     }
 
     fn prepare_rate_converter(
         &self,
         channels: usize,
         empty: bool,
-    ) -> EngineResult<Option<crate::node_retirement::Value<crate::variable_rate::Converter>>> {
+    ) -> EngineResult<Option<crate::variable_rate::Converter>> {
         if empty || self.shared.playback_rate_units() == PLAYBACK_RATE_SCALE {
             return Ok(None);
         }
-        self.rate_host
-            .as_ref()
-            .map(|host| crate::variable_rate::Converter::prepare(host, channels))
-            .transpose()
+        crate::variable_rate::Converter::new(channels).map(Some)
     }
 
     pub(crate) fn set_playback_rate(&mut self, rate: f32) -> EngineResult<()> {
@@ -541,10 +512,9 @@ impl InnerAudioPlayer {
         } else if self.rate_converter.is_none()
             && self.shared.channels() != 0
             && (self.shared.is_loaded() || self.is_streaming())
-            && let Some(host) = &self.rate_host
         {
             let channels = self.shared.channels() as usize;
-            let mut converter = crate::variable_rate::Converter::prepare(host, channels)?;
+            let mut converter = crate::variable_rate::Converter::new(channels)?;
             if !self.stream_complete {
                 converter.reset_stream(self.position / channels, self.position_phase)?;
             } else {
@@ -592,25 +562,9 @@ impl InnerAudioPlayer {
     fn replace_source(&mut self, source: AudioSource, permit: Option<AudioAggregatePermit>) {
         self.rate_converter = None;
         self.buffered_loops = 0;
-        let next = match (&source, self.retirement_cpu.as_ref()) {
-            (AudioSource::Owned(samples), Some(cpu))
-                if samples.capacity() >= 4096 / size_of::<f32>() =>
-            {
-                Some(source_retirement::Slot::new(cpu.clone()))
-            }
-            _ => None,
-        };
-        let source = std::mem::replace(&mut self.source, source);
-        let permit = std::mem::replace(&mut self.stream_permit, permit);
-        let retired = std::mem::replace(&mut self.source_retirement, next);
-        match source {
-            AudioSource::Owned(samples) => source_retirement::dispose(samples, permit, retired),
-            AudioSource::Cached(audio) => {
-                drop(audio);
-                drop(permit);
-                drop(retired);
-            }
-        }
+        // Release the old PCM before its aggregate permit.
+        drop(std::mem::replace(&mut self.source, source));
+        drop(std::mem::replace(&mut self.stream_permit, permit));
     }
     /// The raw cursor remains absolute for trimming, interpolation and
     /// monotonic progress. Only the public media time wraps, before conversion
@@ -727,38 +681,19 @@ impl InnerAudioPlayer {
     ) -> EngineResult<()> {
         self.try_complete_load(&load, &mut audio)
     }
-    /// Refusal returns the original allocation to its admitted result owner.
-    #[cfg(test)]
     pub(crate) fn try_complete_load(
         &mut self,
         load: &InnerAudioLoadToken,
         audio: &mut DecodedAudio,
-    ) -> EngineResult<()> {
-        self.try_complete_load_charged(load, audio, &mut None)
-    }
-
-    pub(crate) fn try_complete_load_charged(
-        &mut self,
-        load: &InnerAudioLoadToken,
-        audio: &mut DecodedAudio,
-        physical: &mut Option<AudioAggregatePermit>,
     ) -> EngineResult<()> {
         if !self.shared.owns_load(load) || self.shared.is_loaded() {
             return Err(InnerAudioLoadToken::cancelled_error());
         }
         let converter =
             self.prepare_rate_converter(audio.channels as usize, audio.samples.is_empty())?;
-        let permit = match crate::limits::pcm_bytes(audio.samples.capacity()).and_then(|bytes| {
-            if let Some(credit) = physical
-                .as_mut()
-                .filter(|credit| credit.belongs_to(&self.aggregate))
-            {
-                credit.try_grow_to(bytes, "InnerAudio")?;
-                Ok(physical.take().unwrap())
-            } else {
-                self.aggregate.try_reserve(bytes, "InnerAudio")
-            }
-        }) {
+        let permit = match crate::limits::pcm_bytes(audio.samples.capacity())
+            .and_then(|bytes| self.aggregate.try_reserve(bytes, "InnerAudio"))
+        {
             Ok(permit) => permit,
             Err(error) => {
                 self.discard_loading_controls();
@@ -789,11 +724,6 @@ impl InnerAudioPlayer {
 
         self.apply_loading_controls();
         Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn owned_samples_for_custody(&self) -> &[f32] {
-        self.source.samples()
     }
 
     /// Load cached audio data (shared reference, no copy).
@@ -958,6 +888,7 @@ impl InnerAudioPlayer {
     }
 
     /// Take ownership of streamed samples and their physical ownership permit.
+    #[cfg(test)]
     pub fn take_streamed_audio(&mut self) -> Option<(DecodedAudio, AudioAggregatePermit)> {
         // The legacy PCM-only transfer cannot represent a source clock.
         if self.stream_timeline.is_some() {
@@ -982,18 +913,13 @@ impl InnerAudioPlayer {
             return None;
         }
         let permit = self.stream_permit.take()?;
-        let retired = self.source_retirement.take();
         let samples = match std::mem::replace(&mut self.source, AudioSource::Owned(Vec::new())) {
             AudioSource::Owned(samples) => samples,
             AudioSource::Cached(_) => return None,
         };
         if samples.is_empty() {
-            source_retirement::dispose(samples, Some(permit), retired);
             return None;
         }
-        // The raw transfer now owns both PCM and its permit; cache admission
-        // installs its already-validated CPU owner before any metadata refusal.
-        drop(retired);
         Some((
             DecodedAudio {
                 samples,
@@ -1091,6 +1017,7 @@ impl InnerAudioPlayer {
     /// Commit a source-accepted reposition on the audio thread. The caller has
     /// already validated the target and mapped it to output frames. Merely
     /// requesting a seek must not clear PCM or admit another revision.
+    #[cfg(test)]
     pub(crate) fn accept_stream_revision(
         &mut self,
         source: &Arc<StreamingState>,
@@ -2249,25 +2176,6 @@ impl InnerAudioPlayer {
 }
 
 impl stream_control::Prepared {
-    pub(crate) fn accept_clocked(self, player: &mut InnerAudioPlayer) -> EngineResult<()> {
-        let output = match self.mapped_output() {
-            Ok(output) => output,
-            Err(error) => {
-                self.source.cancel();
-                return Err(error);
-            }
-        };
-        self.accept(player, output)
-    }
-
-    pub(crate) fn accept(
-        self,
-        player: &mut InnerAudioPlayer,
-        output_frame: u64,
-    ) -> EngineResult<()> {
-        self.accept_as(player, output_frame, true, false)
-    }
-
     fn accept_as(
         self,
         player: &mut InnerAudioPlayer,
@@ -3081,7 +2989,6 @@ mod tests {
 
     #[test]
     fn attaching_cached_backing_preserves_stream_playback_state() {
-        super::source_retirement_tests::lifetime();
         let mut player = InnerAudioPlayer::new(1, 2);
         player.shared.set_sample_rate(48_000);
         player.shared.set_channels(2);
@@ -3153,21 +3060,4 @@ mod tests {
                 .any(|event| event.event_type == InnerAudioEventType::Error)
         );
     }
-}
-
-#[path = "inner_source_retirement.rs"]
-mod source_retirement;
-#[cfg(test)]
-#[path = "inner_source_retirement_tests.rs"]
-mod source_retirement_tests;
-
-#[cfg(test)]
-pub(crate) fn physical_custody_player(
-    id: InnerAudioId,
-    cpu: migo_io::audio_cpu::AudioCpu,
-    ledger: Arc<AudioAggregateLedger>,
-) -> InnerAudioPlayer {
-    let mut player = InnerAudioPlayer::new_with_cpu(id, 2, cpu);
-    player.aggregate = ledger;
-    player
 }

@@ -101,7 +101,7 @@ pub struct BufferSourceNode {
 
     // Scheduled stop time (None = no stop scheduled)
     stop_when: Option<f64>,
-    rate_converter: Option<crate::node_retirement::Value<crate::variable_rate::Converter>>,
+    rate_converter: Option<crate::variable_rate::Converter>,
     rate_dirty: bool,
     // Saturating count of whole periods actually traversed. Reset reconstruction
     // uses only the filter's bounded window; None starts a new configuration.
@@ -156,10 +156,7 @@ impl BufferSourceNode {
         }
     }
 
-    pub(crate) fn install_rate(
-        &mut self,
-        prepared: Option<crate::node_retirement::Value<crate::variable_rate::Converter>>,
-    ) {
+    pub(crate) fn install_rate(&mut self, prepared: Option<crate::variable_rate::Converter>) {
         if let Some(prepared) = prepared {
             self.rate_converter = Some(prepared);
             self.rate_dirty = true;
@@ -168,15 +165,11 @@ impl BufferSourceNode {
 
     pub(crate) fn prepare_rate(
         &self,
-        host: Option<&crate::node_retirement::Host>,
         format: Option<AudioBufferFormat>,
         time: f64,
         requested: bool,
-    ) -> shared::error::EngineResult<
-        Option<crate::node_retirement::Value<crate::variable_rate::Converter>>,
-    > {
+    ) -> shared::error::EngineResult<Option<crate::variable_rate::Converter>> {
         self.prepare_rate_for_loop(
-            host,
             format,
             time,
             requested,
@@ -187,15 +180,12 @@ impl BufferSourceNode {
 
     fn prepare_rate_for_loop(
         &self,
-        host: Option<&crate::node_retirement::Host>,
         format: Option<AudioBufferFormat>,
         time: f64,
         requested: bool,
         looping: Option<(f64, f64)>,
-    ) -> shared::error::EngineResult<
-        Option<crate::node_retirement::Value<crate::variable_rate::Converter>>,
-    > {
-        let (Some(host), Some(format)) = (host, format) else {
+    ) -> shared::error::EngineResult<Option<crate::variable_rate::Converter>> {
+        let Some(format) = format else {
             return Ok(None);
         };
         if looping.is_some_and(|points| {
@@ -218,7 +208,7 @@ impl BufferSourceNode {
             || self.detune.has_events()
             || ((0.5..=2.0).contains(&rate) && rate != 1.0);
         if needed {
-            crate::variable_rate::Converter::prepare(host, format.channels as usize).map(Some)
+            crate::variable_rate::Converter::new(format.channels as usize).map(Some)
         } else {
             Ok(None)
         }
@@ -234,13 +224,10 @@ impl BufferSourceNode {
 
     pub(crate) fn prepare_param_rate(
         &self,
-        host: Option<&crate::node_retirement::Host>,
         name: &str,
         value: Option<f32>,
         time: f64,
-    ) -> shared::error::EngineResult<
-        Option<crate::node_retirement::Value<crate::variable_rate::Converter>>,
-    > {
+    ) -> shared::error::EngineResult<Option<crate::variable_rate::Converter>> {
         if !self.rate_started() || !matches!(name, "playbackRate" | "detune") {
             return Ok(None);
         }
@@ -263,19 +250,16 @@ impl BufferSourceNode {
                 });
             (0.5..=2.0).contains(&rate) && rate != 1.0
         });
-        self.prepare_rate(host, format, time, requested)
+        self.prepare_rate(format, time, requested)
     }
 
     pub(crate) fn prepare_loop_rate(
         &self,
-        host: Option<&crate::node_retirement::Host>,
         enabled: bool,
         start: f64,
         end: f64,
         time: f64,
-    ) -> shared::error::EngineResult<
-        Option<crate::node_retirement::Value<crate::variable_rate::Converter>>,
-    > {
+    ) -> shared::error::EngineResult<Option<crate::variable_rate::Converter>> {
         if !self.rate_started() {
             return Ok(None);
         }
@@ -286,20 +270,7 @@ impl BufferSourceNode {
         let requested = self.playback_rate.has_events()
             || self.detune.has_events()
             || ((0.5..=2.0).contains(&rate) && rate != 1.0);
-        self.prepare_rate_for_loop(
-            host,
-            format,
-            time,
-            requested,
-            enabled.then_some((start, end)),
-        )
-    }
-
-    pub(crate) fn retire_buffer(
-        &mut self,
-        host: Option<&crate::node_retirement::Host>,
-    ) -> shared::error::EngineResult<()> {
-        crate::node_retirement::retire_replacement(&mut self.buffer, host, 0)
+        self.prepare_rate_for_loop(format, time, requested, enabled.then_some((start, end)))
     }
 
     pub fn start(&mut self, when: f64, offset: f64, duration: Option<f64>, current_time: f64) {
@@ -838,20 +809,6 @@ impl AudioNodeProcessor for BufferSourceNode {
             .as_ref()
             .map(|buffer| buffer.format().channels)
             .unwrap_or(2)
-    }
-
-    fn prepare_params(
-        &mut self,
-        host: &crate::node_retirement::Host,
-    ) -> shared::error::EngineResult<()> {
-        for param in [&mut self.playback_rate, &mut self.detune] {
-            param.prepare_storage(host)?;
-        }
-        if self.rate_started() {
-            let prepared = self.prepare_rate(Some(host), self.rate_format(), 0.0, false)?;
-            self.install_rate(prepared);
-        }
-        Ok(())
     }
 
     fn get_param_mut(&mut self, name: &str) -> Option<&mut AudioParamTimeline> {

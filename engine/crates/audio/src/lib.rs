@@ -98,19 +98,13 @@ pub mod apple_session;
 mod apple_session_policy;
 mod audio_thread;
 pub mod cache;
-mod command_inbox;
 mod context;
 mod decoder;
 mod device_prepare;
-mod graph_map;
-mod graph_table_layout;
-mod graph_vec;
 mod inner_audio;
 mod limits;
 #[cfg(test)]
 mod mp3_fixture;
-mod node_retirement;
-mod node_storage;
 mod nodes;
 mod off_worker;
 mod output;
@@ -119,11 +113,10 @@ pub mod param;
 /// the platform's audio (see the module).
 pub mod platform;
 pub mod power_manager;
-mod render_buffer;
 mod render_time;
 mod resample_job;
+#[cfg(test)]
 mod resampler;
-mod variable_rate;
 mod stream_control;
 pub mod streaming;
 mod streaming_codecs;
@@ -134,6 +127,7 @@ mod streaming_mp3;
 mod streaming_sinc;
 mod streaming_source_control;
 mod streaming_transport;
+mod variable_rate;
 
 pub use audio_thread::*;
 pub use cache::GlobalAudioCache;

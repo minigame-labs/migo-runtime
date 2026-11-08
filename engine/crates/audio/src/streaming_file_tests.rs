@@ -181,7 +181,7 @@ async fn actual_large_file_src_plays_all_pcm_beyond_both_old_whole_file_limits()
     let mut task = tokio::spawn(work);
     let until = Instant::now() + WAIT;
     let delivery = loop {
-        if let Ok(value) = rx.try_recv_owned() {
+        if let Ok(value) = rx.try_recv() {
             break value;
         }
         if task.is_finished() {
@@ -191,7 +191,7 @@ async fn actual_large_file_src_plays_all_pcm_beyond_both_old_whole_file_limits()
         assert!(Instant::now() < until, "large file preparation stalled");
         tokio::task::yield_now().await;
     };
-    let (command, permit) = delivery.into_parts();
+    let command = delivery;
     let AudioCmd::InnerAudioLoadFile {
         load, source, resp, ..
     } = command
@@ -208,7 +208,6 @@ async fn actual_large_file_src_plays_all_pcm_beyond_both_old_whole_file_limits()
         source,
         resp,
     );
-    drop(permit);
     let mut checked = 0usize;
     let mut block = [0.; 8192];
     let mut paused = false;
@@ -500,129 +499,6 @@ async fn native_file_readiness_keeps_typed_errors_and_source_refusal_without_dup
         );
         assert!(player.shared.is_loaded());
         player.stop();
-    }
-}
-
-#[tokio::test]
-async fn unpolled_producer_and_rejected_commands_keep_file_and_queue_credit_until_cpu_drop() {
-    struct Block {
-        entered: std::sync::mpsc::Sender<()>,
-        release: std::sync::mpsc::Receiver<()>,
-    }
-    impl Drop for Block {
-        fn drop(&mut self) {
-            self.entered.send(()).unwrap();
-            self.release.recv_timeout(WAIT).unwrap();
-        }
-    }
-    for mode in ["unpolled", "reject", "discard"] {
-        let mut f = Fixture::new().await;
-        f.host = Arc::new(
-            migo_io::scheduler::IoScheduler::isolated_for_admission_probe(1003, 3, 128 * 1024),
-        );
-        let source = f.source(&vec![31; 65537]).await;
-        let loan = source
-            .clone()
-            .read_at(
-                0,
-                65536,
-                Arc::new(AtomicBool::new(false)),
-                Instant::now() + WAIT,
-            )
-            .unwrap()
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        let watch = migo_alloc_probe::DeallocationWatch::new(loan.as_ref().as_ptr()).unwrap();
-        drop(loan);
-        let cpu = f.host.audio_cpu();
-        let (started, waiting) = std::sync::mpsc::channel();
-        let (release, held) = std::sync::mpsc::channel();
-        let retirement = cpu.retirement();
-        let block = tokio::spawn(async move {
-            retirement
-                .retire(Block {
-                    entered: started,
-                    release: held,
-                })
-                .await;
-        });
-        tokio::task::spawn_blocking(move || waiting.recv_timeout(WAIT).unwrap())
-            .await
-            .unwrap();
-        let (tx, rx) = shared::audio_channel::channel();
-        let mut inbox = crate::command_inbox::Inbox::new(rx, Vec::new(), cpu.clone());
-        let before = migo_alloc_probe::thread_counts();
-        if mode == "unpolled" {
-            let (out, _rx) = streaming::stream_channel();
-            drop(run(
-                cpu,
-                source,
-                out,
-                StreamingState::new(),
-                48000,
-                Arc::new(std::sync::Mutex::new(None)),
-            ));
-        } else {
-            let mut player = InnerAudioPlayer::new(91, 1);
-            let load = player.begin_load_for(101).unwrap();
-            let (reply, answer) = tokio::sync::oneshot::channel();
-            tx.try_send(AudioCmd::InnerAudioLoadFile {
-                id: 91,
-                load,
-                source,
-                resp: reply,
-            })
-            .unwrap();
-            if mode == "reject" {
-                let delivery = inbox.next().unwrap();
-                inbox.reject(delivery, EngineError::new(ErrorCode::Cancelled));
-                assert_eq!(
-                    answer.await.unwrap().unwrap_err().code,
-                    ErrorCode::Cancelled
-                );
-            } else {
-                inbox.discard_pending();
-                assert!(answer.await.is_err());
-            }
-            assert!(
-                tx.try_reserve_data(shared::audio_channel::MAX_AUDIO_COMMAND_QUEUED_BYTES)
-                    .is_err(),
-                "file command returned original queue credit before CPU destruction"
-            );
-        }
-        let after = migo_alloc_probe::thread_counts();
-        let held = watch.freed_bytes().is_none();
-        let charged = f.host.pools().reserve_bytes(128 * 1024).is_err();
-        release.send(()).unwrap();
-        block.await.unwrap();
-        assert!(
-            held,
-            "file owner freed on caller before original CPU destruction"
-        );
-        assert!(
-            charged,
-            "file owner returned physical credit before CPU destruction"
-        );
-        assert!(
-            after.bytes_freed - before.bytes_freed < 65536,
-            "caller physically freed the bulk file input"
-        );
-        let end = Instant::now() + WAIT;
-        while watch.freed_bytes().is_none()
-            || f.host.pools().reserve_bytes(128 * 1024).is_err()
-            || tx
-                .try_reserve_data(shared::audio_channel::MAX_AUDIO_COMMAND_QUEUED_BYTES)
-                .is_err()
-        {
-            assert!(
-                Instant::now() < end,
-                "file original CPU retirement did not finish"
-            );
-            tokio::task::yield_now().await;
-        }
-        assert_eq!(watch.freed_bytes(), Some(65536));
     }
 }
 

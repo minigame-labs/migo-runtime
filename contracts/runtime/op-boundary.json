@@ -700,8 +700,9 @@
       }
     },
     "host_v8_worker_codec": {
-      "reason": "Private Worker clone backend and admission tickets. Native V8 uses bounded serializer wire; WebKit uses native structuredClone and private MessagePorts, with per-direction credits retained until dequeue. These ops are local to the producer and never cross the C ABI service channel.",
+      "reason": "Private Worker clone backend and admission tickets. Native V8 uses its own structured-clone wire (storage mode), bounded by byte length; WebKit uses native structuredClone and private MessagePorts, with per-direction credits retained until dequeue. These ops are local to the producer and never cross the C ABI service channel.",
       "ops": {
+        "op_worker_serialize": "local",
         "op_worker_reserve_message": "local",
         "op_worker_commit_message": "local",
         "op_worker_abort_message": "local",

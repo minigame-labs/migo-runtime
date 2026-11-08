@@ -564,7 +564,6 @@ pub(crate) struct Seen {
 pub(crate) struct Freed {
     pub(crate) bytes: u64,
     pub(crate) allocation: Option<usize>,
-    pub(crate) off_async_thread: bool,
 }
 struct ObservedSpool {
     source: Arc<dyn AudioHttpSpool>,
@@ -574,7 +573,6 @@ struct ObservedSpool {
 struct ObservedFile {
     file: Option<Arc<dyn AudioFile>>,
     watch: Arc<migo_alloc_probe::DeallocationWatch>,
-    async_thread: std::thread::ThreadId,
     freed: Option<tokio::sync::oneshot::Sender<Freed>>,
 }
 impl Drop for ObservedFile {
@@ -584,7 +582,6 @@ impl Drop for ObservedFile {
         let freed = Freed {
             bytes: migo_alloc_probe::thread_counts().bytes_freed - before,
             allocation: self.watch.freed_bytes(),
-            off_async_thread: std::thread::current().id() != self.async_thread,
         };
         if let Some(reply) = self.freed.take() {
             let _ = reply.send(freed);
@@ -661,7 +658,6 @@ impl AudioHttpSpool for ObservedSpool {
             let file: Arc<dyn AudioFile> = Arc::new(ObservedFile {
                 file: Some(file),
                 watch: watch.clone(),
-                async_thread: std::thread::current().id(),
                 freed: self.freed.lock().unwrap().take(),
             });
             self.seen
@@ -697,58 +693,4 @@ pub(crate) fn observe(
         seen,
         freed,
     )
-}
-#[tokio::test]
-async fn sealed_http_eof_retains_actual_slot_capacity_until_original_cpu_destruction() {
-    const CAP: u64 = 4 * 1024 * 1024;
-    let mut f = Context::new(Mode::NoTag);
-    f.host = Arc::new(migo_io::scheduler::IoScheduler::isolated_for_admission_probe(1087, 2, CAP));
-    let server = server(TAIL.to_vec(), Mode::NoTag, false, false).await;
-    let state = StreamingState::new_url();
-    let (spool, seen, freed) = observe(f.spool());
-    let mut rx = crate::streaming::start_streaming_download_with_spool(
-        f.host.audio_cpu(),
-        server.client(f.host.pools().clone()),
-        "http://indexed-product-fixture.invalid/witness".into(),
-        state.clone(),
-        48000,
-        Some(spool),
-    );
-    let seen = tokio::time::timeout(WAIT, seen).await.unwrap().unwrap();
-    loop {
-        match tokio::time::timeout(WAIT, rx.recv())
-            .await
-            .unwrap()
-            .unwrap()
-        {
-            StreamMsg::Done { .. } => break,
-            StreamMsg::Error { message, .. } => panic!("retained HTTP EOF failed: {message}"),
-            _ => {}
-        }
-    }
-    assert!(
-        seen.file.upgrade().is_some() && seen.watch.freed_bytes().is_none(),
-        "HTTP EOF dropped its actual sealed source storage"
-    );
-    let rest = f.host.pools().reserve_bytes(CAP - 131072).unwrap();
-    assert!(
-        f.host.pools().reserve_bytes(1).is_err(),
-        "HTTP EOF refunded actual sealed media capacity early"
-    );
-    drop(rest);
-    state.cancel();
-    drop(rx);
-    let freed = tokio::time::timeout(WAIT, freed).await.unwrap().unwrap();
-    assert_eq!(
-        freed.allocation,
-        Some(65536),
-        "HTTP source slot was not really destroyed with its original CPU owner"
-    );
-    assert!(
-        freed.bytes >= 131072 && freed.off_async_thread,
-        "HTTP source slots did not physically free on original CPU retirement"
-    );
-    assert_eq!(seen.watch.freed_bytes(), Some(65536));
-    assert!(seen.file.upgrade().is_none());
-    assert!(f.host.pools().reserve_bytes(CAP).is_ok());
 }

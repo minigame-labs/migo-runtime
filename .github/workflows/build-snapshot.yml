@@ -10,7 +10,7 @@ name: Build V8 Snapshot
 # self-built android V8 archive via Git LFS), then RUN it on that ABI's Android
 # emulator/device.
 #
-#   x86_64 -> GitHub-hosted `ubuntu-latest` HAS /dev/kvm, so we boot a
+#   x86_64 -> GitHub-hosted `ubuntu-24.04` HAS /dev/kvm, so we boot a
 #             hardware-accelerated x86_64 Android emulator and run the generator
 #             on it (job below).
 #
@@ -80,7 +80,7 @@ jobs:
   # need to download the large snapshot or V8 archive objects.
   freshness:
     name: snapshot freshness gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -99,7 +99,7 @@ jobs:
   snapshot-x86_64:
     name: snapshot (${{ inputs.snapshot_kind }} / x86_64 / emulator)
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     # This manual job alone pushes the regenerated snapshot branch. The
     # push-triggered freshness job remains read-only.

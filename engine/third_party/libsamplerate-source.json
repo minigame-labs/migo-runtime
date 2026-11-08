@@ -11,7 +11,7 @@
     "src/src_sinc.c": "8e59137d758dae5027410af7f81010e7a9c33892070091866510f0f8b638237e",
     "src/src_linear.c": "f04a3e79b7150f2f6e6ad2b05979d874e03bf567a682bbb6507c797d4ea8a972",
     "src/src_zoh.c": "c089678c9e6463896507a8d476fc4a33641c46fbe94aa8243acf725d4c203adb",
-    "src/high_qual_coeffs.h": "35d4bc6ed93cbd5a89510d7d7efda00116b5c28a25369c07288bc7d25a937df6"
+    "src/fastest_coeffs.h": "60b342165e7be7c58efd9002163c07b65ece52994ee839dbe06908991ef1fb1b"
   },
   "files": {
     "COPYING": "2c1f76ce2effdddb425018405d5690c0b1ab4e6976e35296b0a6db65c5e1a55d",
@@ -22,8 +22,8 @@
     "src/src_sinc.c": "df1e772676ac161c1c3fc612d007cd39ee376deb7d0cf7ff13399561aa87f66f",
     "src/src_linear.c": "f04a3e79b7150f2f6e6ad2b05979d874e03bf567a682bbb6507c797d4ea8a972",
     "src/src_zoh.c": "c089678c9e6463896507a8d476fc4a33641c46fbe94aa8243acf725d4c203adb",
-    "src/high_qual_coeffs.h": "35d4bc6ed93cbd5a89510d7d7efda00116b5c28a25369c07288bc7d25a937df6"
+    "src/fastest_coeffs.h": "60b342165e7be7c58efd9002163c07b65ece52994ee839dbe06908991ef1fb1b"
   },
   "patch": "../../scripts/testing/fixtures/libsamplerate-0.2.2-retain-history.patch",
-  "scope": "Minimal native build subset; only best sinc enabled; original linear/zoh units satisfy the pinned public dispatcher. Private SDK linkage."
+  "scope": "Minimal native build subset; only the fastest sinc enabled (97 dB SNR, 80% bandwidth; best-quality sinc measured at 2.8x realtime per stereo voice on a Cortex-A55); original linear/zoh units satisfy the pinned public dispatcher. Private SDK linkage."
 }

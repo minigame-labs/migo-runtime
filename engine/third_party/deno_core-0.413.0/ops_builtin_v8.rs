@@ -622,7 +622,6 @@ pub fn op_decode<'s, 'i>(
 }
 
 struct SerializeDeserialize<'a> {
-  max_serialized_bytes: Option<usize>,
   host_objects: Option<v8::Local<'a, v8::Array>>,
   error_callback: Option<v8::Local<'a, v8::Function>>,
   for_storage: bool,
@@ -641,14 +640,6 @@ struct SerializeDeserialize<'a> {
 }
 
 impl v8::ValueSerializerImpl for SerializeDeserialize<'_> {
-  fn max_buffer_capacity(&self) -> usize {
-    // ExpandBuffer requests max(required, previous * 2) + 64. Allow its
-    // geometric slack while bounding temporary memory before allocation.
-    self.max_serialized_bytes.map_or(usize::MAX, |limit| {
-      limit.saturating_mul(2).saturating_add(128)
-    })
-  }
-
   #[allow(unused_variables, reason = "parameters required by trait")]
   fn throw_data_clone_error<'s, 'i>(
     &self,
@@ -684,8 +675,6 @@ impl v8::ValueSerializerImpl for SerializeDeserialize<'_> {
       return Some(id);
     }
     if self.for_storage {
-      let message = v8::String::new(scope, "SharedArrayBuffer cannot be stored")?;
-      self.throw_data_clone_error(scope, message);
       return None;
     }
     let state = JsRuntime::state_from(scope);
@@ -864,40 +853,7 @@ pub fn op_serialize<'s, 'i>(
   transferred_array_buffers: Option<v8::Local<'s, v8::Value>>,
   for_storage: bool,
   error_callback: Option<v8::Local<'s, v8::Value>>,
-  #[smi] max_serialized_bytes: Option<u32>,
 ) -> Result<Uint8Array, JsErrorBox> {
-  serialize_value(scope, value, host_objects, transferred_array_buffers,
-    for_storage, error_callback, max_serialized_bytes)
-}
-
-// The JS op and Rust embedder helper share the exact delegate and validation.
-fn serialize_value<'s, 'i>(
-  scope: &mut v8::PinScope<'s, 'i>,
-  value: v8::Local<'s, v8::Value>,
-  host_objects: Option<v8::Local<'s, v8::Value>>,
-  transferred_array_buffers: Option<v8::Local<'s, v8::Value>>,
-  for_storage: bool,
-  error_callback: Option<v8::Local<'s, v8::Value>>,
-  max_serialized_bytes: Option<u32>,
-) -> Result<Uint8Array, JsErrorBox> {
-  let max_serialized_bytes = match max_serialized_bytes {
-    Some(limit) if limit == 0 || limit > i32::MAX as u32 => {
-      return Err(JsErrorBox::range_error(
-        "maxBytes must be a positive integer below 2^31",
-      ));
-    }
-    Some(limit) => Some(limit as usize),
-    None => None,
-  };
-  // The bounded mode never publishes store ids or detaches caller buffers.
-  // A failed serialization therefore has no out-of-band resources to undo.
-  if max_serialized_bytes.is_some()
-    && (!for_storage || transferred_array_buffers.is_some())
-  {
-    return Err(JsErrorBox::type_error(
-      "maxBytes requires forStorage without transferredArrayBuffers",
-    ));
-  }
   let error_callback = match error_callback {
     Some(cb) => Some(
       v8::Local::<v8::Function>::try_from(cb)
@@ -926,7 +882,6 @@ fn serialize_value<'s, 'i>(
   let host_object_brand = Some(symbol);
 
   let serialize_deserialize = Box::new(SerializeDeserialize {
-    max_serialized_bytes,
     host_objects,
     error_callback,
     for_storage,
@@ -997,9 +952,6 @@ fn serialize_value<'s, 'i>(
     Ok(vec![].into())
   } else if let Some(true) = ret {
     let vector = value_serializer.release();
-    if max_serialized_bytes.is_some_and(|limit| vector.len() > limit) {
-      return Err(JsErrorBox::range_error("Serialized value exceeds maxBytes"));
-    }
     Ok(vector.into())
   } else {
     Err(JsErrorBox::type_error("Failed to serialize response"))
@@ -1010,18 +962,6 @@ fn serialize_value<'s, 'i>(
 pub fn op_deserialize<'s, 'i>(
   scope: &mut v8::PinScope<'s, 'i>,
   #[buffer] zero_copy: JsBuffer,
-  host_objects: Option<v8::Local<'s, v8::Value>>,
-  transferred_array_buffers: Option<v8::Local<'s, v8::Value>>,
-  deserializers: Option<v8::Local<'s, v8::Value>>,
-  for_storage: bool,
-) -> Result<v8::Local<'s, v8::Value>, JsErrorBox> {
-  deserialize_value(scope, &zero_copy, host_objects, transferred_array_buffers,
-    deserializers, for_storage)
-}
-
-fn deserialize_value<'s, 'i>(
-  scope: &mut v8::PinScope<'s, 'i>,
-  zero_copy: &[u8],
   host_objects: Option<v8::Local<'s, v8::Value>>,
   transferred_array_buffers: Option<v8::Local<'s, v8::Value>>,
   deserializers: Option<v8::Local<'s, v8::Value>>,
@@ -1057,14 +997,13 @@ fn deserialize_value<'s, 'i>(
   let serialize_deserialize = Box::new(SerializeDeserialize {
     host_objects,
     error_callback: None,
-    max_serialized_bytes: None,
     for_storage,
     host_object_brand,
     deserializers,
     broadcast_shared_array_buffers: None,
   });
   let value_deserializer =
-    v8::ValueDeserializer::new(scope, serialize_deserialize, zero_copy);
+    v8::ValueDeserializer::new(scope, serialize_deserialize, &zero_copy);
   let parsed_header = value_deserializer
     .read_header(scope.get_current_context())
     .unwrap_or_default();
@@ -1110,33 +1049,6 @@ fn deserialize_value<'s, 'i>(
   }
 }
 
-/// Serialize a copied storage-profile value directly into owned Rust bytes.
-/// Uses the same delegate, allocation cap and type policy as `core.serialize`.
-/// `None` means V8 has rethrown an exception/termination: the caller must return
-/// immediately without publishing a message. No transfer/store ids are created.
-pub fn serialize_for_storage<'s, 'i>(
-  scope: &mut v8::PinScope<'s, 'i>,
-  value: v8::Local<'s, v8::Value>,
-  max_bytes: u32,
-  error_callback: Option<v8::Local<'s, v8::Function>>,
-) -> Result<Option<Box<[u8]>>, JsErrorBox> {
-  let bytes = serialize_value(scope, value, None, None, true,
-    error_callback.map(Into::into), Some(max_bytes))?.0;
-  // Valid V8 wire always contains a header; only the pending-exception branch
-  // returns the empty placeholder required by the JS op's return convention.
-  Ok((!bytes.is_empty()).then_some(bytes))
-}
-
-/// Decode owned storage wire without first allocating a JS ArrayBuffer for it.
-/// The input is borrowed only for the synchronous read; copied values retain no
-/// reference to it. Host deserializers and out-of-band stores are disabled.
-pub fn deserialize_for_storage<'s, 'i>(
-  scope: &mut v8::PinScope<'s, 'i>,
-  bytes: &[u8],
-) -> Result<v8::Local<'s, v8::Value>, JsErrorBox> {
-  deserialize_value(scope, bytes, None, None, None, true)
-}
-
 /// Serializes `value` for delivery over a `BroadcastChannel`. Any
 /// `SharedArrayBuffer` it contains is collected out-of-band into the returned
 /// list (its index in the list is written as the transfer id in the bytes),
@@ -1156,7 +1068,6 @@ pub fn serialize_broadcast<'s, 'i>(
   let serialize_deserialize = Box::new(SerializeDeserialize {
     host_objects: None,
     error_callback,
-    max_serialized_bytes: None,
     for_storage: false,
     host_object_brand: Some(symbol),
     deserializers: None,
@@ -1200,7 +1111,6 @@ pub fn deserialize_broadcast<'s, 'i>(
   let serialize_deserialize = Box::new(SerializeDeserialize {
     host_objects: None,
     error_callback: None,
-    max_serialized_bytes: None,
     for_storage: false,
     host_object_brand: Some(symbol),
     deserializers,
@@ -1241,7 +1151,6 @@ pub fn op_structured_clone<'s, 'i>(
     for_storage: false,
     host_object_brand,
     deserializers: None,
-    max_serialized_bytes: None,
     broadcast_shared_array_buffers: None,
   });
   let value_serializer = v8::ValueSerializer::new(scope, serialize_deserialize);
@@ -1269,7 +1178,6 @@ pub fn op_structured_clone<'s, 'i>(
     for_storage: false,
     host_object_brand,
     deserializers,
-    max_serialized_bytes: None,
     broadcast_shared_array_buffers: None,
   });
   let value_deserializer =

@@ -892,20 +892,6 @@ impl UnifiedFrameCollector {
     }
 
     #[inline]
-    pub(crate) fn set_fill_color(&mut self, canvas_id: u32, color: shared::protocol::color::Color) {
-        self.push_canvas2d(canvas_id, Canvas2DCmd::SetFillStyle { color });
-    }
-
-    #[inline]
-    pub(crate) fn set_stroke_color(
-        &mut self,
-        canvas_id: u32,
-        color: shared::protocol::color::Color,
-    ) {
-        self.push_canvas2d(canvas_id, Canvas2DCmd::SetStrokeStyle { color });
-    }
-
-    #[inline]
     pub(crate) fn set_line_width(&mut self, canvas_id: u32, width: f32) {
         self.push_canvas2d(canvas_id, Canvas2DCmd::SetLineWidth { width });
     }
@@ -955,15 +941,6 @@ impl UnifiedFrameCollector {
     #[inline]
     pub(crate) fn set_shadow_blur(&mut self, canvas_id: u32, blur: f32) {
         self.push_canvas2d(canvas_id, Canvas2DCmd::SetShadowBlur { blur });
-    }
-
-    #[inline]
-    pub(crate) fn set_shadow_color(
-        &mut self,
-        canvas_id: u32,
-        color: shared::protocol::color::Color,
-    ) {
-        self.push_canvas2d(canvas_id, Canvas2DCmd::SetShadowColor { color });
     }
 
     #[inline]

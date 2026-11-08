@@ -1,7 +1,7 @@
 use std::{cell::RefCell, future::Future, rc::Rc, sync::Arc, time::Duration};
 
 use deno_core::{
-    Extension, ExtensionArguments, FsModuleLoader, JsBuffer, JsRuntime, ModuleLoader, OpState,
+    Extension, ExtensionArguments, JsBuffer, JsRuntime, ModuleLoader, OpState,
     PollEventLoopOptions, RuntimeOptions, SharedArrayBufferStore, op2, resolve_path, v8,
 };
 use tokio::sync::mpsc;
@@ -1139,13 +1139,30 @@ fn op_worker_post_message<'s, 'i>(
         reserve_worker_send(&state, MAX_WORKER_MESSAGE_BYTES as u32).map_err(worker_error)?
     };
     // No OpState borrow may survive this call: serialize can execute getters.
-    let Some(bytes) =
-        deno_core::serialize_for_storage(scope, value, max_bytes, Some(error_callback))?
+    let Some(bytes) = wire::serialize(scope, value, max_bytes as usize, Some(error_callback))?
     else {
         return Ok(()); // pending V8 exception; reservation drops, nothing sent
     };
     let wire = WorkerWire::from_owned(bytes).map_err(worker_error)?;
     reservation.commit(wire).map_err(worker_error)
+}
+
+/// Pre-ready sends keep their wire in JS until the Worker is ready; encode it
+/// with the same codec the ready path uses.
+#[op2(reentrant)]
+#[buffer]
+fn op_worker_serialize<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    value: v8::Local<'s, v8::Value>,
+    #[smi] max_bytes: u32,
+    error_callback: v8::Local<'s, v8::Function>,
+) -> Result<Vec<u8>, deno_error::JsErrorBox> {
+    // A pending exception is rethrown; the empty result is discarded.
+    Ok(
+        wire::serialize(scope, value, max_bytes as usize, Some(error_callback))?
+            .map(Vec::from)
+            .unwrap_or_default(),
+    )
 }
 
 /// Explicit tickets are needed only while flushing pre-ready private wire.
@@ -1359,7 +1376,7 @@ async fn op_worker_inner_recv_message(
 
 deno_core::extension!(
     host_v8_worker_codec,
-    ops = [op_worker_post_message, op_worker_reserve_message, op_worker_commit_message, op_worker_abort_message],
+    ops = [op_worker_serialize, op_worker_post_message, op_worker_reserve_message, op_worker_commit_message, op_worker_abort_message],
     esm = [dir "src/worker", "00_worker_codec.js", "00_worker_serialize.js"],
     state = |state| { state.put(WorkerReservations::default()); },
 );
@@ -2615,12 +2632,8 @@ mod timer_lifecycle_tests {
         let wire = {
             deno_core::scope!(scope, rt);
             let value = v8::Local::new(scope, value);
-            WorkerWire::from_owned(
-                deno_core::serialize_for_storage(scope, value, 4096, None)
-                    .unwrap()
-                    .unwrap(),
-            )
-            .unwrap()
+            WorkerWire::from_owned(wire::serialize(scope, value, 4096, None).unwrap().unwrap())
+                .unwrap()
         };
         message_tx.send(WorkerMessage::Message(wire)).unwrap();
         drain_ready(&mut rt).await;
@@ -2872,7 +2885,7 @@ mod watchdog_worker_tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("main.js"), "while (true) {}").unwrap();
 
-        let mut rt = build_worker_rt(Some(Rc::new(FsModuleLoader)));
+        let mut rt = build_worker_rt(Some(Rc::new(deno_core::FsModuleLoader)));
         let sched = Scheduler::new_test();
         let (err_tx, mut err_rx) = worker_error_channel();
         let obs_tx = err_tx.clone();

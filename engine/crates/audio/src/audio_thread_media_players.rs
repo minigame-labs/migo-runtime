@@ -1,47 +1,25 @@
 //! Media membership keeps its standard table and source-vector allocation credit.
 use super::*;
-use crate::graph_map::{GraphMap, Initial, Plan};
-use crate::graph_vec::{GraphVec, Plan as VectorPlan};
-use crate::node_retirement::Host;
 
-#[cfg(test)]
-type Identity = (usize, usize, Vec<(u32, Vec<u32>, usize, usize)>);
-
+#[derive(Default)]
 pub(super) struct MediaPlayers {
-    players: GraphMap<GraphVec<InnerAudioId>>,
-    host: Host,
+    players: HashMap<u32, Vec<InnerAudioId>>,
 }
 impl MediaPlayers {
-    pub(super) fn new(host: Host) -> EngineResult<Self> {
-        let initial = Initial::reserve(&host, 4)?;
-        Ok(Self {
-            players: initial.finish(),
-            host,
-        })
+    pub(super) fn new() -> Self {
+        Self {
+            players: HashMap::with_capacity(4),
+        }
     }
-    pub(super) fn create(&mut self, id: u32) -> EngineResult<()> {
-        let required = self.players.len() + usize::from(!self.players.contains_key(&id));
-        let plan = Plan::reserve(&self.players, Some(&self.host), required)?;
-        if let Some(plan) = plan {
-            plan.install(&mut self.players);
-        }
-        // Repeated create historically resets membership, even for a live id.
-        self.players.insert(id, GraphVec::new());
-        Ok(())
+    pub(super) fn create(&mut self, id: u32) {
+        self.players.insert(id, Vec::new());
     }
-    pub(super) fn add_source(&mut self, id: u32, source: InnerAudioId) -> EngineResult<()> {
-        let Some(sources) = self.players.get_mut(&id) else {
-            return Ok(());
-        };
-        if sources.contains(&source) {
-            return Ok(());
+    pub(super) fn add_source(&mut self, id: u32, source: InnerAudioId) {
+        if let Some(sources) = self.players.get_mut(&id)
+            && !sources.contains(&source)
+        {
+            sources.push(source);
         }
-        let plan = VectorPlan::reserve(sources, Some(&self.host), sources.len() + 1)?;
-        if let Some(plan) = plan {
-            plan.install(sources);
-        }
-        sources.push(source);
-        Ok(())
     }
     pub(super) fn remove_source(&mut self, id: u32, source: InnerAudioId) {
         if let Some(sources) = self.players.get_mut(&id) {
@@ -49,7 +27,7 @@ impl MediaPlayers {
         }
     }
     pub(super) fn get(&self, id: &u32) -> Option<&[InnerAudioId]> {
-        self.players.get(id).map(GraphVec::as_slice)
+        self.players.get(id).map(Vec::as_slice)
     }
     pub(super) fn start(&self, id: u32, inner: &mut impl PlayerAccess) -> bool {
         let Some(sources) = self.get(&id) else {
@@ -73,35 +51,6 @@ impl MediaPlayers {
     }
     pub(super) fn destroy(&mut self, id: u32) {
         self.players.remove(&id);
-    }
-    #[cfg(test)]
-    pub(super) fn identity(&self) -> Identity {
-        let mut rows: Vec<_> = self
-            .players
-            .iter()
-            .map(|(id, sources)| {
-                (
-                    *id,
-                    sources.to_vec(),
-                    sources.as_ptr() as usize,
-                    sources.capacity(),
-                )
-            })
-            .collect();
-        rows.sort_unstable_by_key(|row| row.0);
-        (self.players.len(), self.players.capacity(), rows)
-    }
-    #[cfg(test)]
-    pub(super) fn table_bytes(&self) -> usize {
-        self.players.allocation_bytes()
-    }
-    #[cfg(test)]
-    pub(super) fn observe_table(&mut self, hook: Arc<dyn Fn() + Send + Sync>) {
-        self.players.observe(hook);
-    }
-    #[cfg(test)]
-    pub(super) fn observe_sources(&mut self, id: u32, hook: Arc<dyn Fn() + Send + Sync>) {
-        self.players.get_mut(&id).unwrap().observe(hook);
     }
 }
 

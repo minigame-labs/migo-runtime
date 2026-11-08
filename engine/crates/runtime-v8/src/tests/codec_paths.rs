@@ -21,7 +21,7 @@ fn runtime() -> JsRuntime {
     let mut extensions = crate::console::console_extensions();
     extensions.extend(crate::utility::utility_extensions());
     extensions.push(codec_test::init());
-    let mut rt = JsRuntime::new(RuntimeOptions {
+    let rt = JsRuntime::new(RuntimeOptions {
         extensions,
         ..Default::default()
     });

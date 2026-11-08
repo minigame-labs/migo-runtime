@@ -36,8 +36,9 @@ Native C++ builds continue to use the pinned standalone source checkout and
 `../v8-patches/`; this Rust consumer patch does not stand in for native artifact
 regeneration, Windows DLL linking, or execution tests.
 
-0002-bounded-serializer.patch adds an optional Rust delegate allocation cap,
-preserving the unlimited default and every C callback signature. Rejected or
-failed reallocations preserve the old allocation's layout. Migo's core codec
-uses the cap before allocating serialized Worker data; the Windows source gate
-replays this common Rust-only patch after the native callback mirror.
+0002-serializer-realloc-failure.patch fixes the serializer delegate's
+ReallocateBufferMemory: upstream records the requested size before the
+reallocation, so a failed realloc (which keeps the old allocation) is later
+freed with the wrong layout, and a zero-size request reaches `alloc` (UB). The
+size is now recorded only on success and zero-size requests fail. The Windows
+source gate replays this common Rust-only patch after the native callback mirror.

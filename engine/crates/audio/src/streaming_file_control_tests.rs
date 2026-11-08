@@ -522,7 +522,7 @@ async fn service_player(f: &Fixture, data: &[u8], rate: u32, packaged: bool) -> 
     let task = tokio::spawn(work);
     let deadline = Instant::now() + WAIT;
     let delivery = loop {
-        if let Ok(d) = rx.try_recv_owned() {
+        if let Ok(d) = rx.try_recv() {
             break d;
         }
         assert!(
@@ -531,7 +531,7 @@ async fn service_player(f: &Fixture, data: &[u8], rate: u32, packaged: bool) -> 
         );
         tokio::task::yield_now().await;
     };
-    let (cmd, permit) = delivery.into_parts();
+    let cmd = delivery;
     let AudioCmd::InnerAudioLoadFile {
         load, source, resp, ..
     } = cmd
@@ -548,7 +548,6 @@ async fn service_player(f: &Fixture, data: &[u8], rate: u32, packaged: bool) -> 
         source,
         resp,
     );
-    drop(permit);
     wait(&mut p, |p| p.shared.is_loaded()).await;
     task.await.unwrap().unwrap();
     p

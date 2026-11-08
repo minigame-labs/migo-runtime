@@ -8,7 +8,6 @@
     Error,
     ErrorCaptureStackTrace,
     FunctionPrototypeBind,
-    NumberIsInteger,
     ObjectAssign,
     ObjectDefineProperties,
     ObjectDefineProperty,
@@ -17,7 +16,6 @@
     ObjectKeys,
     ObjectHasOwn,
     ReflectOwnKeys,
-    RangeError,
     setQueueMicrotask,
     SafeMap,
     SafeWeakMap,
@@ -1198,18 +1196,12 @@
       options,
       errorCallback,
     ) => {
-      const maxBytes = options?.maxBytes;
-      if (maxBytes !== undefined &&
-        (!NumberIsInteger(maxBytes) || maxBytes < 1 || maxBytes > 0x7fffffff)) {
-        throw new RangeError("maxBytes must be a positive integer below 2^31");
-      }
       return op_serialize(
         value,
         options?.hostObjects,
         options?.transferredArrayBuffers,
         options?.forStorage ?? false,
         errorCallback,
-        maxBytes,
       );
     },
     deserialize: (buffer, options) => {

@@ -394,7 +394,7 @@ async fn actual_service_selects_a_real_over_16mib_vorbis_file_and_public_seek_re
     let task = tokio::spawn(future);
     let until = Instant::now() + WAIT;
     let delivery = loop {
-        if let Ok(d) = rx.try_recv_owned() {
+        if let Ok(d) = rx.try_recv() {
             break d;
         }
         assert!(
@@ -403,7 +403,7 @@ async fn actual_service_selects_a_real_over_16mib_vorbis_file_and_public_seek_re
         );
         tokio::task::yield_now().await;
     };
-    let (command, permit) = delivery.into_parts();
+    let command = delivery;
     let AudioCmd::InnerAudioLoadFile {
         load, source, resp, ..
     } = command
@@ -420,7 +420,6 @@ async fn actual_service_selects_a_real_over_16mib_vorbis_file_and_public_seek_re
         source,
         resp,
     );
-    drop(permit);
     wait(&mut p, |p| p.shared.is_loaded()).await;
     task.await.unwrap().unwrap();
     assert!(

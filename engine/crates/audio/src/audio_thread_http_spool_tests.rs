@@ -17,215 +17,6 @@ impl Drop for Actor {
 }
 
 #[tokio::test]
-async fn actual_buffered_actor_admits_native_rate_before_publishing_the_command() {
-    let io = migo_io::scheduler::IoScheduler::isolated_for_admission_probe(1270, 1, u64::MAX);
-    let ledger = Arc::new(AudioAggregateLedger::new(32 << 20));
-    let host = crate::node_retirement::Host::new(io.audio_cpu(), ledger.clone(), 2).unwrap();
-    let (tx, rx) = shared::audio_channel::channel();
-    let wakeup = ThreadWakeup::new();
-    let sender = shared::op_state::AudioSender::new(tx, wakeup.clone());
-    let (host_tx, _critical, _events) = shared::host_channel::channel(64);
-    let mut silent = crate::output::SilentOutput::managed_for_test(&host);
-    silent.resume_stream();
-    let cpu = io.audio_cpu();
-    let factory: StreamingHttpClientFactory =
-        Arc::new(|| Err(EngineError::new(ErrorCode::Internal)));
-    let thread = thread::spawn(move || {
-        run_audio_thread(
-            rx,
-            Vec::new(),
-            AudioOutput::Silent(silent),
-            host_tx,
-            wakeup,
-            factory,
-            cpu,
-        )
-    });
-    let root = std::env::temp_dir().join(format!(
-        "migo-rate-actor-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&root).unwrap();
-    let actor = Actor {
-        sender,
-        thread: Some(thread),
-        root,
-    };
-    actor
-        .sender
-        .send(AudioCmd::CreateInnerAudio { id: 871 })
-        .unwrap();
-    let (resp, reply) = tokio::sync::oneshot::channel();
-    actor
-        .sender
-        .send(AudioCmd::InnerAudioLoad {
-            id: 871,
-            data: include_bytes!("decoder/aac-fixtures/1-tail.m4a").to_vec(),
-            resp,
-        })
-        .unwrap();
-    let info = tokio::time::timeout(Duration::from_secs(20), reply)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    async fn state(actor: &Actor) -> shared::protocol::audio_cmd::InnerAudioState {
-        let (resp, reply) = tokio::sync::oneshot::channel();
-        actor
-            .sender
-            .send(AudioCmd::InnerAudioGetState { id: 871, resp })
-            .unwrap();
-        tokio::time::timeout(Duration::from_secs(10), reply)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap()
-    }
-    assert!(state(&actor).await.buffered);
-    let baseline = ledger.used_bytes();
-    actor
-        .sender
-        .send(AudioCmd::InnerAudioSetPlaybackRate {
-            id: 871,
-            rate: 0.503,
-        })
-        .unwrap();
-    assert_eq!(state(&actor).await.playback_rate, 0.503);
-    unsafe extern "C" {
-        fn migo_src_required_bytes(channels: std::ffi::c_int) -> usize;
-    }
-    let bytes = unsafe { migo_src_required_bytes(info.channels as std::ffi::c_int) };
-    assert!(
-        ledger.used_bytes() >= baseline + bytes + crate::node_retirement::HANDOFF_BYTES,
-        "actual actor did not retain native rate state"
-    );
-    actor
-        .sender
-        .send(AudioCmd::InnerAudioSetPlaybackRate { id: 871, rate: 1. })
-        .unwrap();
-    assert_eq!(state(&actor).await.playback_rate, 1.);
-    let start = Instant::now();
-    while ledger.used_bytes() != baseline {
-        assert!(start.elapsed() < Duration::from_secs(10));
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-    let _deny = ledger
-        .try_reserve((32 << 20) - baseline, "actor saturation")
-        .unwrap();
-    actor
-        .sender
-        .send(AudioCmd::InnerAudioSetPlaybackRate {
-            id: 871,
-            rate: 1.333,
-        })
-        .unwrap();
-    let unchanged = state(&actor).await;
-    assert_eq!(
-        unchanged.playback_rate, 1.,
-        "actual actor published a refused playbackRate"
-    );
-    assert!(unchanged.buffered && unchanged.paused);
-    drop(_deny);
-    actor
-        .sender
-        .send(AudioCmd::CreateContext {
-            ctx_id: 1871,
-            sample_rate: Some(48000),
-        })
-        .unwrap();
-    actor
-        .sender
-        .send(AudioCmd::CreateBufferSource {
-            ctx_id: 1871,
-            node_id: 1872,
-        })
-        .unwrap();
-    actor
-        .sender
-        .send(AudioCmd::SetNodeParam {
-            node_id: 1872,
-            param_name: "playbackRate".into(),
-            value: 1.33337,
-        })
-        .unwrap();
-    actor
-        .sender
-        .send(AudioCmd::SetNodeParam {
-            node_id: 1872,
-            param_name: "detune".into(),
-            value: 53.25,
-        })
-        .unwrap();
-    let registry =
-        shared::audio_resources::AudioResourceRegistry::with_physical_ledger(ledger.clone());
-    let lease = registry
-        .adopt_frozen(
-            1,
-            shared::audio_resources::AudioBufferFormat {
-                channels: 2,
-                frames: 1025,
-                sample_rate: 48000,
-            },
-            vec![0.25; 2050],
-        )
-        .unwrap();
-    let snapshot = registry
-        .prepare_snapshot(lease.key(), None)
-        .unwrap()
-        .commit();
-    async fn context_barrier(actor: &Actor) {
-        let (resp, reply) = tokio::sync::oneshot::channel();
-        actor
-            .sender
-            .send(AudioCmd::GetContextState { ctx_id: 1871, resp })
-            .unwrap();
-        tokio::time::timeout(Duration::from_secs(10), reply)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-    }
-    context_barrier(&actor).await;
-    let web_ledger = AudioAggregateLedger::process_global();
-    let before_start = web_ledger.used_bytes();
-    actor
-        .sender
-        .send(AudioCmd::StartBuffer {
-            ctx_id: 1871,
-            node_id: 1872,
-            buffer: Some(snapshot),
-            when: 1000.0,
-            offset: 0.375 / 48000.0,
-            duration: None,
-        })
-        .unwrap();
-    context_barrier(&actor).await;
-    assert!(
-        web_ledger.used_bytes()
-            >= before_start
-                + unsafe { migo_src_required_bytes(2) }
-                + crate::node_retirement::HANDOFF_BYTES,
-        "actual WebAudio StartBuffer actor did not retain native SRC"
-    );
-    assert!(registry.release_buffer(lease.key()));
-    let (resp, reply) = tokio::sync::oneshot::channel();
-    actor
-        .sender
-        .send(AudioCmd::CloseContext { ctx_id: 1871, resp })
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), reply)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-
-    drop(actor);
-}
-#[tokio::test]
 async fn admitted_url_carries_session_spool_through_the_actual_audio_actor_and_source_identity() {
     let io = Arc::new(migo_io::scheduler::IoScheduler::new(1082));
     let source = server(
@@ -324,142 +115,6 @@ async fn admitted_url_carries_session_spool_through_the_actual_audio_actor_and_s
     }
     assert!(canplay, "actual spool source never published CanPlay");
     drop(actor);
-}
-
-#[tokio::test]
-async fn actual_url_actor_keeps_the_original_sealed_source_for_public_seek_and_restart() {
-    let io = Arc::new(migo_io::scheduler::IoScheduler::new(1082));
-    let source = server(
-        include_bytes!("decoder/aac-fixtures/1-tail.m4a").to_vec(),
-        Mode::NoTag,
-        false,
-        false,
-    )
-    .await;
-    let client = source.client(io.pools().clone());
-    let factory: StreamingHttpClientFactory = Arc::new(move || Ok(client.clone()));
-    let (tx, rx) = shared::audio_channel::channel();
-    let wakeup = ThreadWakeup::new();
-    let sender = shared::op_state::AudioSender::new(tx, wakeup.clone());
-    let (host_tx, _critical, mut events) = shared::host_channel::channel(64);
-    let root = std::env::temp_dir().join(format!(
-        "migo-spool-actor-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let paths =
-        shared::vfs::GamePaths::new(root.join("files"), root.join("cache"), "audio", 1).unwrap();
-    paths.ensure_directories().unwrap();
-    let mut silent = crate::output::SilentOutput::new();
-    silent.resume_stream();
-    let cpu = io.audio_cpu();
-    let thread = thread::spawn(move || {
-        run_audio_thread(
-            rx,
-            Vec::new(),
-            AudioOutput::Silent(silent),
-            host_tx,
-            wakeup,
-            factory,
-            cpu,
-        )
-    });
-    let actor = Actor {
-        sender,
-        thread: Some(thread),
-        root,
-    };
-    actor
-        .sender
-        .send(AudioCmd::CreateInnerAudio { id: 811 })
-        .unwrap();
-    actor
-        .sender
-        .send(AudioCmd::InnerAudioSetAutoplay {
-            id: 811,
-            autoplay: true,
-        })
-        .unwrap();
-    let (spool, seen, freed) = crate::streaming_http::tests::controls::observe(
-        migo_services::audio::LocalAudioFile::session(io.clone(), &paths).http_spool(),
-    );
-    let (reply, result) = tokio::sync::oneshot::channel();
-    actor
-        .sender
-        .send(AudioCmd::InnerAudioBeginLoad {
-            id: 811,
-            source_id: 818,
-            resp: reply,
-        })
-        .unwrap();
-    let load = result.await.unwrap().unwrap();
-    let (reply, result) = tokio::sync::oneshot::channel();
-    actor
-        .sender
-        .send(AudioCmd::InnerAudioLoadUrl {
-            id: 811,
-            load,
-            url: "http://indexed-product-fixture.invalid/wrong.mp3".into(),
-            spool: Some(spool),
-            resp: reply,
-        })
-        .unwrap();
-    result.await.unwrap().unwrap();
-    let seen = tokio::time::timeout(Duration::from_secs(20), seen)
-        .await
-        .unwrap()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let mut ended = 0;
-    let mut seeked = false;
-    while ended < 2 {
-        assert!(Instant::now() < deadline, "actual URL controls stalled");
-        if let Ok(HostCommand::InnerAudioEvent { event }) = events.try_recv() {
-            assert_eq!((event.id, event.source_id), (811, 818));
-            assert_ne!(
-                event.event_type,
-                InnerAudioEventType::Error,
-                "actual URL control emitted Error"
-            );
-            seeked |= event.event_type == InnerAudioEventType::Seeked;
-            if event.event_type == InnerAudioEventType::Ended {
-                ended += 1;
-                assert!(
-                    seen.file.upgrade().is_some() && seen.watch.freed_bytes().is_none(),
-                    "actual URL actor did not retain the sealed source at EOF"
-                );
-                if ended == 1 {
-                    actor
-                        .sender
-                        .send(AudioCmd::InnerAudioSeek {
-                            id: 811,
-                            position: 0.0,
-                        })
-                        .unwrap();
-                    actor
-                        .sender
-                        .send(AudioCmd::InnerAudioPlay { id: 811 })
-                        .unwrap();
-                }
-            }
-        } else {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    }
-    assert!(
-        seeked,
-        "actual URL actor did not complete public source seek"
-    );
-    drop(actor);
-    let freed = tokio::time::timeout(Duration::from_secs(20), freed)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(freed.allocation, Some(65536));
-    assert!(freed.bytes >= 131072 && freed.off_async_thread);
 }
 
 #[tokio::test]
@@ -997,4 +652,140 @@ async fn actual_vorbis_url_actor_reopens_the_same_pinned_source_after_eof() {
         "actual URL actor did not complete public source seek"
     );
     drop(actor);
+}
+
+#[tokio::test]
+async fn actual_url_actor_keeps_the_original_sealed_source_for_public_seek_and_restart() {
+    let io = Arc::new(migo_io::scheduler::IoScheduler::new(1082));
+    let source = server(
+        include_bytes!("decoder/aac-fixtures/1-tail.m4a").to_vec(),
+        Mode::NoTag,
+        false,
+        false,
+    )
+    .await;
+    let client = source.client(io.pools().clone());
+    let factory: StreamingHttpClientFactory = Arc::new(move || Ok(client.clone()));
+    let (tx, rx) = shared::audio_channel::channel();
+    let wakeup = ThreadWakeup::new();
+    let sender = shared::op_state::AudioSender::new(tx, wakeup.clone());
+    let (host_tx, _critical, mut events) = shared::host_channel::channel(64);
+    let root = std::env::temp_dir().join(format!(
+        "migo-spool-actor-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let paths =
+        shared::vfs::GamePaths::new(root.join("files"), root.join("cache"), "audio", 1).unwrap();
+    paths.ensure_directories().unwrap();
+    let mut silent = crate::output::SilentOutput::new();
+    silent.resume_stream();
+    let cpu = io.audio_cpu();
+    let thread = thread::spawn(move || {
+        run_audio_thread(
+            rx,
+            Vec::new(),
+            AudioOutput::Silent(silent),
+            host_tx,
+            wakeup,
+            factory,
+            cpu,
+        )
+    });
+    let actor = Actor {
+        sender,
+        thread: Some(thread),
+        root,
+    };
+    actor
+        .sender
+        .send(AudioCmd::CreateInnerAudio { id: 811 })
+        .unwrap();
+    actor
+        .sender
+        .send(AudioCmd::InnerAudioSetAutoplay {
+            id: 811,
+            autoplay: true,
+        })
+        .unwrap();
+    let (spool, seen, freed) = crate::streaming_http::tests::controls::observe(
+        migo_services::audio::LocalAudioFile::session(io.clone(), &paths).http_spool(),
+    );
+    let (reply, result) = tokio::sync::oneshot::channel();
+    actor
+        .sender
+        .send(AudioCmd::InnerAudioBeginLoad {
+            id: 811,
+            source_id: 818,
+            resp: reply,
+        })
+        .unwrap();
+    let load = result.await.unwrap().unwrap();
+    let (reply, result) = tokio::sync::oneshot::channel();
+    actor
+        .sender
+        .send(AudioCmd::InnerAudioLoadUrl {
+            id: 811,
+            load,
+            url: "http://indexed-product-fixture.invalid/wrong.mp3".into(),
+            spool: Some(spool),
+            resp: reply,
+        })
+        .unwrap();
+    result.await.unwrap().unwrap();
+    let seen = tokio::time::timeout(Duration::from_secs(20), seen)
+        .await
+        .unwrap()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut ended = 0;
+    let mut seeked = false;
+    while ended < 2 {
+        assert!(Instant::now() < deadline, "actual URL controls stalled");
+        if let Ok(HostCommand::InnerAudioEvent { event }) = events.try_recv() {
+            assert_eq!((event.id, event.source_id), (811, 818));
+            assert_ne!(
+                event.event_type,
+                InnerAudioEventType::Error,
+                "actual URL control emitted Error"
+            );
+            seeked |= event.event_type == InnerAudioEventType::Seeked;
+            if event.event_type == InnerAudioEventType::Ended {
+                ended += 1;
+                assert!(
+                    seen.file.upgrade().is_some() && seen.watch.freed_bytes().is_none(),
+                    "actual URL actor did not retain the sealed source at EOF"
+                );
+                if ended == 1 {
+                    actor
+                        .sender
+                        .send(AudioCmd::InnerAudioSeek {
+                            id: 811,
+                            position: 0.0,
+                        })
+                        .unwrap();
+                    actor
+                        .sender
+                        .send(AudioCmd::InnerAudioPlay { id: 811 })
+                        .unwrap();
+                }
+            }
+        } else {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+    assert!(
+        seeked,
+        "actual URL actor did not complete public source seek"
+    );
+    drop(actor);
+    let freed = tokio::time::timeout(Duration::from_secs(20), freed)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(freed.allocation, Some(65536));
+    assert!(freed.bytes >= 131072);
 }

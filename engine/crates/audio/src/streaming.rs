@@ -297,10 +297,12 @@ impl StreamCutover {
     pub(crate) fn input_origin(self) -> u64 {
         self.input_origin
     }
+    #[cfg(test)]
     pub(crate) fn source_origin(self) -> (u64, u64) {
         let frames = self.presentation.timeline.frames;
         (self.input_origin % frames, self.input_origin / frames)
     }
+    #[cfg(test)]
     pub(crate) fn input_frames(self) -> u64 {
         self.presentation.timeline.frames
     }
@@ -439,7 +441,6 @@ impl Drop for PcmChunk {
 pub(crate) struct PcmPool {
     home: mpsc::Sender<pcm_buffer::Buffer>,
     returns: mpsc::Receiver<pcm_buffer::Buffer>,
-    cpu: Option<migo_io::audio_cpu::AudioCpu>,
     slots: Option<Arc<tokio::sync::Semaphore>>,
 }
 
@@ -451,15 +452,13 @@ impl PcmPool {
         Self {
             home,
             returns,
-            cpu: None,
             slots: None,
         }
     }
 
-    /// Production pools retain CPU-only disposal when returns are full/closed.
-    pub(crate) fn with_cpu(cpu: migo_io::audio_cpu::AudioCpu) -> Self {
+    /// Production pools bound how many chunks can be in flight at once.
+    pub(crate) fn bounded() -> Self {
         Self {
-            cpu: Some(cpu),
             // Original return cache (C+1), publication channel C, one consumer,
             // old pending output and one applying control/working CPU loan.
             slots: Some(Arc::new(tokio::sync::Semaphore::new(
@@ -478,7 +477,6 @@ impl PcmPool {
     fn allocate(&self, slot: Option<tokio::sync::OwnedSemaphorePermit>) -> PcmChunk {
         self.chunk(pcm_buffer::Buffer::new(
             Vec::with_capacity(PCM_CHUNK_SAMPLES),
-            self.cpu.as_ref(),
             slot,
         ))
     }
@@ -835,6 +833,7 @@ impl StreamPublication {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) async fn finish(
         &mut self,
         tx: &mpsc::Sender<StreamMsg>,
@@ -1073,6 +1072,7 @@ impl StreamPublication {
 }
 
 /// One format invariant for ordinary decoding, EOF flush and resumed traversal.
+#[cfg(test)]
 pub(crate) async fn publish_stream_chunk(
     tx: &mpsc::Sender<StreamMsg>,
     state: &StreamingState,
@@ -1365,7 +1365,6 @@ mod tests {
     /// the allocation gate above is the only other thing that would notice.
     #[test]
     fn a_returned_chunk_is_the_buffer_the_next_one_is_written_into() {
-        super::pcm_retirement_tests::retirement();
         let mut pool = PcmPool::new();
 
         let mut first = pool.take();
@@ -1888,6 +1887,3 @@ mod revision_tests {
 
 #[path = "stream_pcm_buffer.rs"]
 mod pcm_buffer;
-#[cfg(test)]
-#[path = "stream_pcm_retirement_tests.rs"]
-mod pcm_retirement_tests;

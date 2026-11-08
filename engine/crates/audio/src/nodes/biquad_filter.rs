@@ -5,7 +5,6 @@ use shared::protocol::audio_cmd::AudioNodeId;
 use crate::param::AudioParamTimeline;
 
 use super::AudioNodeProcessor;
-use crate::node_storage::FixedStorage;
 
 /// BiquadFilter types (Robert Bristow-Johnson's Audio EQ Cookbook)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,7 +57,7 @@ pub struct BiquadFilterNode {
     a1: f64,
     a2: f64,
     // Per-channel filter state
-    states: FixedStorage<Vec<BiquadState>>,
+    states: Vec<BiquadState>,
     // Cache to avoid recomputing coefficients every frame
     last_freq: f32,
     last_q: f32,
@@ -69,23 +68,8 @@ pub struct BiquadFilterNode {
 }
 
 impl BiquadFilterNode {
-    #[cfg(test)]
     pub fn new(id: AudioNodeId, channels: u32, sample_rate: u32) -> Self {
-        Self::new_with_retirement(id, channels, sample_rate, None)
-            .expect("unmanaged biquad storage")
-    }
-    pub(crate) fn new_with_retirement(
-        id: AudioNodeId,
-        channels: u32,
-        sample_rate: u32,
-        host: Option<&crate::node_retirement::Host>,
-    ) -> shared::error::EngineResult<Self> {
-        let bytes = (channels as usize)
-            .checked_mul(std::mem::size_of::<BiquadState>())
-            .ok_or_else(crate::node_storage::size_overflow)?;
-        let states = FixedStorage::new(host, bytes, || {
-            vec![BiquadState::default(); channels as usize]
-        })?;
+        let states = vec![BiquadState::default(); channels as usize];
         // Nyquist for the rate actually in use. Hardcoding 22050 is only right
         // at 44.1 kHz; at the 48 kHz most devices run it clamped away the top
         // 2 kHz of the legal range.
@@ -111,21 +95,7 @@ impl BiquadFilterNode {
             last_sample_rate: f64::NAN,
         };
         node.compute_coefficients(sample_rate.max(1) as f64, 0.0); // recomputed on first process
-        Ok(node)
-    }
-    pub(crate) fn prepare_storage(
-        &mut self,
-        host: &crate::node_retirement::Host,
-    ) -> shared::error::EngineResult<()> {
-        self.states.prepare(host)
-    }
-    #[cfg(test)]
-    pub(crate) fn storage_bytes(&self) -> usize {
-        crate::node_storage::CapacityBytes::capacity_bytes(&*self.states)
-    }
-    #[cfg(test)]
-    pub(crate) fn observe_storage(&mut self, hook: std::sync::Arc<dyn Fn() + Send + Sync>) {
-        self.states.observe(hook);
+        node
     }
 
     pub fn set_type(&mut self, t: BiquadFilterType) {
@@ -368,21 +338,6 @@ impl AudioNodeProcessor for BiquadFilterNode {
                 .iter()
                 .any(|sample| sample.abs() > 1e-10)
         })
-    }
-
-    fn prepare_params(
-        &mut self,
-        host: &crate::node_retirement::Host,
-    ) -> shared::error::EngineResult<()> {
-        for param in [
-            &mut self.frequency,
-            &mut self.detune,
-            &mut self.q,
-            &mut self.gain,
-        ] {
-            param.prepare_storage(host)?;
-        }
-        Ok(())
     }
 
     fn get_param_mut(&mut self, name: &str) -> Option<&mut AudioParamTimeline> {
