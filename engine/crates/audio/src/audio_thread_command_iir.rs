@@ -28,6 +28,3 @@ pub(super) fn forward(
     inbox.finish_parameters(delivery);
     None
 }
-#[cfg(test)]
-#[path = "audio_thread_command_iir_tests.rs"]
-pub(super) mod tests;

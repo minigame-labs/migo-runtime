@@ -505,9 +505,5 @@ async fn run(
 mod waiting_retirement;
 
 #[cfg(test)]
-#[path = "decode_waiting_tests.rs"]
-mod waiting_tests;
-
-#[cfg(test)]
 #[path = "decode_pool_tests.rs"]
 mod tests;

@@ -127,7 +127,3 @@ fn rejection(
         _ => None,
     }
 }
-
-#[cfg(test)]
-#[path = "audio_thread_command_rejection_tests.rs"]
-pub(super) mod tests;

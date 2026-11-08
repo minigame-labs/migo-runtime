@@ -816,47 +816,8 @@ fn create_context_scoped(
     ctx_id: AudioContextId,
     sample_rate: u32,
     channels: u32,
-    cpu: Option<&migo_io::audio_cpu::AudioCpu>,
 ) -> bool {
-    contexts.create_context(
-        ctx_id,
-        sample_rate,
-        channels,
-        cpu,
-        crate::limits::AudioAggregateLedger::process_global,
-    )
-}
-
-#[cfg(test)]
-fn create_context_scoped_with_ledger(
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
-    ctx_id: AudioContextId,
-    sample_rate: u32,
-    channels: u32,
-    cpu: Option<&migo_io::audio_cpu::AudioCpu>,
-    aggregate: impl FnOnce() -> Arc<crate::limits::AudioAggregateLedger>,
-) -> bool {
-    if contexts.contains_key(&ctx_id) {
-        return false;
-    }
-    let context = match cpu {
-        Some(cpu) => {
-            match AudioContext::new_managed(ctx_id, sample_rate, channels, cpu.clone(), aggregate())
-            {
-                Ok(context) => context,
-                Err(error) => {
-                    tracing::warn!(
-                        "AudioContext {ctx_id} construction admission rejected: {error}"
-                    );
-                    return false;
-                }
-            }
-        }
-        None => AudioContext::new(ctx_id, sample_rate, channels),
-    };
-    // Preserve the legacy native/test map path and its standard allocation.
-    contexts.insert(ctx_id, context);
-    true
+    contexts.create_context(ctx_id, sample_rate, channels)
 }
 
 /// Every replacement backend is a new route, even when its format repeats.
@@ -1577,50 +1538,29 @@ fn run_audio_thread(
     let mut sample_rate = output.sample_rate();
     let mut channels = output.channels();
 
-    let index = NodeContextIndex::new_managed(
+    let mut node_index = NodeContextIndex::new();
+    // Device routes, the decoded-audio cache and playback-rate converters still
+    // hand large owners to the CPU executor through this host.
+    let storage_host = match crate::node_retirement::Host::new(
         cpu.clone(),
         AudioAggregateLedger::process_global(),
         channels,
-    );
-    let mut node_index = match index {
-        Ok(index) => index,
+    ) {
+        Ok(host) => host,
         Err(error) => {
-            warn!("AudioThread node index startup admission rejected: {error}");
+            warn!("AudioThread storage host unavailable: {error}");
             return;
         }
     };
-
-    // Pre-allocate with reasonable capacity to avoid rehashing
-    let mut contexts = match context_table::ContextTable::new(node_index.storage_host()) {
-        Ok(contexts) => contexts,
-        Err(error) => {
-            warn!("AudioThread context table startup admission rejected: {error}");
-            return;
-        }
-    };
+    let mut contexts: HashMap<AudioContextId, AudioContext> = HashMap::with_capacity(4);
     let mut device_mixer =
-        crate::device_prepare::DeviceMixer::managed(cpu.clone(), node_index.storage_host());
-
-    // InnerAudioContext players with pre-allocated capacity
-    let mut inner_players = match inner_collection::InnerPlayers::new(node_index.storage_host()) {
-        Ok(players) => players,
-        Err(error) => {
-            warn!("AudioThread inner player startup admission rejected: {error}");
-            return;
-        }
-    };
-
+        crate::device_prepare::DeviceMixer::managed(cpu.clone(), storage_host.clone());
+    let mut inner_players = inner_collection::InnerPlayers::new();
     // MediaAudioPlayer: maps player_id -> list of InnerAudioContext source IDs
-    let mut media_players = match media_membership::MediaPlayers::new(node_index.storage_host()) {
-        Ok(players) => players,
-        Err(error) => {
-            warn!("AudioThread media membership startup admission rejected: {error}");
-            return;
-        }
-    };
+    let mut media_players = media_membership::MediaPlayers::new();
 
     // Cache backing keeps its physical credit through final CPU disposal.
-    let audio_cache = GlobalAudioCache::managed(cpu.clone(), node_index.storage_host());
+    let audio_cache = GlobalAudioCache::managed(cpu.clone(), storage_host.clone());
 
     // Per-host and lazy: local audio never builds an HTTP pool, while every
     // remote cache miss after the first reuses the same DNS/TCP/TLS/H2 state.
@@ -1640,14 +1580,7 @@ fn run_audio_thread(
     // One render quantum, resized only when device channel layout changes.
     let mut process_frames = calculate_process_frames(sample_rate);
     let mut buffer_size = process_frames * channels as usize;
-    let mut process_buffer =
-        match mix_buffer::MixBuffer::new(node_index.storage_host(), buffer_size) {
-            Ok(buffer) => buffer,
-            Err(error) => {
-                warn!("AudioThread mix buffer startup admission rejected: {error}");
-                return;
-            }
-        };
+    let mut process_buffer = mix_buffer::MixBuffer::new(buffer_size);
 
     // Get sync handle for callback-driven wakeup
     let mut sync = output.sync().clone();
@@ -1786,7 +1719,7 @@ fn run_audio_thread(
                     sample_rate: req_rate,
                 } => {
                     let rate = req_rate.unwrap_or(sample_rate);
-                    if !create_context_scoped(&mut contexts, ctx_id, rate, channels, Some(&cpu)) {
+                    if !create_context_scoped(&mut contexts, ctx_id, rate, channels) {
                         warn!(
                             "CreateContext rejected duplicate or unavailable AudioContext id {ctx_id}"
                         );
@@ -2323,17 +2256,12 @@ fn run_audio_thread(
                 }
 
                 // ==================== MediaAudioPlayer ====================
-                AudioCmd::CreateMediaAudioPlayer { id } => match media_players.create(id) {
-                    Ok(()) => tracing::debug!("Created MediaAudioPlayer {}", id),
-                    Err(error) => warn!("MediaAudioPlayer {id} admission rejected: {error}"),
-                },
+                AudioCmd::CreateMediaAudioPlayer { id } => media_players.create(id),
                 AudioCmd::MediaAudioPlayerAddSource {
                     player_id,
                     source_id,
                 } => {
-                    if let Err(error) = media_players.add_source(player_id, source_id) {
-                        warn!("MediaAudioPlayer {player_id} source admission rejected: {error}");
-                    }
+                    media_players.add_source(player_id, source_id);
                 }
                 AudioCmd::MediaAudioPlayerRemoveSource {
                     player_id,
@@ -2356,10 +2284,9 @@ fn run_audio_thread(
 
                 // ==================== InnerAudioContext ====================
                 AudioCmd::CreateInnerAudio { id } => {
-                    match inner_players.create_with(id, || {
-                        Ok(new_inner_audio_player(id, channels, &cpu)
-                            .with_rate_host(node_index.storage_host()))
-                    }) {
+                    match inner_players
+                        .create_with(id, || Ok(new_inner_audio_player(id, channels, &cpu)))
+                    {
                         Ok(true) => tracing::debug!("Created InnerAudioContext {}", id),
                         Ok(false) => {}
                         Err(error) => warn!("InnerAudioContext {id} admission rejected: {error}"),
@@ -2893,26 +2820,6 @@ fn run_audio_thread(
         );
     }
 }
-
-#[cfg(test)]
-#[path = "audio_thread_command_ownership_tests.rs"]
-mod command_ownership_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_parameter_retirement_tests.rs"]
-pub(crate) mod parameter_retirement_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_binding_retirement_tests.rs"]
-mod binding_retirement_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_context_retirement_tests.rs"]
-mod context_retirement_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_node_retirement_tests.rs"]
-mod node_retirement_tests;
 
 #[cfg(test)]
 mod tests {
@@ -3499,8 +3406,6 @@ mod tests {
 
     #[test]
     fn decode_job_and_result_transports_are_bounded_and_nonblocking() {
-        super::decode_rejection::tests::decode_refusals();
-        super::command_copy::tests::completed_inputs();
         let host = migo_io::scheduler::IoScheduler::new(0);
         let (tx, _rx) = decode_queue(8, MAX_DECODE_RESULT_QUEUED_BYTES);
         let mut pool = DecodePool::new(0, tx, ThreadWakeup::new(), host.audio_cpu());
@@ -3693,7 +3598,6 @@ mod tests {
 
     #[test]
     fn decode_receiver_exit_releases_queued_permits() {
-        super::result_custody_tests::custody();
         let (job_tx, job_rx) = decode_queue(2, 8);
         job_tx.try_send(inner_decode_job(30).0).unwrap();
         assert_eq!(
@@ -3734,7 +3638,6 @@ mod tests {
 
     #[test]
     fn release_buffer_is_idempotent_and_never_scans_other_contexts() {
-        super::context_retirement_tests::registry_and_cow();
         let mut contexts = HashMap::new();
         let mut first = AudioContext::new(1, 48_000, 2);
         let mut second = AudioContext::new(2, 48_000, 2);
@@ -3753,7 +3656,6 @@ mod tests {
 
     #[test]
     fn release_context_is_idempotent_and_clears_the_node_index() {
-        super::context_retirement_tests::close_and_drop();
         let mut contexts = HashMap::new();
         let mut context = AudioContext::new(7, 48_000, 2);
         context.create_buffer_source(70);
@@ -3772,7 +3674,6 @@ mod tests {
 
     #[test]
     fn release_all_barrier_discards_old_backlog_and_full_queue_before_ack() {
-        super::command_ownership_tests::restart_and_shutdown();
         let (tx, rx) = shared::audio_channel::channel();
         for ctx_id in 100..100 + shared::audio_channel::AUDIO_COMMAND_CAPACITY as u32 {
             tx.try_send(create_context(ctx_id))
@@ -3822,13 +3723,7 @@ mod tests {
                 sample_rate,
             } = cmd
             {
-                create_context_scoped(
-                    &mut contexts,
-                    ctx_id,
-                    sample_rate.unwrap_or(48_000),
-                    2,
-                    None,
-                );
+                create_context_scoped(&mut contexts, ctx_id, sample_rate.unwrap_or(48_000), 2);
             }
         }
         assert!(
@@ -3841,8 +3736,8 @@ mod tests {
     fn duplicate_create_context_is_a_no_op_that_preserves_the_original() {
         let mut contexts = HashMap::new();
 
-        assert!(create_context_scoped(&mut contexts, 9, 44_100, 2, None));
-        assert!(!create_context_scoped(&mut contexts, 9, 48_000, 1, None));
+        assert!(create_context_scoped(&mut contexts, 9, 44_100, 2));
+        assert!(!create_context_scoped(&mut contexts, 9, 48_000, 1));
 
         let context = contexts.get(&9).unwrap();
         assert_eq!(context.sample_rate(), 44_100);
@@ -3868,7 +3763,6 @@ mod tests {
 
     #[test]
     fn a_live_decode_answers_its_samples_and_leaves_the_context_untouched() {
-        super::response_custody_tests::ownership();
         let mut contexts = HashMap::new();
         contexts.insert(13, AudioContext::new(13, 48_000, 2));
         let (resp, mut receiver) = tokio::sync::oneshot::channel();
@@ -4091,7 +3985,6 @@ mod tests {
 
     #[test]
     fn production_context_mix_uses_mature_sinc_and_unregisters_real_node_ids() {
-        super::node_retirement_tests::production_drop_and_overflow();
         let owner = migo_io::scheduler::IoScheduler::new(0);
         let mut mixer = crate::device_prepare::DeviceMixer::new(owner.audio_cpu());
         let mut context = AudioContext::new(1, 44_100, 1);
@@ -4206,8 +4099,6 @@ mod tests {
 
     #[test]
     fn set_buffer_rejects_claimed_context_that_does_not_own_node() {
-        super::command_iir::tests::construction_inputs();
-        super::binding_retirement_tests::legacy_rebindings();
         let mut contexts = HashMap::new();
         let mut first = AudioContext::new(1, 48_000, 2);
         let mut second = AudioContext::new(2, 48_000, 2);
@@ -4242,9 +4133,6 @@ mod tests {
 
     #[test]
     fn snapshot_buffer_commands_validate_context_and_node_ownership() {
-        super::replacement_input::tests::replacement_inputs();
-        super::command_rejection::tests::rejected_payloads();
-        super::binding_retirement_tests::snapshot_rebindings();
         let mut contexts = HashMap::new();
         let mut first = AudioContext::new(1, 48_000, 2);
         first.create_buffer_source(10);
@@ -4302,9 +4190,6 @@ mod tests {
     /// behind a newer one.
     #[test]
     fn the_startup_backlog_runs_before_anything_still_in_the_channel() {
-        super::command_ownership_tests::owned_fifo();
-        super::command_frequency::tests::frequency_inputs();
-        super::command_parameters::tests::parameter_inputs();
         let (tx, rx) = shared::audio_channel::channel();
         tx.try_send(create_context(30)).unwrap();
         tx.try_send(create_context(40)).unwrap();
@@ -4376,8 +4261,6 @@ mod tests {
     /// measured window is genuine steady state rather than a drain.
     #[test]
     fn a_steady_state_audio_thread_tick_never_reaches_the_heap() {
-        super::binding_retirement_tests::curve_replacements();
-        super::node_retirement_tests::held_credit_and_closed_host();
         const OUTPUT_CHANNELS: u32 = 2;
         const SAMPLE_RATE: u32 = 48_000;
         // One block per tick, and one chunk in per block out, so nothing drifts.
@@ -4679,24 +4562,12 @@ pub(crate) fn cache_retirement_service_probe(
     (cache, players)
 }
 
-#[path = "decode_result_custody.rs"]
-mod result_custody;
-#[cfg(test)]
-#[path = "decode_result_custody_tests.rs"]
-mod result_custody_tests;
-
-#[path = "decode_response_custody.rs"]
-mod response_custody;
-#[cfg(test)]
-#[path = "decode_response_custody_tests.rs"]
-mod response_custody_tests;
-
 #[path = "decode_inner_custody.rs"]
 mod inner_custody;
-#[cfg(test)]
-#[path = "decode_inner_custody_tests.rs"]
-mod inner_custody_tests;
-
+#[path = "decode_response_custody.rs"]
+mod response_custody;
+#[path = "decode_result_custody.rs"]
+mod result_custody;
 pub(crate) fn new_inner_audio_player(
     id: InnerAudioId,
     channels: u32,
@@ -4713,49 +4584,5 @@ pub(crate) fn inner_source_cache_service(
 }
 
 #[cfg(test)]
-#[path = "decode_physical_custody_tests.rs"]
-mod physical_custody_tests;
-
-#[cfg(test)]
 #[path = "audio_thread_filter_storage_tests.rs"]
 mod filter_storage_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_waveshaper_storage_tests.rs"]
-mod waveshaper_storage_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_param_storage_tests.rs"]
-mod param_storage_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_render_buffer_tests.rs"]
-mod render_buffer_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_graph_storage_tests.rs"]
-mod graph_storage_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_graph_table_tests.rs"]
-mod graph_table_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_context_construction_tests.rs"]
-mod context_construction_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_node_index_tests.rs"]
-mod node_index_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_media_players_tests.rs"]
-mod media_membership_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_inner_players_tests.rs"]
-mod inner_collection_tests;
-
-#[cfg(test)]
-#[path = "audio_thread_context_table_tests.rs"]
-mod context_table_tests;

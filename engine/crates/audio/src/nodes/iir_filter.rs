@@ -3,7 +3,6 @@ use std::any::Any;
 use shared::protocol::audio_cmd::AudioNodeId;
 
 use super::AudioNodeProcessor;
-use crate::node_storage::{CapacityBytes, FixedStorage};
 
 /// IIRFilterNode: generic IIR filter with user-provided coefficients.
 ///
@@ -15,7 +14,7 @@ use crate::node_storage::{CapacityBytes, FixedStorage};
 /// Uses circular buffers for history to avoid O(N) per-sample shifting.
 pub struct IIRFilterNode {
     id: AudioNodeId,
-    storage: FixedStorage<IirData>,
+    storage: IirData,
     /// Current write position in circular buffers (shared across channels)
     x_write_pos: usize,
     y_write_pos: usize,
@@ -32,41 +31,7 @@ struct IirData {
     /// Per-channel output circular buffer
     y_history: Vec<Vec<f64>>,
 }
-impl CapacityBytes for IirData {
-    fn capacity_bytes(&self) -> usize {
-        (self.feedforward.capacity() + self.feedback.capacity()) * 8
-            + (self.x_history.capacity() + self.y_history.capacity())
-                * std::mem::size_of::<Vec<f64>>()
-            + self
-                .x_history
-                .iter()
-                .chain(&self.y_history)
-                .map(|v| v.capacity() * 8)
-                .sum::<usize>()
-    }
-}
 impl IirData {
-    fn required_bytes(ff: usize, fb: usize, channels: u32) -> shared::error::EngineResult<usize> {
-        let ch = channels.max(1) as usize;
-        let overflow = crate::node_storage::size_overflow;
-        let coefficients = ff
-            .checked_add(fb)
-            .and_then(|n| n.checked_mul(8))
-            .ok_or_else(overflow)?;
-        let histories = ff
-            .max(1)
-            .checked_add(fb.max(1))
-            .and_then(|n| n.checked_mul(ch))
-            .and_then(|n| n.checked_mul(8))
-            .ok_or_else(overflow)?;
-        let outer = ch
-            .checked_mul(2 * std::mem::size_of::<Vec<f64>>())
-            .ok_or_else(overflow)?;
-        coefficients
-            .checked_add(histories)
-            .and_then(|n| n.checked_add(outer))
-            .ok_or_else(overflow)
-    }
     fn new(feedforward: &[f64], feedback: &[f64], channels: u32) -> Self {
         let ff_len = feedforward.len().max(1);
         let fb_len = feedback.len().max(1);
@@ -100,48 +65,19 @@ impl IIRFilterNode {
     pub fn new(id: AudioNodeId, feedforward: Vec<f64>, feedback: Vec<f64>, channels: u32) -> Self {
         Self::from_coefficients(id, &feedforward, &feedback, channels)
     }
-    #[cfg(test)]
     pub(crate) fn from_coefficients(
         id: AudioNodeId,
         feedforward: &[f64],
         feedback: &[f64],
         channels: u32,
     ) -> Self {
-        Self::new_with_retirement(id, feedforward, feedback, channels, None)
-            .expect("unmanaged IIR storage")
-    }
-    pub(crate) fn new_with_retirement(
-        id: AudioNodeId,
-        feedforward: &[f64],
-        feedback: &[f64],
-        channels: u32,
-        host: Option<&crate::node_retirement::Host>,
-    ) -> shared::error::EngineResult<Self> {
-        let bytes = IirData::required_bytes(feedforward.len(), feedback.len(), channels)?;
-        let storage = FixedStorage::new(host, bytes, || {
-            IirData::new(feedforward, feedback, channels)
-        })?;
-        Ok(Self {
+        Self {
             id,
-            storage,
+            storage: IirData::new(feedforward, feedback, channels),
             x_write_pos: 0,
             y_write_pos: 0,
             channels,
-        })
-    }
-    pub(crate) fn prepare_storage(
-        &mut self,
-        host: &crate::node_retirement::Host,
-    ) -> shared::error::EngineResult<()> {
-        self.storage.prepare(host)
-    }
-    #[cfg(test)]
-    pub(crate) fn storage_bytes(&self) -> usize {
-        self.storage.capacity_bytes()
-    }
-    #[cfg(test)]
-    pub(crate) fn observe_storage(&mut self, hook: std::sync::Arc<dyn Fn() + Send + Sync>) {
-        self.storage.observe(hook);
+        }
     }
 
     /// Compute frequency response H(e^{jw}) for an array of frequencies.
@@ -224,7 +160,7 @@ impl AudioNodeProcessor for IIRFilterNode {
             return 0;
         }
         let len = frames * channels;
-        let data = &mut *self.storage;
+        let data = &mut self.storage;
         let ff = &data.feedforward;
         let fb = &data.feedback;
         let ff_len = ff.len();

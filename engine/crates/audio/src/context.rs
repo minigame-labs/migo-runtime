@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::graph_map::{GraphMap, GraphSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use shared::audio_resources::{AudioBufferFormat, AudioSnapshot};
@@ -8,15 +8,10 @@ use shared::error::{EngineError, EngineResult, ErrorCode};
 use shared::protocol::audio_cmd::{AudioBufferId, AudioContextId, AudioContextState, AudioNodeId};
 
 use crate::decoder::DecodedAudio;
-use crate::graph_vec::{GraphVec, Plan};
 use crate::limits::{PcmBudget, RetainedAudio};
 use crate::nodes::{
     AudioNodeProcessor, BufferSourceNode, DestinationNode, GainNode, NodeConnection,
 };
-use crate::render_buffer::RenderBuffer;
-#[path = "context_graph_storage.rs"]
-mod graph_storage;
-use graph_storage::{EdgeGrowth, NodeGrowth};
 #[path = "context_processing.rs"]
 mod processing;
 use processing::NodeState;
@@ -57,27 +52,25 @@ pub struct AudioContext {
     channels: u32,
 
     // Resources
-    buffers: GraphMap<crate::node_retirement::Value<Arc<RetainedAudio>>>,
+    buffers: HashMap<u32, Arc<RetainedAudio>>,
     next_buffer_id: AudioBufferId,
     pcm_budget: PcmBudget,
 
     // Generic node storage
-    nodes: GraphMap<crate::node_retirement::Node>,
-    node_retirement: Option<crate::node_retirement::Host>,
-    context_storage: Option<crate::node_retirement::Value<ContextStorage>>,
+    nodes: HashMap<u32, Box<dyn AudioNodeProcessor>>,
 
     // Nodes whose JavaScript object has been collected. They are not dropped on
     // the spot: an effect node still carries audio from any source playing
     // through it, and the JS graph becomes unreachable as a whole, so its
     // finalizers can run while a sound is still in flight. See `prune`.
-    released: GraphSet,
+    released: HashSet<u32>,
 
     // Graph connections
-    connections: GraphVec<NodeConnection>,
+    connections: Vec<NodeConnection>,
 
     // Processing order as dense indices into `dense_ids` (cached, invalidated
     // on any graph change).
-    processing_order: GraphVec<u32>,
+    processing_order: Vec<u32>,
     graph_dirty: bool,
     device_controls_pending: bool,
 
@@ -93,25 +86,25 @@ pub struct AudioContext {
     //
     // Nodes are addressed by a dense index assigned per rebuild; `dense_ids` maps
     // back to the id `nodes` and `node_buffers` are keyed by.
-    dense_index: GraphMap<u32>,
-    dense_ids: GraphVec<AudioNodeId>,
-    in_degree: GraphVec<NodeState>,
-    input_start: GraphVec<u32>,
+    dense_index: HashMap<u32, u32>,
+    dense_ids: Vec<AudioNodeId>,
+    in_degree: Vec<NodeState>,
+    input_start: Vec<u32>,
     /// Edge ids, grouped by destination. Ids rather than source indices, because a
     /// connection now carries port information that the mix step needs.
-    input_edges: GraphVec<u32>,
-    output_start: GraphVec<u32>,
-    output_edges: GraphVec<u32>,
-    ready_queue: GraphVec<u32>,
+    input_edges: Vec<u32>,
+    output_start: Vec<u32>,
+    output_edges: Vec<u32>,
+    ready_queue: Vec<u32>,
     /// Per-edge, indexed by edge id: the source, and the ports if they matter.
     /// `None` means "the whole bus", which is every connection except one into or
     /// out of a splitter or merger.
-    edge_src: GraphVec<u32>,
-    edge_src_port: GraphVec<Option<usize>>,
-    edge_dst_port: GraphVec<Option<usize>>,
+    edge_src: Vec<u32>,
+    edge_src_port: Vec<Option<usize>>,
+    edge_dst_port: Vec<Option<usize>>,
 
     // Processing buffers: per-node output buffers keyed by node ID
-    node_buffers: GraphMap<RenderBuffer>,
+    node_buffers: HashMap<u32, Vec<f32>>,
     // Render buffers of collected nodes, kept for the next node that needs one.
     //
     // A game fires sound effects continuously, and each one is a node added and
@@ -119,26 +112,26 @@ pub struct AudioContext {
     // render put one allocation per sound effect on the audio thread; recycling
     // makes an add/collect cycle free. Bounded so a burst of simultaneous nodes
     // cannot leave a large pool behind.
-    buffer_pool: GraphVec<RenderBuffer>,
+    buffer_pool: Vec<Vec<f32>>,
     // Ids collected by the last `prune`, reported to the audio thread so it can
     // clear its node-to-context index. A member rather than a fresh `Vec`:
     // `prune` runs on the render path and collects a node on every quantum a
     // sound effect ends on, so returning an owned vector put one allocation per
     // sound effect on the audio thread.
-    collected: GraphVec<AudioNodeId>,
+    collected: Vec<AudioNodeId>,
     // Source nodes content asked to hear the end of (`onended`), and the ones among them that finished since the audio
     // thread last drained. A node is in `ended` only if it finished -- ran to its end or was stopped -- never because its
     // JavaScript object was collected, and only once: collecting it removes its watch.
-    ended_watch: GraphSet,
-    ended: GraphVec<AudioNodeId>,
+    ended_watch: HashSet<u32>,
+    ended: Vec<AudioNodeId>,
     // Scratch buffer for mixing multiple inputs
-    mix_buffer: GraphVec<f32>,
+    mix_buffer: Vec<f32>,
 
     // Native-rate channel remapping only. Rate conversion belongs exclusively
     // to the managed device sinc owner, outside the context graph.
     device_epoch: DeviceEpoch,
-    native_input: GraphVec<f32>,
-    native_collected: GraphVec<AudioNodeId>,
+    native_input: Vec<f32>,
+    native_collected: Vec<AudioNodeId>,
 
     // Next graph sample position, rebased to the idle epoch before rendering.
     frames_processed: u64,
@@ -165,36 +158,6 @@ pub struct AudioContext {
     test_dense_order: bool,
 }
 
-/// All graph-owned allocations move as one pre-registered close/drop payload.
-/// Nodes and buffer handles keep their individual permits until CPU destruction.
-#[derive(Default)]
-struct ContextStorage {
-    buffers: GraphMap<crate::node_retirement::Value<Arc<RetainedAudio>>>,
-    nodes: GraphMap<crate::node_retirement::Node>,
-    released: GraphSet,
-    connections: GraphVec<NodeConnection>,
-    processing_order: GraphVec<u32>,
-    dense_index: GraphMap<u32>,
-    dense_ids: GraphVec<AudioNodeId>,
-    in_degree: GraphVec<NodeState>,
-    input_start: GraphVec<u32>,
-    input_edges: GraphVec<u32>,
-    output_start: GraphVec<u32>,
-    output_edges: GraphVec<u32>,
-    ready_queue: GraphVec<u32>,
-    edge_src: GraphVec<u32>,
-    edge_src_port: GraphVec<Option<usize>>,
-    edge_dst_port: GraphVec<Option<usize>>,
-    node_buffers: GraphMap<RenderBuffer>,
-    buffer_pool: GraphVec<RenderBuffer>,
-    collected: GraphVec<AudioNodeId>,
-    ended_watch: GraphSet,
-    ended: GraphVec<AudioNodeId>,
-    mix_buffer: GraphVec<f32>,
-    native_input: GraphVec<f32>,
-    native_collected: GraphVec<AudioNodeId>,
-}
-
 impl AudioContext {
     /// Default capacity for audio resources.
     const DEFAULT_BUFFER_CAPACITY: usize = 8;
@@ -210,48 +173,43 @@ impl AudioContext {
         channels: u32,
         pcm_budget: PcmBudget,
     ) -> Self {
-        let nodes: GraphMap<crate::node_retirement::Node> =
-            GraphMap::with_capacity(Self::DEFAULT_NODE_CAPACITY);
+        let nodes: HashMap<u32, Box<dyn AudioNodeProcessor>> =
+            HashMap::with_capacity(Self::DEFAULT_NODE_CAPACITY);
 
         let mut context = Self {
             id,
             state: AudioContextState::Running,
             sample_rate,
             channels,
-            buffers: GraphMap::with_capacity(Self::DEFAULT_BUFFER_CAPACITY),
+            buffers: HashMap::with_capacity(Self::DEFAULT_BUFFER_CAPACITY),
             next_buffer_id: 1,
             pcm_budget,
             nodes,
-            node_retirement: None,
-            context_storage: None,
-            released: GraphSet::new(),
-            connections: GraphVec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
-            processing_order: GraphVec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
+            released: HashSet::new(),
+            connections: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
+            processing_order: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
             graph_dirty: true,
             device_controls_pending: true,
-            dense_index: GraphMap::with_capacity(Self::DEFAULT_NODE_CAPACITY),
-            dense_ids: GraphVec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
-            in_degree: GraphVec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
-            input_start: GraphVec::with_capacity(Self::DEFAULT_NODE_CAPACITY + 1),
-            input_edges: GraphVec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
-            output_start: GraphVec::with_capacity(Self::DEFAULT_NODE_CAPACITY + 1),
-            output_edges: GraphVec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
-            ready_queue: GraphVec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
-            edge_src: GraphVec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
-            edge_src_port: GraphVec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
-            edge_dst_port: GraphVec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
-            node_buffers: GraphMap::with_capacity(Self::DEFAULT_NODE_CAPACITY),
-            buffer_pool: GraphVec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
-            collected: GraphVec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
-            ended_watch: GraphSet::new(),
-            ended: GraphVec::new(),
-            mix_buffer: GraphVec::from_vec(vec![
-                0.0;
-                DEVICE_QUANTUM_FRAMES * channels.max(1) as usize
-            ]),
+            dense_index: HashMap::with_capacity(Self::DEFAULT_NODE_CAPACITY),
+            dense_ids: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
+            in_degree: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
+            input_start: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY + 1),
+            input_edges: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
+            output_start: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY + 1),
+            output_edges: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
+            ready_queue: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
+            edge_src: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
+            edge_src_port: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
+            edge_dst_port: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
+            node_buffers: HashMap::with_capacity(Self::DEFAULT_NODE_CAPACITY),
+            buffer_pool: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
+            collected: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
+            ended_watch: HashSet::new(),
+            ended: Vec::new(),
+            mix_buffer: (vec![0.0; DEVICE_QUANTUM_FRAMES * channels.max(1) as usize]),
             device_epoch: DeviceEpoch::new(),
-            native_input: GraphVec::with_capacity(DEVICE_QUANTUM_FRAMES * channels.max(1) as usize),
-            native_collected: GraphVec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
+            native_input: Vec::with_capacity(DEVICE_QUANTUM_FRAMES * channels.max(1) as usize),
+            native_collected: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
             frames_processed: 0,
             wall_origin: std::time::Instant::now(),
             wall_banked: 0.0,
@@ -271,125 +229,6 @@ impl AudioContext {
         context
     }
 
-    /// Command phase: reserve one non-abortable handoff per existing/future node.
-    pub(crate) fn prepare_node_retirement(
-        &mut self,
-        cpu: migo_io::audio_cpu::AudioCpu,
-        aggregate: Arc<crate::limits::AudioAggregateLedger>,
-    ) -> EngineResult<()> {
-        let host = crate::node_retirement::Host::new(cpu, aggregate, self.channels)?;
-        let storage = host
-            .reserve_value::<ContextStorage>()?
-            .finish(ContextStorage::default());
-        for node in self.nodes.values_mut() {
-            if let Some(analyser) = node
-                .as_any_mut()
-                .downcast_mut::<crate::nodes::AnalyserNode>()
-            {
-                analyser.prepare_workspace(&host)?;
-            }
-            if let Some(filter) = node
-                .as_any_mut()
-                .downcast_mut::<crate::nodes::BiquadFilterNode>()
-            {
-                filter.prepare_storage(&host)?;
-            }
-            if let Some(filter) = node
-                .as_any_mut()
-                .downcast_mut::<crate::nodes::IIRFilterNode>()
-            {
-                filter.prepare_storage(&host)?;
-            }
-            if let Some(shaper) = node
-                .as_any_mut()
-                .downcast_mut::<crate::nodes::WaveShaperNode>()
-            {
-                shaper.prepare_storage(&host, self.channels)?;
-            }
-            node.prepare_params(&host)?;
-            node.prepare(&host)?;
-        }
-        for buffer in self.buffers.values_mut() {
-            buffer.prepare(&host)?;
-        }
-        for buffer in self
-            .node_buffers
-            .values_mut()
-            .chain(self.buffer_pool.iter_mut())
-        {
-            buffer.prepare(&host)?;
-        }
-        self.prepare_graph_vectors(&host)?;
-        self.nodes.prepare(&host)?;
-        self.node_buffers.prepare(&host)?;
-        self.buffers.prepare(&host)?;
-        self.dense_index.prepare(&host)?;
-        self.released.map.prepare(&host)?;
-        self.ended_watch.map.prepare(&host)?;
-        self.context_storage = Some(storage);
-        self.node_retirement = Some(host);
-        Ok(())
-    }
-
-    fn prepare_graph_vectors(&mut self, host: &crate::node_retirement::Host) -> EngineResult<()> {
-        self.connections.prepare(host)?;
-        self.processing_order.prepare(host)?;
-        self.dense_ids.prepare(host)?;
-        self.in_degree.prepare(host)?;
-        self.input_start.prepare(host)?;
-        self.input_edges.prepare(host)?;
-        self.output_start.prepare(host)?;
-        self.output_edges.prepare(host)?;
-        self.ready_queue.prepare(host)?;
-        self.edge_src.prepare(host)?;
-        self.edge_src_port.prepare(host)?;
-        self.edge_dst_port.prepare(host)?;
-        self.collected.prepare(host)?;
-        self.ended.prepare(host)?;
-        self.mix_buffer.prepare(host)?;
-        self.native_input.prepare(host)?;
-        self.native_collected.prepare(host)?;
-        self.buffer_pool.prepare(host)?;
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn graph_vector_identities(
-        &self,
-    ) -> Vec<(&'static str, usize, usize, usize, usize)> {
-        fn row<T: Send + 'static>(
-            name: &'static str,
-            data: &GraphVec<T>,
-        ) -> (&'static str, usize, usize, usize, usize) {
-            (
-                name,
-                data.len(),
-                data.capacity(),
-                data.as_ptr() as usize,
-                data.capacity() * std::mem::size_of::<T>(),
-            )
-        }
-        vec![
-            row("connections", &self.connections),
-            row("processing_order", &self.processing_order),
-            row("dense_ids", &self.dense_ids),
-            row("in_degree", &self.in_degree),
-            row("input_start", &self.input_start),
-            row("input_edges", &self.input_edges),
-            row("output_start", &self.output_start),
-            row("output_edges", &self.output_edges),
-            row("ready_queue", &self.ready_queue),
-            row("edge_src", &self.edge_src),
-            row("edge_src_port", &self.edge_src_port),
-            row("edge_dst_port", &self.edge_dst_port),
-            row("collected", &self.collected),
-            row("ended", &self.ended),
-            row("mix_buffer", &self.mix_buffer),
-            row("native_input", &self.native_input),
-            row("native_collected", &self.native_collected),
-            row("buffer_pool", &self.buffer_pool),
-        ]
-    }
     #[cfg(test)]
     pub(crate) fn graph_test_state(&self) -> String {
         let mut watchers: Vec<_> = self.ended_watch.iter().copied().collect();
@@ -429,68 +268,6 @@ impl AudioContext {
         )
     }
     #[cfg(test)]
-    pub(crate) fn set_native_graph_capacity(&mut self, name: &str, capacity: usize) {
-        match name {
-            "connections" => self.connections.set_native_capacity(capacity),
-            "processing_order" => self.processing_order.set_native_capacity(capacity),
-            "dense_ids" => self.dense_ids.set_native_capacity(capacity),
-            "in_degree" => self.in_degree.set_native_capacity(capacity),
-            "input_start" => self.input_start.set_native_capacity(capacity),
-            "input_edges" => self.input_edges.set_native_capacity(capacity),
-            "output_start" => self.output_start.set_native_capacity(capacity),
-            "output_edges" => self.output_edges.set_native_capacity(capacity),
-            "ready_queue" => self.ready_queue.set_native_capacity(capacity),
-            "edge_src" => self.edge_src.set_native_capacity(capacity),
-            "edge_src_port" => self.edge_src_port.set_native_capacity(capacity),
-            "edge_dst_port" => self.edge_dst_port.set_native_capacity(capacity),
-            "collected" => self.collected.set_native_capacity(capacity),
-            "ended" => self.ended.set_native_capacity(capacity),
-            "mix_buffer" => self.mix_buffer.set_native_capacity(capacity),
-            "native_input" => self.native_input.set_native_capacity(capacity),
-            "native_collected" => self.native_collected.set_native_capacity(capacity),
-            "buffer_pool" => self.buffer_pool.set_native_capacity(capacity),
-            _ => panic!("unknown graph vector"),
-        }
-    }
-    #[cfg(test)]
-    pub(crate) fn observe_graph_vector(&mut self, name: &str, hook: Arc<dyn Fn() + Send + Sync>) {
-        match name {
-            "connections" => self.connections.observe(hook),
-            "processing_order" => self.processing_order.observe(hook),
-            "dense_ids" => self.dense_ids.observe(hook),
-            "in_degree" => self.in_degree.observe(hook),
-            "input_start" => self.input_start.observe(hook),
-            "input_edges" => self.input_edges.observe(hook),
-            "output_start" => self.output_start.observe(hook),
-            "output_edges" => self.output_edges.observe(hook),
-            "ready_queue" => self.ready_queue.observe(hook),
-            "edge_src" => self.edge_src.observe(hook),
-            "edge_src_port" => self.edge_src_port.observe(hook),
-            "edge_dst_port" => self.edge_dst_port.observe(hook),
-            "collected" => self.collected.observe(hook),
-            "ended" => self.ended.observe(hook),
-            "mix_buffer" => self.mix_buffer.observe(hook),
-            "native_input" => self.native_input.observe(hook),
-            "native_collected" => self.native_collected.observe(hook),
-            "buffer_pool" => self.buffer_pool.observe(hook),
-            _ => panic!("unknown graph vector"),
-        }
-    }
-    #[cfg(test)]
-    pub(crate) fn prepare_graph_vectors_for_test(
-        &mut self,
-        host: &crate::node_retirement::Host,
-    ) -> EngineResult<()> {
-        self.prepare_graph_vectors(host)
-    }
-    #[cfg(test)]
-    pub(crate) fn grow_graph_nodes_for_test(&mut self, nodes: usize) -> EngineResult<()> {
-        let growth = self.reserve_graph_nodes(nodes)?;
-        growth.install(self);
-        Ok(())
-    }
-
-    #[cfg(test)]
     pub(crate) fn set_test_dense_order(&mut self) {
         self.test_dense_order = true;
         self.graph_dirty = true;
@@ -518,43 +295,6 @@ impl AudioContext {
                 )
             })
             .collect()
-    }
-    #[cfg(test)]
-    pub(crate) fn reserve_native_render_buffer(&mut self, id: AudioNodeId, samples: usize) {
-        self.node_buffers
-            .get_mut(&id)
-            .unwrap()
-            .reserve_native(samples);
-    }
-    #[cfg(test)]
-    pub(crate) fn observe_render_buffer(
-        &mut self,
-        id: AudioNodeId,
-        hook: Arc<dyn Fn() + Send + Sync>,
-    ) {
-        self.node_buffers.get_mut(&id).unwrap().observe(hook);
-    }
-
-    pub(crate) fn response_retirement_host(&self) -> Option<&crate::node_retirement::Host> {
-        self.node_retirement.as_ref()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn observe_buffer_retirement(
-        &mut self,
-        id: AudioBufferId,
-        hook: Arc<dyn Fn() + Send + Sync>,
-    ) -> bool {
-        if let Some(value) = self.buffers.get_mut(&id) {
-            value.observe(hook);
-            true
-        } else {
-            false
-        }
-    }
-    #[cfg(test)]
-    pub(crate) fn observe_context_retirement(&mut self, hook: Arc<dyn Fn() + Send + Sync>) {
-        self.context_storage.as_mut().unwrap().observe(hook);
     }
 
     pub fn id(&self) -> AudioContextId {
@@ -662,9 +402,6 @@ impl AudioContext {
         self.device_epoch.invalidate();
         self.bank_wall_clock();
         self.state = AudioContextState::Closed;
-        if self.retire_storage() {
-            return;
-        }
         self.buffers.clear();
         self.nodes.clear();
         self.released.clear();
@@ -676,56 +413,14 @@ impl AudioContext {
         self.collected.clear();
     }
 
-    /// Transfer existing capacities, not just live entries, so closed contexts
-    /// cannot free registry, graph scratch or recycled PCM on the audio caller.
-    fn retire_storage(&mut self) -> bool {
-        let Some(mut storage) = self.context_storage.take() else {
-            return false;
-        };
-        storage.buffers = std::mem::take(&mut self.buffers);
-        storage.nodes = std::mem::take(&mut self.nodes);
-        storage.released = std::mem::take(&mut self.released);
-        storage.connections = std::mem::take(&mut self.connections);
-        storage.processing_order = std::mem::take(&mut self.processing_order);
-        storage.dense_index = std::mem::take(&mut self.dense_index);
-        storage.dense_ids = std::mem::take(&mut self.dense_ids);
-        storage.in_degree = std::mem::take(&mut self.in_degree);
-        storage.input_start = std::mem::take(&mut self.input_start);
-        storage.input_edges = std::mem::take(&mut self.input_edges);
-        storage.output_start = std::mem::take(&mut self.output_start);
-        storage.output_edges = std::mem::take(&mut self.output_edges);
-        storage.ready_queue = std::mem::take(&mut self.ready_queue);
-        storage.edge_src = std::mem::take(&mut self.edge_src);
-        storage.edge_src_port = std::mem::take(&mut self.edge_src_port);
-        storage.edge_dst_port = std::mem::take(&mut self.edge_dst_port);
-        storage.node_buffers = std::mem::take(&mut self.node_buffers);
-        storage.buffer_pool = std::mem::take(&mut self.buffer_pool);
-        storage.collected = std::mem::take(&mut self.collected);
-        storage.ended_watch = std::mem::take(&mut self.ended_watch);
-        storage.ended = std::mem::take(&mut self.ended);
-        storage.mix_buffer = std::mem::take(&mut self.mix_buffer);
-        storage.native_input = std::mem::take(&mut self.native_input);
-        storage.native_collected = std::mem::take(&mut self.native_collected);
-        self.graph_dirty = true;
-        self.device_controls_pending = false;
-        drop(storage);
-        self.node_retirement = None;
-        true
-    }
-
-    fn reserve_buffer_retirement(
-        &self,
-    ) -> EngineResult<crate::node_retirement::Reservation<Arc<RetainedAudio>>> {
+    fn ensure_open(&self) -> EngineResult<()> {
         if self.state == AudioContextState::Closed {
             return Err(EngineError::from_detail(
                 ErrorCode::InvalidArgument,
                 "AudioContext is closed",
             ));
         }
-        match &self.node_retirement {
-            Some(host) => host.reserve_value(),
-            None => Ok(crate::node_retirement::Reservation::unmanaged()),
-        }
+        Ok(())
     }
 
     /// Check if this context has any active source nodes (playing or scheduled).
@@ -803,9 +498,8 @@ impl AudioContext {
             if self.ended_watch.remove(&id) && finished {
                 self.ended.push(id);
             }
-            let node = self.nodes.remove(&id).unwrap();
-            let buffer = self.recycle_render_buffer(id);
-            node.retire(buffer);
+            self.nodes.remove(&id);
+            self.recycle_render_buffer(id);
             self.released.remove(&id);
             // Removing a downstream node can remove a DC effect's last edge.
             for connection in self.connections.iter().filter(|c| c.dst == id) {
@@ -869,18 +563,9 @@ impl AudioContext {
 
     pub fn add_buffer(&mut self, audio: DecodedAudio) -> EngineResult<AudioBufferId> {
         let (id, next_id) = self.buffer_id_candidate()?;
-        let reservation = self.reserve_buffer_retirement()?;
-        let table = crate::graph_map::Plan::reserve(
-            &self.buffers,
-            self.node_retirement.as_ref(),
-            self.buffers.len() + 1,
-        )?;
+        self.ensure_open()?;
         let retained = RetainedAudio::try_new(audio, &self.pcm_budget)?;
-        if let Some(table) = table {
-            table.install(&mut self.buffers);
-        }
-        self.buffers
-            .insert(id, reservation.finish(Arc::new(retained)));
+        self.buffers.insert(id, Arc::new(retained));
         self.next_buffer_id = next_id;
         Ok(id)
     }
@@ -929,12 +614,7 @@ impl AudioContext {
     ) -> EngineResult<AudioBufferId> {
         let bytes = crate::limits::validated_buffer_alloc_bytes(channels, length, sample_rate)?;
         let (id, next_id) = self.buffer_id_candidate()?;
-        let reservation = self.reserve_buffer_retirement()?;
-        let table = crate::graph_map::Plan::reserve(
-            &self.buffers,
-            self.node_retirement.as_ref(),
-            self.buffers.len() + 1,
-        )?;
+        self.ensure_open()?;
         // Claim both aggregate budgets before asking the allocator for the Vec.
         let mut permit = self.pcm_budget.reserve(bytes)?;
         let sample_count = bytes / std::mem::size_of::<f32>();
@@ -946,13 +626,8 @@ impl AudioContext {
             sample_rate,
             channels,
         };
-        if let Some(table) = table {
-            table.install(&mut self.buffers);
-        }
-        self.buffers.insert(
-            id,
-            reservation.finish(Arc::new(RetainedAudio::from_reserved(audio, permit))),
-        );
+        self.buffers
+            .insert(id, Arc::new(RetainedAudio::from_reserved(audio, permit)));
         self.next_buffer_id = next_id;
         Ok(id)
     }
@@ -987,7 +662,6 @@ impl AudioContext {
         start_frame: u32,
     ) -> EngineResult<bool> {
         let pcm_budget = self.pcm_budget.clone();
-        let retirement = self.node_retirement.clone();
         let buffer = match self.buffers.get_mut(&buffer_id) {
             Some(b) => b,
             None => return Ok(false),
@@ -1011,15 +685,11 @@ impl AudioContext {
         // A source may hold the old Arc. Reserve and allocate the COW copy
         // fallibly before replacing the map entry, keeping the old PCM intact
         // if either aggregate budget refuses the duplicate.
-        if Arc::get_mut(&mut **buffer).is_none() {
-            let reservation = match &retirement {
-                Some(host) => host.reserve_value()?,
-                None => crate::node_retirement::Reservation::unmanaged(),
-            };
+        if Arc::get_mut(buffer).is_none() {
             let cloned = buffer.try_clone_with_budget(&pcm_budget)?;
-            *buffer = reservation.finish(Arc::new(cloned));
+            *buffer = Arc::new(cloned);
         }
-        let audio = Arc::get_mut(&mut **buffer)
+        let audio = Arc::get_mut(buffer)
             .ok_or_else(|| {
                 shared::error::EngineError::from_detail(
                     shared::error::ErrorCode::Internal,
@@ -1059,81 +729,11 @@ impl AudioContext {
         if self.state == AudioContextState::Closed {
             return false;
         }
-        if let Some(host) = &self.node_retirement
-            && let Some(analyser) = node
-                .as_any_mut()
-                .downcast_mut::<crate::nodes::AnalyserNode>()
-            && let Err(error) = analyser.prepare_workspace(host)
-        {
-            tracing::warn!("analyser workspace adoption rejected: {error}");
-            return false;
-        }
-        if let Some(host) = &self.node_retirement
-            && let Some(filter) = node
-                .as_any_mut()
-                .downcast_mut::<crate::nodes::BiquadFilterNode>()
-            && let Err(error) = filter.prepare_storage(host)
-        {
-            tracing::warn!("biquad storage adoption rejected: {error}");
-            return false;
-        }
-        if let Some(host) = &self.node_retirement
-            && let Some(filter) = node
-                .as_any_mut()
-                .downcast_mut::<crate::nodes::IIRFilterNode>()
-            && let Err(error) = filter.prepare_storage(host)
-        {
-            tracing::warn!("IIR storage adoption rejected: {error}");
-            return false;
-        }
-        if let Some(host) = &self.node_retirement
-            && let Some(shaper) = node
-                .as_any_mut()
-                .downcast_mut::<crate::nodes::WaveShaperNode>()
-            && let Err(error) = shaper.prepare_storage(host, self.channels)
-        {
-            tracing::warn!("waveshaper storage adoption rejected: {error}");
-            return false;
-        }
-        if let Some(host) = &self.node_retirement
-            && let Err(error) = node.prepare_params(host)
-        {
-            tracing::warn!("AudioParam storage adoption rejected: {error}");
-            return false;
-        }
         let node_id = node.id();
         node.set_output_connected(self.connections.iter().any(|c| c.src == node_id));
-        let mut node = crate::node_retirement::Node::new(node);
-        if let Some(host) = &self.node_retirement
-            && let Err(error) = node.prepare(host)
-        {
-            tracing::warn!("graph node {node_id} admission rejected: {error}");
-            return false;
-        }
-        let next_nodes = self.nodes.len() + usize::from(!self.nodes.contains_key(&node_id));
-        let growth = match self.reserve_graph_nodes(next_nodes) {
-            Ok(growth) => growth,
-            Err(error) => {
-                tracing::warn!("graph vector growth rejected: {error}");
-                return false;
-            }
-        };
-        let tables = match TableGrowth::reserve(self, next_nodes) {
-            Ok(tables) => tables,
-            Err(error) => {
-                tracing::warn!("graph table growth rejected: {error}");
-                return false;
-            }
-        };
-        let buffer = match self.take_render_buffer() {
-            Ok(buffer) => buffer,
-            Err(error) => {
-                tracing::warn!("graph render buffer admission rejected: {error}");
-                return false;
-            }
-        };
-        growth.install(self);
-        tables.install(self);
+        let buffer = self.take_render_buffer();
+        let nodes = self.nodes.len() + usize::from(!self.nodes.contains_key(&node_id));
+        self.reserve_node_scratch(nodes);
         self.nodes.insert(node_id, node);
         self.node_buffers.insert(node_id, buffer);
         self.graph_dirty = true;
@@ -1141,42 +741,60 @@ impl AudioContext {
         true
     }
 
-    /// Grow graph scratch on node commands, including before the first quantum
-    /// and after a burst larger than any previously rendered graph. Rebuilding
-    /// still happens lazily, with the existing traversal and mix order.
-    fn reserve_graph_nodes(&self, nodes: usize) -> EngineResult<NodeGrowth> {
-        NodeGrowth::reserve(self, nodes)
+    /// Size the per-node rebuild and collection scratch on the command path,
+    /// so the first render after a graph change does not allocate.
+    fn reserve_node_scratch(&mut self, nodes: usize) {
+        fn grow<T>(v: &mut Vec<T>, len: usize) {
+            v.reserve(len.saturating_sub(v.len()));
+        }
+        grow(&mut self.dense_ids, nodes);
+        grow(&mut self.in_degree, nodes);
+        grow(&mut self.processing_order, nodes);
+        grow(&mut self.ready_queue, nodes);
+        grow(&mut self.input_start, nodes + 1);
+        grow(&mut self.output_start, nodes + 1);
+        grow(&mut self.collected, nodes);
+        grow(&mut self.native_collected, nodes);
+        self.dense_index
+            .reserve(nodes.saturating_sub(self.dense_index.len()));
+        self.node_buffers
+            .reserve(nodes.saturating_sub(self.node_buffers.len()));
+        self.released
+            .reserve(nodes.saturating_sub(self.released.len()));
     }
 
-    /// Reserve every prospective edge/CSR capacity before changing any graph data.
-    fn reserve_graph_edges(&self, edges: usize) -> EngineResult<EdgeGrowth> {
-        EdgeGrowth::reserve(self, edges)
+    /// Size the per-edge rebuild scratch before a connection is recorded.
+    fn reserve_edge_scratch(&mut self, edges: usize) {
+        fn grow<T>(v: &mut Vec<T>, len: usize) {
+            v.reserve(len.saturating_sub(v.len()));
+        }
+        grow(&mut self.connections, edges);
+        grow(&mut self.input_edges, edges);
+        grow(&mut self.output_edges, edges);
+        grow(&mut self.edge_src, edges);
+        grow(&mut self.edge_src_port, edges);
+        grow(&mut self.edge_dst_port, edges);
     }
 
     /// A zeroed render buffer, recycled from a collected node when one is spare.
-    fn take_render_buffer(&mut self) -> EngineResult<RenderBuffer> {
-        let samples = self.node_retirement.as_ref().map_or_else(
-            || crate::audio_thread::RENDER_QUANTUM_FRAMES * self.channels.max(1) as usize,
-            crate::node_retirement::Host::render_buffer_samples,
-        );
+    fn take_render_buffer(&mut self) -> Vec<f32> {
+        let samples = crate::audio_thread::RENDER_QUANTUM_FRAMES * self.channels.max(1) as usize;
         match self.buffer_pool.pop() {
             Some(mut buffer) => {
                 buffer.clear();
                 buffer.resize(samples, 0.0);
-                Ok(buffer)
+                buffer
             }
-            None => RenderBuffer::new(self.node_retirement.as_ref(), samples),
+            None => vec![0.0f32; samples],
         }
     }
 
-    /// A pooled buffer keeps its own capacity permit after node retirement.
-    fn recycle_render_buffer(&mut self, node_id: AudioNodeId) -> Option<RenderBuffer> {
-        let buffer = self.node_buffers.remove(&node_id)?;
-        if self.buffer_pool.len() < Self::DEFAULT_NODE_CAPACITY {
+    /// Take a collected node's render buffer back for reuse.
+    fn recycle_render_buffer(&mut self, node_id: AudioNodeId) {
+        if let Some(buffer) = self.node_buffers.remove(&node_id)
+            && self.buffer_pool.len() < Self::DEFAULT_NODE_CAPACITY
+        {
             self.buffer_pool.push(buffer);
-            None
-        } else {
-            Some(buffer)
         }
     }
 
@@ -1212,10 +830,7 @@ impl AudioContext {
     ) -> bool {
         let channels = self.channels;
         self.with_node_typed::<crate::nodes::WaveShaperNode, _>(node_id, |node| {
-            if let Err(error) = node.try_set_oversample(oversample, channels) {
-                tracing::warn!("FIR history admission rejected: {error}");
-                return false;
-            }
+            node.set_oversample(oversample, channels);
             true
         })
         .unwrap_or(false)
@@ -1225,18 +840,11 @@ impl AudioContext {
         if self.state == AudioContextState::Closed {
             return false;
         }
-        match crate::nodes::BiquadFilterNode::new_with_retirement(
+        self.add_node(Box::new(crate::nodes::BiquadFilterNode::new(
             node_id,
             self.channels,
             self.sample_rate,
-            self.node_retirement.as_ref(),
-        ) {
-            Ok(node) => self.add_node(Box::new(node)),
-            Err(error) => {
-                tracing::warn!("biquad storage creation rejected: {error}");
-                false
-            }
-        }
+        )))
     }
     pub(crate) fn create_iir_filter(
         &mut self,
@@ -1247,42 +855,25 @@ impl AudioContext {
         if self.state == AudioContextState::Closed {
             return false;
         }
-        match crate::nodes::IIRFilterNode::new_with_retirement(
+        self.add_node(Box::new(crate::nodes::IIRFilterNode::from_coefficients(
             node_id,
             feedforward,
             feedback,
             self.channels,
-            self.node_retirement.as_ref(),
-        ) {
-            Ok(node) => self.add_node(Box::new(node)),
-            Err(error) => {
-                tracing::warn!("IIR storage creation rejected: {error}");
-                false
-            }
-        }
+        )))
     }
     pub(crate) fn create_analyser(&mut self, node_id: AudioNodeId) -> bool {
         if self.state == AudioContextState::Closed {
             return false;
         }
-        match crate::nodes::AnalyserNode::new_with_retirement(
+        self.add_node(Box::new(crate::nodes::AnalyserNode::new(
             node_id,
             self.channels,
-            self.node_retirement.as_ref(),
-        ) {
-            Ok(node) => self.add_node(Box::new(node)),
-            Err(error) => {
-                tracing::warn!("analyser workspace creation rejected: {error}");
-                false
-            }
-        }
+        )))
     }
     pub(crate) fn set_analyser_fft_size(&mut self, node_id: AudioNodeId, size: usize) -> bool {
         self.with_node_typed::<crate::nodes::AnalyserNode, _>(node_id, |node| {
-            if let Err(error) = node.try_set_fft_size(size) {
-                tracing::warn!("FFT workspace replacement admission rejected: {error}");
-                return false;
-            }
+            node.set_fft_size(size);
             true
         })
         .unwrap_or(false)
@@ -1303,10 +894,7 @@ impl AudioContext {
         curve: &mut Option<Vec<f32>>,
     ) -> bool {
         self.with_node_typed::<crate::nodes::WaveShaperNode, _>(node_id, |node| {
-            if let Err(error) = node.try_set_curve(curve) {
-                tracing::warn!("curve replacement admission rejected: {error}");
-                return false;
-            }
+            node.set_curve(curve.take());
             true
         })
         .unwrap_or(false)
@@ -1335,17 +923,13 @@ impl AudioContext {
                         frames: buffer.frame_count() as u32,
                         sample_rate: buffer.sample_rate,
                     });
-                    match source.prepare_rate(self.node_retirement.as_ref(), format, now, false) {
+                    match source.prepare_rate(format, now, false) {
                         Ok(prepared) => prepared,
                         Err(_) => return false,
                     }
                 } else {
                     None
                 };
-                if let Err(error) = source.retire_buffer(self.node_retirement.as_ref()) {
-                    tracing::warn!("buffer replacement admission rejected: {error}");
-                    return false;
-                }
                 source.set_buffer(buffer);
                 source.install_rate(prepared);
                 return true;
@@ -1377,7 +961,6 @@ impl AudioContext {
             if let Some(source) = any.downcast_mut::<BufferSourceNode>() {
                 let prepared = if source.rate_started() {
                     match source.prepare_rate(
-                        self.node_retirement.as_ref(),
                         buffer.as_ref().map(|buffer| buffer.format()),
                         now,
                         false,
@@ -1388,10 +971,6 @@ impl AudioContext {
                 } else {
                     None
                 };
-                if let Err(error) = source.retire_buffer(self.node_retirement.as_ref()) {
-                    tracing::warn!("snapshot replacement admission rejected: {error}");
-                    return false;
-                }
                 source.set_snapshot(buffer.take());
                 source.install_rate(prepared);
                 return true;
@@ -1419,12 +998,7 @@ impl AudioContext {
             let any = node.as_any_mut();
             if let Some(source) = any.downcast_mut::<BufferSourceNode>() {
                 let prepared = if !source.rate_started() {
-                    match source.prepare_rate(
-                        self.node_retirement.as_ref(),
-                        source.rate_format(),
-                        current_time,
-                        false,
-                    ) {
+                    match source.prepare_rate(source.rate_format(), current_time, false) {
                         Ok(prepared) => prepared,
                         Err(_) => return false,
                     }
@@ -1458,18 +1032,11 @@ impl AudioContext {
         let Some(source) = node.as_any_mut().downcast_mut::<BufferSourceNode>() else {
             return false;
         };
-        let prepared = match source.prepare_rate(
-            self.node_retirement.as_ref(),
-            buffer.as_ref().map(|buffer| buffer.format()),
-            now,
-            false,
-        ) {
-            Ok(prepared) => prepared,
-            Err(_) => return false,
-        };
-        if source.retire_buffer(self.node_retirement.as_ref()).is_err() {
-            return false;
-        }
+        let prepared =
+            match source.prepare_rate(buffer.as_ref().map(|buffer| buffer.format()), now, false) {
+                Ok(prepared) => prepared,
+                Err(_) => return false,
+            };
         source.set_snapshot(buffer.take());
         source.start(when, offset, duration, now);
         source.install_rate(prepared);
@@ -1495,36 +1062,10 @@ impl AudioContext {
             return false;
         }
         if enabled {
+            // A watched source reports its end from the render path; keep room.
             let watchers =
                 self.ended_watch.len() + usize::from(!self.ended_watch.contains(&node_id));
-            let required = match self.ended.len().checked_add(watchers) {
-                Some(required) => required,
-                None => return false,
-            };
-            let table = match crate::graph_map::Plan::reserve(
-                &self.ended_watch.map,
-                self.node_retirement.as_ref(),
-                watchers,
-            ) {
-                Ok(table) => table,
-                Err(error) => {
-                    tracing::warn!("ended watch table growth rejected: {error}");
-                    return false;
-                }
-            };
-            let growth = match Plan::reserve(&self.ended, self.node_retirement.as_ref(), required) {
-                Ok(growth) => growth,
-                Err(error) => {
-                    tracing::warn!("ended notification growth rejected: {error}");
-                    return false;
-                }
-            };
-            if let Some(growth) = growth {
-                growth.install(&mut self.ended);
-            }
-            if let Some(table) = table {
-                table.install(&mut self.ended_watch.map);
-            }
+            self.ended.reserve(watchers);
             self.ended_watch.insert(node_id);
         } else {
             self.ended_watch.remove(&node_id);
@@ -1560,13 +1101,7 @@ impl AudioContext {
         if let Some(node) = self.nodes.get_mut(&node_id) {
             let any = node.as_any_mut();
             if let Some(source) = any.downcast_mut::<BufferSourceNode>() {
-                let prepared = match source.prepare_loop_rate(
-                    self.node_retirement.as_ref(),
-                    enabled,
-                    start,
-                    end,
-                    now,
-                ) {
+                let prepared = match source.prepare_loop_rate(enabled, start, end, now) {
                     Ok(prepared) => prepared,
                     Err(_) => return false,
                 };
@@ -1610,7 +1145,7 @@ impl AudioContext {
             return false;
         };
         let prepared = if let Some(source) = node.as_any_mut().downcast_mut::<BufferSourceNode>() {
-            match source.prepare_param_rate(self.node_retirement.as_ref(), name, value, now) {
+            match source.prepare_param_rate(name, value, now) {
                 Ok(prepared) => prepared,
                 Err(_) => return false,
             }
@@ -1746,13 +1281,7 @@ impl AudioContext {
             c.src == src && c.dst == dst && c.src_output == src_output && c.dst_input == dst_input
         });
         if !duplicate {
-            let edges = self
-                .connections
-                .len()
-                .checked_add(1)
-                .ok_or_else(crate::node_storage::size_overflow)?;
-            let growth = self.reserve_graph_edges(edges)?;
-            growth.install(self);
+            self.reserve_edge_scratch(self.connections.len() + 1);
             self.connections.push(NodeConnection {
                 src,
                 src_output,
@@ -2069,7 +1598,6 @@ impl AudioContext {
 impl Drop for AudioContext {
     fn drop(&mut self) {
         self.device_epoch.invalidate();
-        self.retire_storage();
     }
 }
 
@@ -2970,7 +2498,6 @@ mod steady_state_allocation {
     /// upstream mix, a node with input, and the additive write into the output.
     #[test]
     fn steady_state_audio_quantum_never_reaches_the_heap() {
-        crate::audio_thread::parameter_retirement_tests::analyser_tables();
         super::source_completion_tests::natural_and_duration();
         super::capacity_tests::cold_graph_and_collection();
         super::capacity_tests::growth_after_first_render();
@@ -3024,7 +2551,6 @@ mod steady_state_allocation {
     /// must still never reach the heap.
     #[test]
     fn a_graph_change_on_the_render_path_never_reaches_the_heap() {
-        crate::audio_thread::parameter_retirement_tests::oversampling_tables();
         super::source_completion_tests::unbound_and_collection();
         super::capacity_tests::edge_growth_without_new_nodes();
         super::capacity_tests::automation_long_blocks();
@@ -3070,71 +2596,3 @@ mod steady_state_allocation {
         );
     }
 }
-
-#[path = "context_graph_tables.rs"]
-mod graph_tables;
-use graph_tables::TableGrowth;
-
-#[cfg(test)]
-type TableIdentity = (&'static str, usize, usize, usize, Vec<(u32, usize)>);
-
-#[cfg(test)]
-impl AudioContext {
-    pub(crate) fn graph_table_identities(&self) -> Vec<TableIdentity> {
-        fn row<V: Send + 'static>(
-            name: &'static str,
-            data: &crate::graph_map::GraphMap<V>,
-        ) -> TableIdentity {
-            let mut pointers: Vec<_> = data
-                .iter()
-                .map(|(key, value)| (*key, value as *const V as usize))
-                .collect();
-            pointers.sort_unstable();
-            (
-                name,
-                data.len(),
-                data.capacity(),
-                data.allocation_bytes(),
-                pointers,
-            )
-        }
-        vec![
-            row("nodes", &self.nodes),
-            row("buffers", &self.buffers),
-            row("node_buffers", &self.node_buffers),
-            row("dense_index", &self.dense_index),
-            row("released", &self.released.map),
-            row("ended_watch", &self.ended_watch.map),
-        ]
-    }
-    pub(crate) fn grow_graph_tables_for_test(&mut self, nodes: usize) -> EngineResult<()> {
-        let growth = TableGrowth::reserve(self, nodes)?;
-        growth.install(self);
-        Ok(())
-    }
-    pub(crate) fn set_native_table_capacity(&mut self, name: &str, capacity: usize) {
-        match name {
-            "nodes" => self.nodes.set_native_capacity(capacity),
-            "buffers" => self.buffers.set_native_capacity(capacity),
-            "node_buffers" => self.node_buffers.set_native_capacity(capacity),
-            "dense_index" => self.dense_index.set_native_capacity(capacity),
-            "released" => self.released.map.set_native_capacity(capacity),
-            "ended_watch" => self.ended_watch.map.set_native_capacity(capacity),
-            _ => panic!("unknown table"),
-        }
-    }
-    pub(crate) fn observe_graph_table(&mut self, name: &str, hook: Arc<dyn Fn() + Send + Sync>) {
-        match name {
-            "nodes" => self.nodes.observe(hook),
-            "buffers" => self.buffers.observe(hook),
-            "node_buffers" => self.node_buffers.observe(hook),
-            "dense_index" => self.dense_index.observe(hook),
-            "released" => self.released.map.observe(hook),
-            "ended_watch" => self.ended_watch.map.observe(hook),
-            _ => panic!("unknown table"),
-        }
-    }
-}
-
-#[path = "context_construction.rs"]
-mod construction;

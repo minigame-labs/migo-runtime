@@ -82,6 +82,3 @@ fn apply(
     }
     None
 }
-#[cfg(test)]
-#[path = "audio_thread_replacement_input_tests.rs"]
-pub(super) mod tests;

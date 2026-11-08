@@ -4,9 +4,12 @@ use shared::protocol::audio_cmd::AudioNodeId;
 
 use super::AudioNodeProcessor;
 
-#[path = "wave_shaper_storage.rs"]
-mod storage;
-use storage::{Curve, CurveAdmission, History};
+/// Per-channel interpolation and decimation FIR state for oversampling.
+#[derive(Default)]
+struct FirHistory {
+    up_state: Vec<FirState>,
+    down_state: Vec<FirState>,
+}
 
 /// Oversample mode for WaveShaperNode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,14 +104,12 @@ impl FirState {
 /// as inharmonic tones silently did nothing.
 pub struct WaveShaperNode {
     id: AudioNodeId,
-    curve: Option<Curve>,
+    curve: Option<Vec<f32>>,
     oversample: OversampleType,
     /// Interpolation and decimation filters, rebuilt when the factor changes.
     up_taps: [f32; FIR_TAPS],
     down_taps: [f32; FIR_TAPS],
-    history: History,
-    retirement: Option<crate::node_retirement::Host>,
-    context_channels: u32,
+    history: FirHistory,
     output_connected: bool,
 }
 
@@ -120,104 +121,18 @@ impl WaveShaperNode {
             oversample: OversampleType::None,
             up_taps: [0.0; FIR_TAPS],
             down_taps: [0.0; FIR_TAPS],
-            history: History::default(),
-            retirement: None,
-            context_channels: 1,
+            history: FirHistory::default(),
             output_connected: false,
         }
     }
 
-    #[cfg(test)]
-    pub fn set_curve(&mut self, mut curve: Option<Vec<f32>>) {
-        if let Err(error) = self.try_set_curve(&mut curve) {
-            tracing::warn!("curve storage admission rejected: {error}");
-        }
+    pub fn set_curve(&mut self, curve: Option<Vec<f32>>) {
+        self.curve = curve;
     }
 
-    /// Admission precedes taking the incoming command's storage.
-    pub(crate) fn try_set_curve(
-        &mut self,
-        curve: &mut Option<Vec<f32>>,
-    ) -> shared::error::EngineResult<()> {
-        let admission = curve
-            .as_ref()
-            .map(|data| {
-                CurveAdmission::reserve(
-                    self.retirement.as_ref(),
-                    data.capacity() * std::mem::size_of::<f32>(),
-                )
-            })
-            .transpose()?;
-        let next = admission.map(|reservation| reservation.finish(curve.take().unwrap()));
-        if let Some(old) = std::mem::replace(&mut self.curve, next) {
-            old.retire_replacement();
-        }
-        Ok(())
-    }
-
-    pub(crate) fn prepare_storage(
-        &mut self,
-        host: &crate::node_retirement::Host,
-        channels: u32,
-    ) -> shared::error::EngineResult<()> {
-        if self
-            .retirement
-            .as_ref()
-            .is_some_and(|old| !old.shares_physical_ledger(host))
-        {
-            return Err(storage::foreign_ledger());
-        }
-        // Hold prospective curve credit, but leave the original Vec untouched
-        // until history adoption/growth has also been admitted.
-        let curve_admission = self
-            .curve
-            .as_ref()
-            .filter(|data| data.is_native())
-            .map(|data| {
-                CurveAdmission::reserve(Some(host), data.capacity() * std::mem::size_of::<f32>())
-            })
-            .transpose()?;
-        let count = if self.oversample == OversampleType::None {
-            0
-        } else {
-            channels.max(1) as usize
-        };
-        self.history.prepare(host, count)?;
-        if let Some(admission) = curve_admission {
-            let data = self.curve.take().unwrap().into_native();
-            self.curve = Some(admission.finish(data));
-        }
-        self.retirement = Some(host.clone());
-        self.context_channels = channels.max(1);
-        Ok(())
-    }
-
-    pub(crate) fn try_set_oversample(
-        &mut self,
-        oversample: OversampleType,
-        channels: u32,
-    ) -> shared::error::EngineResult<()> {
-        if let Some(host) = &self.retirement {
-            if oversample != OversampleType::None {
-                self.history.prepare(host, channels.max(1) as usize)?;
-            }
-            self.set_mode(oversample);
-        } else {
-            self.set_mode(oversample);
-            self.prepare_oversampling(channels);
-        }
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub fn set_oversample(&mut self, oversample: OversampleType) {
-        if self.retirement.is_some() {
-            if let Err(error) = self.try_set_oversample(oversample, self.context_channels) {
-                tracing::warn!("FIR history admission rejected: {error}");
-            }
-        } else {
-            self.set_mode(oversample);
-        }
+    pub fn set_oversample(&mut self, oversample: OversampleType, channels: u32) {
+        self.set_mode(oversample);
+        self.prepare_oversampling(channels);
     }
 
     fn set_mode(&mut self, oversample: OversampleType) {
@@ -250,13 +165,7 @@ impl WaveShaperNode {
             return;
         }
         let channels = channels.max(1) as usize;
-        if let Some(host) = &self.retirement {
-            if let Err(error) = self.history.prepare(host, channels) {
-                tracing::warn!("FIR history preparation rejected: {error}");
-            }
-            return;
-        }
-        let history = &mut *self.history;
+        let history = &mut self.history;
         history
             .up_state
             .reserve(channels.saturating_sub(history.up_state.len()));
@@ -268,31 +177,6 @@ impl WaveShaperNode {
     #[cfg(test)]
     pub(crate) fn coefficients(&self) -> (&[f32], &[f32]) {
         (&self.up_taps, &self.down_taps)
-    }
-    #[cfg(test)]
-    pub(crate) fn history_identity(&self) -> (OversampleType, usize, usize, usize) {
-        (
-            self.oversample,
-            self.history.up_state.as_ptr() as usize,
-            self.history.down_state.as_ptr() as usize,
-            self.history.bytes(),
-        )
-    }
-    #[cfg(test)]
-    pub(crate) fn curve_identity(&self) -> Option<(usize, usize)> {
-        self.curve
-            .as_ref()
-            .map(|data| (data.as_ptr() as usize, data.capacity() * 4))
-    }
-    #[cfg(test)]
-    pub(crate) fn observe_history(&mut self, hook: std::sync::Arc<dyn Fn() + Send + Sync>) {
-        self.history.observe(hook);
-    }
-    #[cfg(test)]
-    pub(crate) fn observe_curve(&mut self, hook: std::sync::Arc<dyn Fn() + Send + Sync>) {
-        if let Some(curve) = &mut self.curve {
-            curve.observe(hook);
-        }
     }
 
     fn zero_input_response(&self) -> f32 {
@@ -372,15 +256,7 @@ impl AudioNodeProcessor for WaveShaperNode {
             return frames;
         }
 
-        // Native nodes retain dynamic channel compatibility. Managed contexts
-        // already admitted these exact capacities on their command path.
-        assert!(
-            !self.history.is_owned()
-                || (self.history.up_state.capacity() >= ch
-                    && self.history.down_state.capacity() >= ch),
-            "managed waveshaper exceeds its prepared context channels"
-        );
-        let history = &mut *self.history;
+        let history = &mut self.history;
         if history.up_state.len() < ch {
             history.up_state.resize(ch, FirState::default());
             history.down_state.resize(ch, FirState::default());
@@ -469,7 +345,7 @@ mod tests {
     fn shaped(oversample: OversampleType, input: &[f32]) -> Vec<f32> {
         let mut node = WaveShaperNode::new(1);
         node.set_curve(Some(clip_curve()));
-        node.set_oversample(oversample);
+        node.set_oversample(oversample, 1);
         let mut out = vec![0.0f32; input.len()];
         node.process(input, &mut out, 48_000, 1, 0.0);
         out
@@ -524,7 +400,7 @@ mod tests {
 
         let mut node = WaveShaperNode::new(1);
         node.set_curve(Some(identity));
-        node.set_oversample(OversampleType::TwoX);
+        node.set_oversample(OversampleType::TwoX, 1);
         let mut out = vec![0.0f32; input.len()];
         node.process(&input, &mut out, 48_000, 1, 0.0);
 
@@ -546,7 +422,7 @@ mod tests {
             OversampleType::FourX,
         ] {
             let mut node = WaveShaperNode::new(1);
-            node.set_oversample(mode);
+            node.set_oversample(mode, 1);
             let input: Vec<f32> = (0..16).map(|i| i as f32).collect();
             let mut out = vec![0.0f32; input.len()];
             node.process(&input, &mut out, 48_000, 1, 0.0);

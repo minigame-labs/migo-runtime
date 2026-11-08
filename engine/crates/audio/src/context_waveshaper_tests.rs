@@ -7,7 +7,7 @@ use migo_alloc_probe::thread_counts;
 fn node(id: u32, mode: OversampleType, channels: u32, curve: Vec<f32>) -> WaveShaperNode {
     let mut node = WaveShaperNode::new(id);
     node.set_curve(Some(curve));
-    node.set_oversample(mode);
+    node.set_oversample(mode, 1);
     node.prepare_oversampling(channels);
     node
 }

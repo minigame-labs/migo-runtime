@@ -104,7 +104,6 @@ mod decoder;
 mod device_prepare;
 mod graph_map;
 mod graph_table_layout;
-mod graph_vec;
 mod inner_audio;
 mod limits;
 #[cfg(test)]
@@ -119,7 +118,6 @@ pub mod param;
 /// the platform's audio (see the module).
 pub mod platform;
 pub mod power_manager;
-mod render_buffer;
 mod render_time;
 mod resample_job;
 mod resampler;

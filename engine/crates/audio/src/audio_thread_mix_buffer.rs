@@ -1,39 +1,20 @@
 //! The actor's output block admits capacity before a new output is published.
-use crate::graph_vec::{GraphVec, Initial, Plan};
-use crate::node_retirement::Host;
 use shared::error::EngineResult;
 use std::ops::{Deref, DerefMut};
 
 pub(super) struct MixBuffer {
-    data: GraphVec<f32>,
-    host: Host,
+    data: Vec<f32>,
 }
 impl MixBuffer {
-    pub(super) fn new(host: Host, samples: usize) -> EngineResult<Self> {
-        let initial = Initial::reserve(&host, samples)?;
-        let mut data = initial.finish();
-        data.resize(samples, 0.0);
-        Ok(Self { data, host })
-    }
-    fn resize(&mut self, samples: usize) -> EngineResult<()> {
-        if let Some(plan) = Plan::reserve(&self.data, Some(&self.host), samples)? {
-            plan.install(&mut self.data);
+    pub(super) fn new(samples: usize) -> Self {
+        Self {
+            data: vec![0.0; samples],
         }
-        self.data.resize(samples, 0.0);
-        Ok(())
     }
-    /// Failure disposes only the proposed output, keeping the old route intact.
+    /// Resize for a replacement output's quantum, handing the output back.
     pub(super) fn admit<T>(&mut self, candidate: T, samples: usize) -> EngineResult<T> {
-        self.resize(samples)?;
+        self.data.resize(samples, 0.0);
         Ok(candidate)
-    }
-    #[cfg(test)]
-    fn capacity(&self) -> usize {
-        self.data.capacity()
-    }
-    #[cfg(test)]
-    fn observe(&mut self, hook: std::sync::Arc<dyn Fn() + Send + Sync>) {
-        self.data.observe(hook);
     }
 }
 impl Deref for MixBuffer {
@@ -47,7 +28,3 @@ impl DerefMut for MixBuffer {
         &mut self.data
     }
 }
-
-#[cfg(test)]
-#[path = "audio_thread_mix_buffer_tests.rs"]
-mod tests;

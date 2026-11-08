@@ -92,9 +92,12 @@ fn coefficients_and_mode_setter_are_exact_without_heap() {
         }
     }
     let mut node = WaveShaperNode::new(1);
+    // The first oversampled mode sizes the per-channel FIR history once on the
+    // command path; every later mode change only redesigns the fixed taps.
+    node.set_oversample(OversampleType::TwoX, 1);
     for mode in ["2x", "2x", "4x", "none", "none", "4x", "2x"] {
         let probe = thread_counts();
-        node.set_oversample(OversampleType::from_str(mode));
+        node.set_oversample(OversampleType::from_str(mode), 1);
         let after = thread_counts();
         assert_eq!(
             (
@@ -141,7 +144,7 @@ fn modes_and_partial_frames_match_frozen_full_block_kernel() {
                     ("2x", 129),
                     ("4x", 257),
                 ] {
-                    node.set_oversample(OversampleType::from_str(mode));
+                    node.set_oversample(OversampleType::from_str(mode), 1);
                     old.set_oversample(before::OversampleType::from_str(mode));
                     node.prepare_oversampling(channels);
                     old.prepare_oversampling(channels);
@@ -171,7 +174,7 @@ fn long_blocks_and_changing_channels_keep_history_without_scratch_heap() {
                 let mut old = before::WaveShaperNode::new(1);
                 node.set_curve(curve.clone());
                 old.set_curve(curve);
-                node.set_oversample(OversampleType::from_str(mode));
+                node.set_oversample(OversampleType::from_str(mode), 1);
                 old.set_oversample(before::OversampleType::from_str(mode));
                 node.prepare_oversampling(32);
                 old.prepare_oversampling(32);
@@ -199,7 +202,7 @@ fn curve_replacements_dc_disconnect_and_empty_tail_match_before() {
         for mode in ["none", "2x", "4x"] {
             let mut node = WaveShaperNode::new(1);
             let mut old = before::WaveShaperNode::new(1);
-            node.set_oversample(OversampleType::from_str(mode));
+            node.set_oversample(OversampleType::from_str(mode), 1);
             old.set_oversample(before::OversampleType::from_str(mode));
             node.prepare_oversampling(channels);
             old.prepare_oversampling(channels);

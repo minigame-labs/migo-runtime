@@ -108,13 +108,6 @@ impl AudioNodeProcessor for ConstantSourceNode {
         frames
     }
 
-    fn prepare_params(
-        &mut self,
-        host: &crate::node_retirement::Host,
-    ) -> shared::error::EngineResult<()> {
-        self.offset.prepare_storage(host)
-    }
-
     fn get_param_mut(&mut self, name: &str) -> Option<&mut AudioParamTimeline> {
         match name {
             "offset" => Some(&mut self.offset),

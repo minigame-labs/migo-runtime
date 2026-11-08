@@ -450,8 +450,7 @@ pub struct InnerAudioPlayer {
     stream_permit: Option<AudioAggregatePermit>,
     retirement_cpu: Option<migo_io::audio_cpu::AudioCpu>,
     source_retirement: Option<source_retirement::Slot>,
-    rate_host: Option<crate::node_retirement::Host>,
-    rate_converter: Option<crate::node_retirement::Value<crate::variable_rate::Converter>>,
+    rate_converter: Option<crate::variable_rate::Converter>,
 }
 impl InnerAudioPlayer {
     pub fn new(id: InnerAudioId, output_channels: u32) -> Self {
@@ -497,7 +496,6 @@ impl InnerAudioPlayer {
             stream_permit: None,
             retirement_cpu: None,
             source_retirement: None,
-            rate_host: None,
             rate_converter: None,
         }
     }
@@ -512,23 +510,15 @@ impl InnerAudioPlayer {
         player
     }
 
-    pub(crate) fn with_rate_host(mut self, host: crate::node_retirement::Host) -> Self {
-        self.rate_host = Some(host);
-        self
-    }
-
     fn prepare_rate_converter(
         &self,
         channels: usize,
         empty: bool,
-    ) -> EngineResult<Option<crate::node_retirement::Value<crate::variable_rate::Converter>>> {
+    ) -> EngineResult<Option<crate::variable_rate::Converter>> {
         if empty || self.shared.playback_rate_units() == PLAYBACK_RATE_SCALE {
             return Ok(None);
         }
-        self.rate_host
-            .as_ref()
-            .map(|host| crate::variable_rate::Converter::prepare(host, channels))
-            .transpose()
+        crate::variable_rate::Converter::new(channels).map(Some)
     }
 
     pub(crate) fn set_playback_rate(&mut self, rate: f32) -> EngineResult<()> {
@@ -541,10 +531,9 @@ impl InnerAudioPlayer {
         } else if self.rate_converter.is_none()
             && self.shared.channels() != 0
             && (self.shared.is_loaded() || self.is_streaming())
-            && let Some(host) = &self.rate_host
         {
             let channels = self.shared.channels() as usize;
-            let mut converter = crate::variable_rate::Converter::prepare(host, channels)?;
+            let mut converter = crate::variable_rate::Converter::new(channels)?;
             if !self.stream_complete {
                 converter.reset_stream(self.position / channels, self.position_phase)?;
             } else {

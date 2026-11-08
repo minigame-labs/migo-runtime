@@ -122,15 +122,6 @@ pub trait AudioNodeProcessor: Send + 'static {
         1
     }
 
-    /// Adopt all timeline capacities on the command path, including timelines
-    /// populated before this node was inserted into a managed context.
-    fn prepare_params(
-        &mut self,
-        _host: &crate::node_retirement::Host,
-    ) -> shared::error::EngineResult<()> {
-        Ok(())
-    }
-
     /// Get a named AudioParam for automation, if this node has one.
     /// Returns None if the param name is not recognized.
     fn get_param_mut(&mut self, _name: &str) -> Option<&mut AudioParamTimeline> {
@@ -152,6 +143,3 @@ pub struct NodeConnection {
     /// Input port on `dst`. Meaningful only when `dst` has more than one.
     pub dst_input: u32,
 }
-
-#[cfg(test)]
-pub(crate) use wave_shaper::inline_tests::before as wave_shaper_before;

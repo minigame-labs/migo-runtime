@@ -90,7 +90,6 @@ fn source_switch_retires_old_pcm_stream_seek_and_events() {
 
 #[test]
 fn out_of_order_owned_results_cannot_replace_the_new_source() {
-    super::inner_custody_tests::custody();
     let mut player = InnerAudioPlayer::new(1, 1);
     let old = player.begin_load().unwrap();
     let new = player.begin_load().unwrap();

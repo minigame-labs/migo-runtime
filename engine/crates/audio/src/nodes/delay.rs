@@ -280,13 +280,6 @@ impl AudioNodeProcessor for DelayNode {
         ) || contains(&self.buffer[..(history - first) * self.channels], audible)
     }
 
-    fn prepare_params(
-        &mut self,
-        host: &crate::node_retirement::Host,
-    ) -> shared::error::EngineResult<()> {
-        self.delay_time.prepare_storage(host)
-    }
-
     fn get_param_mut(&mut self, name: &str) -> Option<&mut AudioParamTimeline> {
         match name {
             "delayTime" => Some(&mut self.delay_time),

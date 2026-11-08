@@ -318,7 +318,7 @@ pub(super) fn wave_shaper_commands() {
                     assert!(context.set_wave_shaper_oversample(11, mode));
                     // The unprepared reference retains the original process path.
                     // It is rendered only outside the allocation window.
-                    reference.set_oversample(mode);
+                    reference.set_oversample(mode, 1);
                     let from = block * output.len();
                     assert_eq!(
                         reference.process(
@@ -356,9 +356,9 @@ pub(super) fn wave_shaper_long_blocks() {
         prepared.set_curve(Some(vec![-1.0, 0.0, 1.0]));
         reference.set_curve(Some(vec![-1.0, 0.0, 1.0]));
         for mode in [TwoX, FourX, FourX, NoOversampling, TwoX] {
-            prepared.set_oversample(mode);
+            prepared.set_oversample(mode, 1);
             prepared.prepare_oversampling(channels);
-            reference.set_oversample(mode);
+            reference.set_oversample(mode, 1);
             for frames in [1, 17, 128, 257] {
                 let input: Vec<_> = (0..frames * channels as usize)
                     .map(|i| ((i % 31) as i32 - 15) as f32 / 16.0)

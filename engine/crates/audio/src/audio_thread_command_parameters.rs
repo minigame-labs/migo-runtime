@@ -177,7 +177,3 @@ pub(super) fn apply(
     }
     true
 }
-
-#[cfg(test)]
-#[path = "audio_thread_command_parameters_tests.rs"]
-pub(super) mod tests;

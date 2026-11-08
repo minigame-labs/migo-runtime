@@ -1,10 +1,7 @@
 //! Graph collection used to destroy node/PCM owners inside the device mix.
 //! Each admitted node reserves its handoff and physical credit on the command
 //! path; collection transfers ownership to the existing AudioCpu retirement lane.
-use crate::{
-    limits::{AudioAggregateLedger, AudioAggregatePermit},
-    nodes::AudioNodeProcessor,
-};
+use crate::limits::{AudioAggregateLedger, AudioAggregatePermit};
 use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
 use migo_io::audio_cpu::AudioCpu;
 use shared::error::EngineResult;
@@ -53,20 +50,8 @@ impl Host {
             incoming,
         })
     }
-    pub(crate) fn render_buffer_samples(&self) -> usize {
-        crate::audio_thread::RENDER_QUANTUM_FRAMES * self.channels.max(1) as usize
-    }
-    pub(crate) fn for_channels(&self, channels: u32) -> Self {
-        Self {
-            channels: channels.max(1),
-            ..self.clone()
-        }
-    }
     pub(crate) fn accepts_inline(&self, permit: &AudioAggregatePermit) -> bool {
         permit.belongs_to(&self.aggregate)
-    }
-    pub(crate) fn shares_physical_ledger(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.aggregate, &other.aggregate)
     }
     fn ensure_open(&self) -> EngineResult<()> {
         if self.cpu.is_closed() {
@@ -80,24 +65,6 @@ impl Host {
             unreachable!("process-lifetime graph retirement dispatcher disappeared");
         }
         Lease { send, permit }
-    }
-    fn admit(&self, node: &dyn AudioNodeProcessor) -> EngineResult<Lease> {
-        self.admit_bytes(std::mem::size_of_val(node))
-    }
-    fn admit_bytes(&self, node_bytes: usize) -> EngineResult<Lease> {
-        self.ensure_open()?;
-        // Render storage owns its own credit: it can outlive a collected node.
-        let bytes = node_bytes + HANDOFF_BYTES;
-        let permit = self.aggregate.try_reserve(bytes, "graph node retirement")?;
-        Ok(self.register(permit))
-    }
-    pub(crate) fn reserve_node<T: AudioNodeProcessor + 'static>(
-        &self,
-    ) -> EngineResult<NodeAdmission<T>> {
-        Ok(NodeAdmission {
-            lease: self.admit_bytes(std::mem::size_of::<T>())?,
-            marker: std::marker::PhantomData,
-        })
     }
     pub(crate) fn reserve_value<T: Send + 'static>(&self) -> EngineResult<Reservation<T>> {
         self.reserve_value_with_bytes(0)
@@ -129,63 +96,6 @@ impl Host {
         self.ensure_open()?;
         self.aggregate.try_reserve(bytes, "audio response storage")
     }
-
-    /// All admission completes before the caller takes any old storage.
-    pub(crate) fn retire_with<T: Send + 'static>(
-        &self,
-        retained_bytes: usize,
-        take: impl FnOnce() -> T,
-    ) -> EngineResult<()> {
-        let reservation = self.reserve_value_with_bytes::<T>(retained_bytes)?;
-        let retired = reservation.finish(take());
-        #[cfg(test)]
-        let retired = {
-            let mut retired = retired;
-            REPLACEMENT_WITNESS.with(|hook| {
-                if let Some(hook) = hook.borrow().as_ref() {
-                    retired.observe(hook.clone());
-                }
-            });
-            retired
-        };
-        drop(retired);
-        Ok(())
-    }
-}
-
-/// Reserve before taking a command's old value, so refusal leaves it intact.
-/// PCM owners already retain their own budget; unaccounted curve capacity is
-/// charged explicitly while queued. Standalone graphs keep their old setters.
-pub(crate) fn retire_replacement<T: Send + 'static>(
-    slot: &mut Option<T>,
-    host: Option<&Host>,
-    retained_bytes: usize,
-) -> EngineResult<()> {
-    if let Some(host) = host
-        && slot.is_some()
-    {
-        host.retire_with(retained_bytes, || slot.take().unwrap())?;
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-thread_local! {
-    static REPLACEMENT_WITNESS: std::cell::RefCell<Option<Arc<dyn Fn() + Send + Sync>>> = const { std::cell::RefCell::new(None) };
-}
-#[cfg(test)]
-pub(crate) fn observe_replacement<R>(
-    hook: Arc<dyn Fn() + Send + Sync>,
-    f: impl FnOnce() -> R,
-) -> R {
-    struct Reset(Option<Arc<dyn Fn() + Send + Sync>>);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            REPLACEMENT_WITNESS.with(|hook| *hook.borrow_mut() = self.0.take());
-        }
-    }
-    let _reset = Reset(REPLACEMENT_WITNESS.with(|slot| slot.replace(Some(hook))));
-    f()
 }
 
 const RETIRE_BATCH: usize = 32;
@@ -237,75 +147,11 @@ async fn retire_batch(cpu: &AudioCpu, value: Vec<Retired>) {
 struct Retired {
     // Actual node/PCM and excess render storage die before physical credit.
     _resource: Box<dyn Send>,
-    _buffer: Option<crate::render_buffer::RenderBuffer>,
     _permit: AudioAggregatePermit,
 }
 struct Lease {
     send: oneshot::Sender<Retired>,
     permit: AudioAggregatePermit,
-}
-
-pub(crate) struct Node {
-    value: Option<Box<dyn AudioNodeProcessor>>,
-    lease: Option<Lease>,
-    buffer: Option<crate::render_buffer::RenderBuffer>,
-}
-impl Node {
-    pub(crate) fn new(value: Box<dyn AudioNodeProcessor>) -> Self {
-        Self {
-            value: Some(value),
-            lease: None,
-            buffer: None,
-        }
-    }
-    pub(crate) fn prepare(&mut self, host: &Host) -> EngineResult<()> {
-        if self.lease.is_none() {
-            self.lease = Some(host.admit(self.value.as_deref().unwrap())?);
-        }
-        Ok(())
-    }
-    pub(crate) fn retire(mut self, buffer: Option<crate::render_buffer::RenderBuffer>) {
-        self.buffer = buffer;
-    }
-}
-impl Deref for Node {
-    type Target = dyn AudioNodeProcessor;
-    fn deref(&self) -> &Self::Target {
-        self.value.as_deref().unwrap()
-    }
-}
-impl DerefMut for Node {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.value.as_deref_mut().unwrap()
-    }
-}
-impl Drop for Node {
-    fn drop(&mut self) {
-        if let Some(lease) = self.lease.take() {
-            let value = Retired {
-                _resource: self.value.take().unwrap(),
-                _buffer: self.buffer.take(),
-                _permit: lease.permit,
-            };
-            if lease.send.send(value).is_err() {
-                unreachable!("process-lifetime graph retirement receiver disappeared");
-            }
-        }
-    }
-}
-
-pub(crate) struct NodeAdmission<T: AudioNodeProcessor + 'static> {
-    lease: Lease,
-    marker: std::marker::PhantomData<T>,
-}
-impl<T: AudioNodeProcessor + 'static> NodeAdmission<T> {
-    pub(crate) fn finish(self, value: T) -> Node {
-        Node {
-            value: Some(Box::new(value)),
-            lease: Some(self.lease),
-            buffer: None,
-        }
-    }
 }
 
 /// A command-side reservation made before allocating or replacing the value.
@@ -344,43 +190,9 @@ impl<T: Send + 'static> Value<T> {
             .is_none_or(|lease| lease.permit.belongs_to(&host.aggregate))
     }
 
-    /// Adopt already-existing capacities without detaching the data owner.
-    pub(crate) fn prepare_with_bytes(
-        &mut self,
-        host: &Host,
-        retained_bytes: usize,
-    ) -> EngineResult<()> {
-        if self.lease.is_none() {
-            self.lease = host.reserve_value_with_bytes::<T>(retained_bytes)?.lease;
-        }
-        Ok(())
-    }
-    pub(crate) fn retire_replacement(self) {
-        #[cfg(test)]
-        let retired = {
-            let mut value = self;
-            REPLACEMENT_WITNESS.with(|hook| {
-                if let Some(hook) = hook.borrow().as_ref() {
-                    value.observe(hook.clone());
-                }
-            });
-            value
-        };
-        #[cfg(not(test))]
-        let retired = self;
-        drop(retired);
-    }
-
     #[cfg(test)]
     pub(crate) fn observe(&mut self, hook: Arc<dyn Fn() + Send + Sync>) {
         self.value.as_mut().unwrap().witness.0 = Some(hook);
-    }
-
-    pub(crate) fn prepare(&mut self, host: &Host) -> EngineResult<()> {
-        if self.lease.is_none() {
-            self.lease = host.reserve_value::<T>()?.lease;
-        }
-        Ok(())
     }
 }
 impl<T: Send + 'static> Deref for Value<T> {
@@ -400,7 +212,6 @@ impl<T: Send + 'static> Drop for Value<T> {
             let lease = self.lease.take().unwrap();
             let value = Retired {
                 _resource: self.value.take().unwrap(),
-                _buffer: None,
                 _permit: lease.permit,
             };
             if lease.send.send(value).is_err() {

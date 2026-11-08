@@ -67,7 +67,6 @@ fn hold_first_step(pool: &mut DecodePool) -> (mpsc::Receiver<()>, Release, Arc<O
 
 #[test]
 fn waiting_reply_cancel_returns_encoded_credit_without_an_active_slot() {
-    super::waiting_tests::waiting_custody();
     let host = migo_io::scheduler::IoScheduler::new(0);
     let (mut pool, results) = pool(&host, 0);
     let data = Arc::new(wav(8000, 4000));
@@ -200,7 +199,6 @@ fn pool_drop_aborts_its_tasks_without_waiting_or_closing_peer_hosts() {
 
 #[test]
 fn actual_decode_pools_share_admission_and_release_before_result_visibility() {
-    super::super::physical_custody_tests::handoff();
     let first_host = migo_io::scheduler::IoScheduler::new(0);
     let second_host = migo_io::scheduler::IoScheduler::new(0);
     let (mut first, first_results) = pool(&first_host, 1);

@@ -51,7 +51,3 @@ pub(super) fn copy(
         Err(error) => Err(error),
     }
 }
-
-#[cfg(test)]
-#[path = "audio_thread_command_copy_tests.rs"]
-pub(super) mod tests;

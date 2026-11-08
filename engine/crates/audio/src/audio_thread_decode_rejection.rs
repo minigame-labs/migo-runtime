@@ -157,6 +157,3 @@ fn restore(job: DecodeJob, origin: Origin) -> AudioCmd {
         _ => unreachable!("decoder refusal changed its origin"),
     }
 }
-#[cfg(test)]
-#[path = "audio_thread_decode_rejection_tests.rs"]
-pub(super) mod tests;

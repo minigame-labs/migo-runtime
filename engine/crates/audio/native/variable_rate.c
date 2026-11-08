@@ -1,15 +1,5 @@
-/* SDK-private capacity query, compiled beside the pinned native filter types. */
+/* SDK-private history query, compiled beside the pinned native filter types. */
 #include "src_sinc.c"
-
-size_t migo_src_required_bytes(int channels)
-{
-    if (channels < 1 || channels > 32) return 0;
-    int length = 3 * (int)lrint((ARRAY_LEN(fastest_coeffs.coeffs) * 1.0)
-                              / fastest_coeffs.increment * SRC_MAX_RATIO + 1);
-    length = MAX(length, 4096) * channels + 1;
-    return sizeof(SRC_STATE) + sizeof(SINC_FILTER)
-           + sizeof(float) * (size_t)(length + channels);
-}
 
 size_t migo_src_history_frames(void)
 {
