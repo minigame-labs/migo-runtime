@@ -121,6 +121,7 @@ mod resample_job;
 #[cfg(test)]
 mod resampler;
 mod stream_control;
+mod stream_producer;
 pub mod streaming;
 mod streaming_codecs;
 mod streaming_file;
