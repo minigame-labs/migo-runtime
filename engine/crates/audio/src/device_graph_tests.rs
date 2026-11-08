@@ -27,10 +27,8 @@ fn fixture(
             cpu: scheduler.audio_cpu().background(),
             usage: Usage::new(8),
             process: Usage::new(8),
-            aggregate: Arc::new(AudioAggregateLedger::new(8 * OWNER_BYTES)),
-            retire_hook: None,
         },
-        slots: Slots::new(),
+        slots: HashMap::new(),
     };
     controller
         .ensure(&context, target, ThreadWakeup::new(), None)

@@ -1,7 +1,6 @@
 //! Product cutover checks: independent whole-input native oracle, exact media
 //! clock, command/reset boundaries, physical admission and original CPU Drop.
 use super::*;
-use crate::node_retirement::Host;
 use std::{
     ffi::{c_int, c_long, c_void},
     sync::{Condvar, Mutex},
@@ -135,15 +134,12 @@ fn setup(
 ) -> (
     migo_io::scheduler::IoScheduler,
     Arc<AudioAggregateLedger>,
-    Host,
     InnerAudioPlayer,
 ) {
     let scheduler = migo_io::scheduler::IoScheduler::isolated_for_admission_probe(id, 1, u64::MAX);
-    let cpu = scheduler.audio_cpu();
     let ledger = Arc::new(AudioAggregateLedger::new(32 << 20));
-    let host = Host::new(cpu.clone(), ledger.clone(), channels as u32).unwrap();
     let player = InnerAudioPlayer::new_with_aggregate(1, channels as u32, ledger.clone());
-    (scheduler, ledger, host, player)
+    (scheduler, ledger, player)
 }
 fn load(player: &mut InnerAudioPlayer, input: &[f32], channels: usize) {
     player
@@ -228,7 +224,7 @@ fn stream_pcm(
 #[test]
 fn streaming_native_rate_keeps_complete_pcm_through_stalls_eof_and_prefix_reclaim() {
     for (channels, frames) in [(1, 5003), (2, 5003), (32, 5003), (1, 450007)] {
-        let (_scheduler, _ledger, _host, mut player) = setup(channels, 1280 + channels as i32);
+        let (_scheduler, _ledger, mut player) = setup(channels, 1280 + channels as i32);
         let input = signal(frames, channels);
         let (tx, rx) = crate::streaming::stream_channel();
         player.shared.set_playback_rate(1.333);
@@ -394,7 +390,7 @@ fn streaming_native_rate_keeps_complete_pcm_through_stalls_eof_and_prefix_reclai
 #[test]
 fn buffered_native_rate_matches_complete_pcm_and_exact_clock_without_hot_allocations() {
     for (channels, output_channels) in [(1, 1), (2, 2), (32, 32), (1, 2), (2, 1), (32, 2)] {
-        let (_scheduler, _ledger, _host, mut player) = setup(channels, 1200 + channels as i32);
+        let (_scheduler, _ledger, mut player) = setup(channels, 1200 + channels as i32);
         player.output_channels = output_channels;
         let input = signal(4099, channels);
         for rates in [
@@ -503,7 +499,7 @@ fn buffered_native_rate_matches_complete_pcm_and_exact_clock_without_hot_allocat
 
 #[test]
 fn activation_fractional_phase_seek_stop_and_replay_use_the_real_player() {
-    let (_scheduler, _ledger, _host, mut player) = setup(2, 1250);
+    let (_scheduler, _ledger, mut player) = setup(2, 1250);
     let input = signal(4099, 2);
     load(&mut player, &input, 2);
     assert!(
@@ -612,7 +608,7 @@ fn activation_fractional_phase_seek_stop_and_replay_use_the_real_player() {
 #[test]
 fn buffered_native_loops_keep_complete_periodic_pcm_phase_and_hot_bounds() {
     for (frames, channels) in [(1, 1), (3, 2), (17, 32), (129, 2)] {
-        let (_scheduler, _ledger, _host, mut player) = setup(channels, 1300 + channels as i32);
+        let (_scheduler, _ledger, mut player) = setup(channels, 1300 + channels as i32);
         let mut input = signal(frames, channels);
         input[0] = 0.375;
         for rates in [
@@ -704,7 +700,7 @@ fn buffered_native_loops_keep_complete_periodic_pcm_phase_and_hot_bounds() {
     }
     // Cross native buffer compaction while the retained application source is
     // only 17 frames. Every output sample is checked, including the full tail.
-    let (_scheduler, _ledger, _host, mut player) = setup(2, 1340);
+    let (_scheduler, _ledger, mut player) = setup(2, 1340);
     let input = signal(17, 2);
     let rates = [503, 2000, 1333, 500];
     player.shared.set_playback_rate(0.503);
@@ -741,7 +737,7 @@ fn buffered_native_loops_keep_complete_periodic_pcm_phase_and_hot_bounds() {
 
 #[test]
 fn buffered_loop_controls_rebuild_only_real_past_without_reallocating() {
-    let (_scheduler, ledger, _host, mut player) = setup(2, 1350);
+    let (_scheduler, ledger, mut player) = setup(2, 1350);
     let mut input = signal(3, 2);
     input[0] = 0.375;
     player.set_loop_enabled(true);

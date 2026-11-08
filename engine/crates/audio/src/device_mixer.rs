@@ -7,9 +7,6 @@ use crate::context::AudioContext;
 use shared::protocol::audio_cmd::AudioContextState;
 #[cfg(test)]
 use std::collections::HashMap;
-#[path = "device_route_storage.rs"]
-mod route_storage;
-use route_storage::Routes;
 use std::time::{Duration, Instant};
 
 const MAX_MIX_TURNS: usize = 4096;
@@ -30,33 +27,21 @@ struct Route {
 }
 pub(crate) struct DeviceMixer {
     controller: Controller,
-    routes: Routes,
-    admission_retry: Option<Instant>,
+    routes: HashMap<u32, Route>,
     // A fixed host stack buffer, independent of route count and backend layout.
     scratch: [f32; QUANTUM * 32],
 }
 impl DeviceMixer {
-    pub(crate) fn managed(cpu: AudioCpu, storage: crate::node_retirement::Host) -> Self {
-        Self {
-            controller: Controller::managed(cpu, storage.clone()),
-            routes: Routes::managed(storage),
-            admission_retry: None,
-            scratch: [0.0; QUANTUM * 32],
-        }
-    }
-    #[cfg(test)]
     pub(crate) fn new(cpu: AudioCpu) -> Self {
         Self {
             controller: Controller::new(cpu),
-            routes: Routes::new(),
-            admission_retry: None,
+            routes: HashMap::new(),
             scratch: [0.0; QUANTUM * 32],
         }
     }
     pub(crate) fn restart(&mut self) {
         self.controller.restart();
         self.routes.clear();
-        self.admission_retry = None;
     }
     fn failed(error: EngineError, retry_admission: bool) -> RouteState {
         tracing::warn!("device SRC route stopped: {}", error);
@@ -92,7 +77,6 @@ impl DeviceMixer {
         mut collected: impl FnMut(u32),
         mut ended: impl FnMut(u32),
     ) {
-        self.admission_retry = None;
         self.routes.retain(|id, route| {
             contexts.get(id).is_some_and(|ctx| {
                 route.epoch.same(&ctx.device_epoch()) && route.format.target == target
@@ -119,15 +103,16 @@ impl DeviceMixer {
                 self.controller.remove(context);
             }
             if !paused && context.has_active_sources() && !self.routes.contains_key(&id) {
-                let result = self.routes.create_with(id, || {
-                    let state = match self
-                        .controller
-                        .ensure(context, target, wakeup.clone(), None)
-                    {
-                        Ok(()) => RouteState::Pending,
-                        Err(error) => Self::failed(error, true),
-                    };
-                    Ok(Route {
+                let state = match self
+                    .controller
+                    .ensure(context, target, wakeup.clone(), None)
+                {
+                    Ok(()) => RouteState::Pending,
+                    Err(error) => Self::failed(error, true),
+                };
+                self.routes.insert(
+                    id,
+                    Route {
                         epoch: context.device_epoch(),
                         format: Format {
                             source: context.sample_rate(),
@@ -135,17 +120,8 @@ impl DeviceMixer {
                             channels: context.channels(),
                         },
                         state,
-                    })
-                });
-                if let Err(error) = result {
-                    if error.code == ErrorCode::InputSaturated {
-                        // A refusal cannot allocate a per-route failure record.
-                        // Keep one inline deadline so an idle host retries.
-                        self.admission_retry = Some(Instant::now() + ADMISSION_RETRY);
-                    }
-                    Self::control_only(context, paused, &mut collected, &mut ended);
-                    continue;
-                }
+                    },
+                );
             }
             let Some(route) = self.routes.get_mut(&id) else {
                 Self::control_only(context, paused, &mut collected, &mut ended);
@@ -250,10 +226,6 @@ impl DeviceMixer {
                     _ => None,
                 }
             })
-            .chain(
-                self.admission_retry
-                    .map(|at| at.saturating_duration_since(now)),
-            )
             .min()
     }
     /// At most one device quantum, with a fixed turn ceiling. Every individual
@@ -355,7 +327,3 @@ impl DeviceMixer {
 #[cfg(test)]
 #[path = "device_mixer_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "device_route_storage_tests.rs"]
-mod storage_tests;

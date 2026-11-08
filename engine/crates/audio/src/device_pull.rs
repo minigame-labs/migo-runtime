@@ -126,9 +126,6 @@ impl Pull {
     }
     fn retire(&mut self, code: ErrorCode) {
         self.ready.retire(code);
-        if self.ready.deferred_retirement {
-            return;
-        }
         self.buffers = None;
         self.output_head = 0;
     }

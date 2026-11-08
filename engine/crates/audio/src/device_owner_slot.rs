@@ -3,9 +3,8 @@
 use super::*;
 use crate::context::{AudioContext, DeviceEpoch};
 use shared::channel::ThreadWakeup;
-#[path = "device_slot_storage.rs"]
-mod slot_storage;
-use slot_storage::Slots;
+use std::collections::HashMap;
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 struct Operation {
@@ -176,20 +175,13 @@ impl Drop for Slot {
 }
 struct Controller {
     host: Host,
-    slots: Slots,
+    slots: HashMap<u32, Slot>,
 }
 impl Controller {
-    #[cfg(test)]
     fn new(cpu: AudioCpu) -> Self {
         Self {
             host: Host::new(cpu),
-            slots: Slots::new(),
-        }
-    }
-    fn managed(cpu: AudioCpu, storage: crate::node_retirement::Host) -> Self {
-        Self {
-            host: Host::new(cpu),
-            slots: Slots::managed(storage),
+            slots: HashMap::new(),
         }
     }
     fn ensure(
@@ -219,11 +211,9 @@ impl Controller {
         {
             return Ok(());
         }
-        self.slots.create_with(context.id(), || {
-            let mut slot = Slot::new(self.host.clone(), context.id(), epoch, format);
-            slot.request(wakeup, hook);
-            Ok(slot)
-        })?;
+        let mut slot = Slot::new(self.host.clone(), context.id(), epoch, format);
+        slot.request(wakeup, hook);
+        self.slots.insert(context.id(), slot);
         Ok(())
     }
     fn take(&mut self, context: &AudioContext) -> Option<EngineResult<Device>> {
@@ -259,7 +249,3 @@ mod graph;
 
 #[path = "device_mixer.rs"]
 pub(crate) mod mixer;
-
-#[path = "device_slot_storage_tests.rs"]
-#[cfg(test)]
-mod storage_tests;

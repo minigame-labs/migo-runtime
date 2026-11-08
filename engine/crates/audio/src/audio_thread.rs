@@ -1429,22 +1429,8 @@ fn run_audio_thread(
     let mut channels = output.channels();
 
     let mut node_index = NodeContextIndex::new();
-    // Device routes, the decoded-audio cache and playback-rate converters still
-    // hand large owners to the CPU executor through this host.
-    let storage_host = match crate::node_retirement::Host::new(
-        cpu.clone(),
-        AudioAggregateLedger::process_global(),
-        channels,
-    ) {
-        Ok(host) => host,
-        Err(error) => {
-            warn!("AudioThread storage host unavailable: {error}");
-            return;
-        }
-    };
     let mut contexts: HashMap<AudioContextId, AudioContext> = HashMap::with_capacity(4);
-    let mut device_mixer =
-        crate::device_prepare::DeviceMixer::managed(cpu.clone(), storage_host.clone());
+    let mut device_mixer = crate::device_prepare::DeviceMixer::new(cpu.clone());
     let mut inner_players = inner_collection::InnerPlayers::new();
     // MediaAudioPlayer: maps player_id -> list of InnerAudioContext source IDs
     let mut media_players = media_membership::MediaPlayers::new();

@@ -14,7 +14,6 @@ fn fixture(
     let mut mixer = DeviceMixer::new(scheduler.audio_cpu());
     mixer.controller.host.usage = Usage::new(8);
     mixer.controller.host.process = Usage::new(16);
-    mixer.controller.host.aggregate = Arc::new(AudioAggregateLedger::new(16 * OWNER_BYTES));
     (
         scheduler,
         mixer,
