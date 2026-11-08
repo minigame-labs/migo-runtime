@@ -111,6 +111,7 @@ mod nodes;
 mod off_worker;
 mod output;
 pub mod param;
+mod pcm_source;
 /// `setInnerAudioOption` and `getAvailableAudioSources`, where the engine is
 /// the platform's audio (see the module).
 pub mod platform;
