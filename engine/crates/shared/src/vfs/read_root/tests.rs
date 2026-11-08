@@ -75,6 +75,9 @@ fn portable_names_and_nonrelative_paths_fail_before_native_open() {
         "clip:stream",
         "trailing.",
         "COM³.txt",
+        // On Windows '\\' separates native path components; VirtualFS refuses
+        // it in untrusted text before a relative path is ever built.
+        #[cfg(not(windows))]
         "nested\\clip",
         "bad\0name",
         "bad\u{7f}",
