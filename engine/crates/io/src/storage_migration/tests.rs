@@ -151,19 +151,87 @@ fn hardlinked_legacy_files_cannot_expose_private_writes_through_a_game_alias() {
 }
 
 #[test]
-fn unsupported_rollback_recovery_is_retained_without_opening_sqlite() {
+fn a_rollback_journal_moves_with_its_database_for_sqlite_recovery() {
     let root = tempfile::tempdir().unwrap();
     let paths = paths(root.path(), 1);
     seed(paths.storage().legacy(), "committed");
-    let db = paths.storage().legacy().join("storage.db");
-    let before = fs::read(&db).unwrap();
     let journal = paths.storage().legacy().join("storage.db-journal");
-    fs::write(&journal, b"untrusted recovery state").unwrap();
-    assert!(prepare(paths.storage()).is_err());
-    assert!(!paths.storage().is_prepared());
-    assert!(!paths.storage().directory().exists());
-    assert_eq!(fs::read(db).unwrap(), before);
-    assert_eq!(fs::read(journal).unwrap(), b"untrusted recovery state");
+    fs::write(&journal, b"not a hot journal").unwrap();
+    prepare(paths.storage()).unwrap();
+    let target = paths.storage().directory();
+    assert_eq!(
+        fs::read(target.join("storage.db-journal")).unwrap(),
+        b"not a hot journal"
+    );
+    assert!(!paths.storage().legacy().exists());
+    assert_eq!(value(target), "committed");
+}
+
+#[test]
+fn game_entries_beside_the_legacy_database_stay_game_visible() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path(), 1);
+    let legacy = paths.storage().legacy();
+    seed(legacy, "migrated");
+    fs::create_dir(legacy.join("levels")).unwrap();
+    fs::write(legacy.join("levels").join("1.json"), b"{}").unwrap();
+    fs::write(legacy.join("notes.txt"), b"game file").unwrap();
+    prepare(paths.storage()).unwrap();
+    let target = paths.storage().directory();
+    assert_eq!(value(target), "migrated");
+    assert_eq!(fs::read(legacy.join("notes.txt")).unwrap(), b"game file");
+    assert_eq!(
+        fs::read(legacy.join("levels").join("1.json")).unwrap(),
+        b"{}"
+    );
+    assert!(!legacy.join("storage.db").exists());
+    let mut private: Vec<_> = fs::read_dir(target)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    private.sort();
+    assert!(private.iter().all(|name| is_family(name)), "{private:?}");
+}
+
+#[test]
+fn a_legacy_directory_without_a_database_is_left_to_the_game() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path(), 1);
+    let legacy = paths.storage().legacy();
+    fs::create_dir_all(legacy.join("assets")).unwrap();
+    fs::write(legacy.join("assets").join("a.bin"), b"game").unwrap();
+    prepare(paths.storage()).unwrap();
+    assert_eq!(
+        fs::read(legacy.join("assets").join("a.bin")).unwrap(),
+        b"game"
+    );
+    assert_eq!(
+        fs::read_dir(paths.storage().directory()).unwrap().count(),
+        0
+    );
+    seed(paths.storage().directory(), "fresh");
+    assert_eq!(value(paths.storage().directory()), "fresh");
+}
+
+#[test]
+fn an_interrupted_return_of_game_entries_resumes_before_readiness() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = paths(root.path(), 1);
+    let legacy = paths.storage().legacy();
+    seed(legacy, "kept");
+    fs::write(legacy.join("first"), b"1").unwrap();
+    fs::write(legacy.join("second"), b"2").unwrap();
+    let target = paths.storage().directory();
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    // Crash shape: the store moved and one game entry was already handed back.
+    fs::rename(legacy, target).unwrap();
+    fs::create_dir(legacy).unwrap();
+    fs::rename(target.join("first"), legacy.join("first")).unwrap();
+    prepare(paths.storage()).unwrap();
+    assert_eq!(fs::read(legacy.join("first")).unwrap(), b"1");
+    assert_eq!(fs::read(legacy.join("second")).unwrap(), b"2");
+    assert!(!target.join("second").exists());
+    assert_eq!(value(target), "kept");
 }
 
 #[test]

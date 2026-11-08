@@ -41,49 +41,66 @@ fn regular(root: &ReadRoot, name: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-fn validate_directory(path: &Path, all_files: bool) -> io::Result<ReadRoot> {
+/// The only names SQLite opens for this store: the database and its journals.
+const FAMILY: [&str; 4] = [
+    "storage.db",
+    "storage.db-wal",
+    "storage.db-shm",
+    "storage.db-journal",
+];
+
+fn is_family(name: &std::ffi::OsStr) -> bool {
+    FAMILY.iter().any(|member| name == *member)
+}
+
+/// Pin `path` and check every SQLite name present there. Only these names are
+/// ever opened, so only they can alias private storage: each must be a regular
+/// file with one link. Missing journals are normal; a journal without its
+/// database is not a state this store produces.
+fn validate_family(path: &Path) -> io::Result<(ReadRoot, bool)> {
     let root = pin(path)?;
-    if all_files {
-        // This backend has always used WAL. Retain unfamiliar rollback
-        // recovery states for explicit recovery instead of opening them as
-        // part of a namespace upgrade.
-        if fs::symlink_metadata(path.join("storage.db-journal")).is_ok() {
-            return Err(invalid(
-                "legacy rollback journal requires recovery before upgrade",
-            ));
-        }
-        // Before game execution this is a stable legacy namespace. Reject
-        // links/nonfiles instead of importing aliases into private storage.
-        for entry in fs::read_dir(path)? {
-            regular(&root, Path::new(&entry?.file_name()))?;
-        }
-    } else {
-        // Ready stores may have live SQLite WAL rotation. Missing optional
-        // journals are harmless; an observed unsafe object always fails.
-        for name in [
-            "storage.db",
-            "storage.db-wal",
-            "storage.db-shm",
-            "storage.db-journal",
-        ] {
-            match root.open_regular(Path::new(name)) {
-                Ok(file) if link_count(&file)? > 1 => {
-                    return Err(invalid("storage file has another hard link"));
-                }
-                Ok(_) | Err(shared::vfs::VfsOpenError::NotFound) => {}
-                Err(error) => return Err(io::Error::other(error)),
+    let mut present = [false; FAMILY.len()];
+    for (index, name) in FAMILY.iter().enumerate() {
+        match root.open_regular(Path::new(name)) {
+            Ok(file) if link_count(&file)? > 1 => {
+                return Err(invalid("storage file has another hard link"));
             }
+            Ok(_) => present[index] = true,
+            Err(shared::vfs::VfsOpenError::NotFound) => {}
+            Err(error) => return Err(io::Error::other(error)),
         }
     }
-    let db = fs::symlink_metadata(path.join("storage.db"));
-    if matches!(db, Err(ref e) if e.kind()==io::ErrorKind::NotFound)
-        && ["storage.db-wal", "storage.db-shm", "storage.db-journal"]
-            .iter()
-            .any(|name| fs::symlink_metadata(path.join(name)).is_ok())
-    {
+    if !present[0] && (present[1] || present[3]) {
         return Err(invalid("storage journals exist without their database"));
     }
-    Ok(root)
+    Ok((root, present[0]))
+}
+
+/// The legacy directory sat inside the game's writable data root, so anything
+/// besides the SQLite family belongs to the game. Hand it back there.
+fn return_foreign_entries(target: &Path, legacy: &Path) -> io::Result<bool> {
+    let mut moved = false;
+    for entry in fs::read_dir(target)? {
+        let name = entry?.file_name();
+        if is_family(&name) {
+            continue;
+        }
+        if !moved {
+            match fs::create_dir(legacy) {
+                Err(error) if error.kind() != io::ErrorKind::AlreadyExists => return Err(error),
+                _ => {}
+            }
+            moved = true;
+        }
+        let destination = legacy.join(&name);
+        if fs::symlink_metadata(&destination).is_ok() {
+            return Err(invalid(
+                "a game entry exists in both legacy and private storage",
+            ));
+        }
+        fs::rename(target.join(&name), destination)?;
+    }
+    Ok(moved)
 }
 
 fn directory_exists(path: &Path) -> io::Result<bool> {
@@ -160,7 +177,7 @@ fn prepare_inner_with(paths: &StoragePaths, after_lock: impl FnOnce()) -> io::Re
         Err(error) => return Err(io::Error::other(error)),
     };
     if ready {
-        validate_directory(target, false)?;
+        validate_family(target)?;
         return Ok(());
     }
     let user_root = paths
@@ -171,24 +188,38 @@ fn prepare_inner_with(paths: &StoragePaths, after_lock: impl FnOnce()) -> io::Re
     if has_user {
         let _ = pin(user_root)?;
     }
-    let has_legacy = has_user && directory_exists(paths.legacy())?;
+    let legacy = paths.legacy();
+    let legacy_store = if has_user && directory_exists(legacy)? {
+        Some(validate_family(legacy)?)
+    } else {
+        None
+    };
+    let has_legacy_db = legacy_store.as_ref().is_some_and(|(_, db)| *db);
+    let mut returned = false;
     if directory_exists(target)? {
-        if has_legacy {
+        if has_legacy_db {
             return Err(invalid(
                 "ambiguous legacy and private storage; neither was overwritten",
             ));
         }
         // A previous handover may have completed before marker publication.
-        validate_directory(target, true)?;
-    } else if has_legacy {
-        let source = validate_directory(paths.legacy(), true)?;
-        fs::rename(paths.legacy(), target)?;
-        let moved = validate_directory(target, true)?;
+        validate_family(target)?;
+        returned = return_foreign_entries(target, legacy)?;
+    } else if let Some((source, true)) = legacy_store {
+        // One rename moves the database with every journal, so no crash can
+        // separate committed WAL frames or a hot journal from their database.
+        fs::rename(legacy, target)?;
+        let (moved, _) = validate_family(target)?;
         if moved.identity()? != source.identity()? {
             return Err(invalid("storage directory changed during handover"));
         }
+        returned = return_foreign_entries(target, legacy)?;
     } else {
+        // No legacy database: a game-owned directory of that name stays put.
         fs::create_dir(target)?;
+    }
+    if returned {
+        crate::durable::sync_dir(legacy)?;
     }
     // Order namespace handover before publishing readiness. Errors after rename
     // keep data at the private target and remain retryable, never create an
