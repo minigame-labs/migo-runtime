@@ -20,9 +20,9 @@
 //!
 //! The module is callable from every target we build; Android
 //! `memmap2` is supported there via the standard POSIX `mmap`
-//! syscall.  Falls back to plain `read` on platforms where mmap is
-//! unavailable (none currently, but kept behind `Result` so a
-//! future restriction doesn't crash).
+//! syscall. Unsupported mappings return an error; callers choose any fallback.
+//! Both constructors are unsafe: an open/read-only handle is not evidence that
+//! the backing object is immutable.
 
 use std::fs::File;
 use std::io;
@@ -82,24 +82,35 @@ impl AsRef<[u8]> for MappedBytes {
 ///
 /// Empty files are valid — the resulting mapping has length 0 and
 /// derefs to an empty slice.
-pub fn mmap_file_bytes(path: impl AsRef<Path>) -> io::Result<Arc<MappedBytes>> {
+///
+/// # Safety
+/// The mapped file must not be modified or truncated, through any handle or
+/// process, until the final returned owner drops. Read-only virtual paths or
+/// file handles alone do not establish this guarantee.
+///
+/// ```compile_fail,E0133
+/// let _ = migo_io::mmap_reader::mmap_file_bytes("mutable.bin");
+/// ```
+pub unsafe fn mmap_file_bytes(path: impl AsRef<Path>) -> io::Result<Arc<MappedBytes>> {
     let file = File::open(path.as_ref())?;
-    mmap_bytes_from_file(&file)
+    // SAFETY: the caller guarantees the opened object's immutability.
+    unsafe { mmap_bytes_from_file(&file) }
 }
 
 /// Memory-map an already-open file, avoiding a second `open`.
 ///
-/// # Safety / caveats
-/// The caller must ensure the backing file is **not truncated** for the
-/// lifetime of the returned mapping: reading a page that falls beyond a
-/// shrunk EOF raises `SIGBUS`. Only use this for files on read-only /
-/// immutable backends (e.g. `/code`), never for writable-directory files
-/// a concurrent op could truncate.
-pub fn mmap_bytes_from_file(file: &File) -> io::Result<Arc<MappedBytes>> {
-    // SAFETY: `memmap2::Mmap` requires the backing file to outlive the
-    // mapping. The OS mapping persists independently via the inode
-    // reference obtained during the `mmap` syscall, and the caller's
-    // truncation contract (above) keeps every mapped page valid.
+/// # Safety
+/// The backing file must not be modified or truncated, through any handle or
+/// process, until the final returned owner drops. The original handle need not
+/// outlive the mapping. Metadata checks cannot enforce immutability.
+///
+/// ```compile_fail,E0133
+/// # let file = std::fs::File::open("mutable.bin").unwrap();
+/// let _ = migo_io::mmap_reader::mmap_bytes_from_file(&file);
+/// ```
+pub unsafe fn mmap_bytes_from_file(file: &File) -> io::Result<Arc<MappedBytes>> {
+    // SAFETY: the caller guarantees the backing object's immutability. The OS
+    // keeps the mapped object alive independently of this file handle.
     let mmap = unsafe { Mmap::map(file)? };
     Ok(Arc::new(MappedBytes { mmap }))
 }
@@ -116,7 +127,8 @@ mod tests {
         let payload: Vec<u8> = (0..1024u32).map(|i| (i & 0xff) as u8).collect();
         std::fs::write(&file_path, &payload).unwrap();
 
-        let bytes = mmap_file_bytes(&file_path).expect("mmap ok");
+        // SAFETY: no writer modifies this private fixture while mapped.
+        let bytes = unsafe { mmap_file_bytes(&file_path) }.expect("mmap ok");
         assert_eq!(bytes.len(), payload.len());
         assert_eq!(bytes.as_slice(), payload.as_slice());
         // Deref should give the same slice.
@@ -128,14 +140,16 @@ mod tests {
         let dir = tempdir_here();
         let file_path = dir.join("empty.bin");
         let _ = std::fs::File::create(&file_path).unwrap();
-        let bytes = mmap_file_bytes(&file_path).expect("mmap ok");
+        // SAFETY: no writer modifies this private fixture while mapped.
+        let bytes = unsafe { mmap_file_bytes(&file_path) }.expect("mmap ok");
         assert!(bytes.is_empty());
     }
 
     #[test]
     fn mmap_missing_file_returns_error() {
         let bad = std::env::temp_dir().join("migo-mmap-does-not-exist-XYZ");
-        assert!(mmap_file_bytes(&bad).is_err());
+        // SAFETY: the nonexistent file cannot produce a live mapping.
+        assert!(unsafe { mmap_file_bytes(&bad) }.is_err());
     }
 
     #[test]
@@ -150,7 +164,8 @@ mod tests {
             let mut f = std::fs::File::create(&file_path).unwrap();
             f.write_all(&payload).unwrap();
         }
-        let bytes = mmap_file_bytes(&file_path).unwrap();
+        // SAFETY: no writer modifies this private fixture while mapped.
+        let bytes = unsafe { mmap_file_bytes(&file_path) }.unwrap();
         assert_eq!(bytes.len(), payload.len());
         // Probe a handful of pages to make sure we're reading
         // through the mapping, not some stale buffer.

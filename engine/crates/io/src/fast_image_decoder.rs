@@ -18,8 +18,10 @@ use crate::ktx2;
 /// External RGBA decoder hook (legacy). Platform code calls
 /// `register_platform_decoder()` at init time; kept for compatibility
 /// and as the fallback when the AHB hook fails or isn't registered.
-static PLATFORM_DECODER: OnceLock<fn(&[u8]) -> Result<NormalizedImage, EngineError>> =
-    OnceLock::new();
+/// Pixels must be stored-order, straight-alpha sRGB; platform decoders own
+/// their color conversion so the common EXIF step never applies ICC twice.
+type PlatformDecoder = fn(&[u8]) -> Result<NormalizedImage, EngineError>;
+static PLATFORM_DECODER: OnceLock<PlatformDecoder> = OnceLock::new();
 
 /// Zero-staging AHB decoder hook. Android's Rust/Skia decoder writes directly
 /// into an API-26 `AHardwareBuffer`; the renderer imports it via
@@ -31,16 +33,32 @@ static PLATFORM_DECODER: OnceLock<fn(&[u8]) -> Result<NormalizedImage, EngineErr
 /// OOM, AHB alloc refused by driver); on failure we transparently
 /// retry via [`PLATFORM_DECODER`] so the caller sees either a valid
 /// image or a single error, never a silent downgrade.
-static PLATFORM_AHB_DECODER: OnceLock<fn(&[u8]) -> Result<AhbImage, EngineError>> = OnceLock::new();
+static PLATFORM_AHB_DECODER: OnceLock<AhbDecoder> = OnceLock::new();
 
 type AhbDecoder = fn(&[u8]) -> Result<AhbImage, EngineError>;
 
 #[inline]
-fn select_ahb_decoder(allow_ahb: bool, decoder: Option<AhbDecoder>) -> Option<AhbDecoder> {
-    allow_ahb.then_some(decoder).flatten()
+fn select_ahb_decoder(
+    allow_ahb: bool,
+    decoder: Option<AhbDecoder>,
+    data: &[u8],
+) -> Option<AhbDecoder> {
+    if !allow_ahb {
+        return None;
+    }
+    let decoder = decoder?;
+    // AHB hooks return stored-order pixels; some native codecs don't even
+    // report container EXIF (Skia's libpng backend always reports TopLeft).
+    // Normalize through the common RGBA path before GPU upload when needed.
+    if detect_exif_orientation(data).is_some_and(|orientation| orientation != 1) {
+        shared::stats::io_metrics_global()
+            .record_ahb_fallback(shared::stats::AhbFallbackReason::UnsupportedFormat);
+        return None;
+    }
+    Some(decoder)
 }
 
-pub fn register_platform_decoder(f: fn(&[u8]) -> Result<NormalizedImage, EngineError>) {
+pub fn register_platform_decoder(f: PlatformDecoder) {
     if PLATFORM_DECODER.set(f).is_ok() {
         tracing::info!("platform image decoder registered");
     } else {
@@ -48,7 +66,7 @@ pub fn register_platform_decoder(f: fn(&[u8]) -> Result<NormalizedImage, EngineE
     }
 }
 
-pub fn register_platform_ahb_decoder(f: fn(&[u8]) -> Result<AhbImage, EngineError>) {
+pub fn register_platform_ahb_decoder(f: AhbDecoder) {
     if PLATFORM_AHB_DECODER.set(f).is_ok() {
         tracing::info!("platform AHB image decoder registered");
     } else {
@@ -162,10 +180,10 @@ pub(crate) fn enforce_pixel_cap(width: u32, height: u32) -> Result<(), EngineErr
 /// because unknown formats and malformed headers deliberately return `None`.
 pub fn probe_image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     // KTX2: compressed texture container -- width/height in header.
-    if ktx2::is_ktx2(data) {
-        if let Ok(f) = ktx2::parse_ktx2(data) {
-            return Some((f.header.width, f.header.height));
-        }
+    if ktx2::is_ktx2(data)
+        && let Ok(f) = ktx2::parse_ktx2(data)
+    {
+        return Some((f.header.width, f.header.height));
     }
 
     // PNG: bytes 16..24 contain width (u32 BE) and height (u32 BE) in IHDR.
@@ -238,12 +256,10 @@ pub fn probe_image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
             }
             // VP8 (lossy): 3-byte frame tag, start code 0x9D 0x01 0x2A at 23..26,
             // then 14-bit width at 26..28 and 14-bit height at 28..30.
-            b"VP8 " => {
-                if data[23] == 0x9D && data[24] == 0x01 && data[25] == 0x2A {
-                    let w = (u16::from_le_bytes([data[26], data[27]]) & 0x3FFF) as u32;
-                    let h = (u16::from_le_bytes([data[28], data[29]]) & 0x3FFF) as u32;
-                    return Some((w, h));
-                }
+            b"VP8 " if data[23] == 0x9D && data[24] == 0x01 && data[25] == 0x2A => {
+                let w = (u16::from_le_bytes([data[26], data[27]]) & 0x3FFF) as u32;
+                let h = (u16::from_le_bytes([data[28], data[29]]) & 0x3FFF) as u32;
+                return Some((w, h));
             }
             // VP8X (extended): 1 flag byte + 3 reserved at 20..24, then canvas
             // width-1 (24-bit LE) at 24..27 and height-1 (24-bit LE) at 27..30.
@@ -280,10 +296,10 @@ pub fn probe_image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
 /// | Format              | Animation | Behaviour                                    |
 /// |---------------------|-----------|----------------------------------------------|
 /// | JPEG                | N/A       | Full support, EXIF orientation auto-applied  |
-/// | PNG                 | N/A       | Full support                                 |
+/// | PNG                 | N/A       | Full support, EXIF orientation auto-applied  |
 /// | APNG (animated PNG) | No        | **First frame only** (zune/image limitation) |
 /// | GIF (animated)      | No        | **First frame only**                         |
-/// | WebP (lossy/lossless) | N/A     | Full support                                 |
+/// | WebP (lossy/lossless) | N/A     | Full support, EXIF orientation auto-applied  |
 /// | WebP (animated)     | No        | **First frame only**                         |
 ///
 /// GIF and WebP come from the image crate where `rust-image-decode` is on, and from the
@@ -299,13 +315,6 @@ pub fn decode_image_fast(
     data: &[u8],
     _path_hint: Option<&str>,
 ) -> Result<NormalizedImage, EngineError> {
-    // Sniff EXIF orientation *before* we hand bytes off to a decoder
-    // that might either drop the metadata (zune) or interpret it
-    // differently (platform BitmapFactory). We apply rotation/flip
-    // ourselves so every decode path produces pixels that match the
-    // way a camera-shot JPEG is meant to be displayed.
-    let orientation = detect_jpeg_exif_orientation(data).unwrap_or(1);
-
     // Image-bomb guard #1 (pre-decode): reject a header that declares more than
     // MAX_IMAGE_PIXELS *before* any decoder allocates. Covers the primary attack
     // vector (PNG/JPEG/BMP/WebP/KTX2 with a tiny compressed body but huge
@@ -314,6 +323,10 @@ pub fn decode_image_fast(
     if let Some((w, h)) = probe_image_dimensions(data) {
         enforce_pixel_cap(w, h)?;
     }
+
+    // Each decoder returns stored-order pixels. Read metadata after the
+    // pre-allocation pixel cap, then apply the direction exactly once below.
+    let orientation = detect_exif_orientation(data).unwrap_or(1);
 
     // Priority: Rust-native decoders first (zero JNI, zero Java Heap),
     // platform decoder (BitmapFactory) as last resort.
@@ -356,96 +369,24 @@ pub fn decode_image_fast(
         .with_detail("no image decoder available (all decoders failed or not registered)"))
 }
 
-/// Parse just enough of a JPEG to extract the EXIF `Orientation` tag
-/// (TIFF tag 0x0112). Returns `Some(1..=8)` on success.
-///
-/// We don't bring in a full EXIF crate because we only care about one
-/// tag and the rest of the metadata (GPS, maker notes, …) has no
-/// privacy- or correctness-impacting role in a game runtime.
-fn detect_jpeg_exif_orientation(data: &[u8]) -> Option<u8> {
-    if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
-        return None; // not JPEG
+/// Read the primary image's orientation through the same container parser on
+/// every backend. Decoders return stored-order pixels; normalization below is
+/// applied once, after either Rust or platform RGBA decoding.
+fn detect_exif_orientation(data: &[u8]) -> Option<u8> {
+    let exif = exif::Reader::new()
+        .continue_on_error(true)
+        .read_from_container(&mut std::io::Cursor::new(data))
+        .or_else(|error| error.distill_partial_result(|_| {}))
+        .ok()?;
+    let field = exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)?;
+    // EXIF specifies one SHORT. Do not interpret arbitrary bytes from a
+    // malformed type/count as an orientation.
+    match &field.value {
+        exif::Value::Short(values) if values.len() == 1 && (1..=8).contains(&values[0]) => {
+            Some(values[0] as u8)
+        }
+        _ => None,
     }
-    let mut i = 2;
-    while i + 4 < data.len() {
-        if data[i] != 0xFF {
-            return None;
-        }
-        // Skip fill bytes (FF FF ... sequences).
-        let mut marker_i = i + 1;
-        while marker_i < data.len() && data[marker_i] == 0xFF {
-            marker_i += 1;
-        }
-        let marker = *data.get(marker_i)?;
-        i = marker_i + 1;
-        // SOS (0xDA) marks start of compressed data; EXIF is always before it.
-        if marker == 0xDA || marker == 0xD9 {
-            return None;
-        }
-        if i + 2 > data.len() {
-            return None;
-        }
-        let seg_len = ((data[i] as usize) << 8) | (data[i + 1] as usize);
-        if seg_len < 2 || i + seg_len > data.len() {
-            return None;
-        }
-        let seg = &data[i + 2..i + seg_len];
-        i += seg_len;
-        // Look for APP1 with "Exif\0\0" prefix.
-        if marker == 0xE1 && seg.len() > 6 && &seg[0..6] == b"Exif\0\0" {
-            let tiff = &seg[6..];
-            if tiff.len() < 8 {
-                return None;
-            }
-            let (little, magic_ok) = match &tiff[0..2] {
-                b"II" => (true, tiff[2] == 0x2A && tiff[3] == 0x00),
-                b"MM" => (false, tiff[2] == 0x00 && tiff[3] == 0x2A),
-                _ => return None,
-            };
-            if !magic_ok {
-                return None;
-            }
-            let ifd_offset = if little {
-                u32::from_le_bytes([tiff[4], tiff[5], tiff[6], tiff[7]]) as usize
-            } else {
-                u32::from_be_bytes([tiff[4], tiff[5], tiff[6], tiff[7]]) as usize
-            };
-            if ifd_offset + 2 > tiff.len() {
-                return None;
-            }
-            let entry_count = if little {
-                u16::from_le_bytes([tiff[ifd_offset], tiff[ifd_offset + 1]])
-            } else {
-                u16::from_be_bytes([tiff[ifd_offset], tiff[ifd_offset + 1]])
-            } as usize;
-            let entries_start = ifd_offset + 2;
-            for e in 0..entry_count {
-                let off = entries_start + e * 12;
-                if off + 12 > tiff.len() {
-                    break;
-                }
-                let tag = if little {
-                    u16::from_le_bytes([tiff[off], tiff[off + 1]])
-                } else {
-                    u16::from_be_bytes([tiff[off], tiff[off + 1]])
-                };
-                if tag == 0x0112 {
-                    // Orientation is SHORT (type=3) in bytes 8..10.
-                    let val = if little {
-                        u16::from_le_bytes([tiff[off + 8], tiff[off + 9]])
-                    } else {
-                        u16::from_be_bytes([tiff[off + 8], tiff[off + 9]])
-                    };
-                    if (1..=8).contains(&val) {
-                        return Some(val as u8);
-                    }
-                    return None;
-                }
-            }
-            return None;
-        }
-    }
-    None
 }
 
 /// Apply an EXIF `Orientation` value to an already-decoded RGBA8
@@ -492,7 +433,7 @@ fn apply_exif_orientation(img: NormalizedImage, orientation: u8) -> NormalizedIm
     };
 
     let (new_w, new_h) = match orientation {
-        5 | 6 | 7 | 8 => (height, width), // 90 CW / 90 CCW / transverse / transpose
+        5..=8 => (height, width), // 90 CW / 90 CCW / transverse / transpose
         _ => (width, height),
     };
     let new_w_usize = new_w as usize;
@@ -545,7 +486,9 @@ pub fn decode_image_to_any(
         enforce_pixel_cap(w, h)?;
     }
 
-    if let Some(ahb_decoder) = select_ahb_decoder(allow_ahb, PLATFORM_AHB_DECODER.get().copied()) {
+    if let Some(ahb_decoder) =
+        select_ahb_decoder(allow_ahb, PLATFORM_AHB_DECODER.get().copied(), data)
+    {
         match ahb_decoder(data) {
             Ok(ahb) => {
                 enforce_pixel_cap(ahb.width, ahb.height)?;
@@ -622,9 +565,9 @@ mod ahb_selection_tests {
 
     #[test]
     fn renderer_capability_is_required_even_when_decoder_is_registered() {
-        assert!(select_ahb_decoder(false, Some(available_decoder)).is_none());
-        assert!(select_ahb_decoder(true, None).is_none());
-        assert!(select_ahb_decoder(true, Some(available_decoder)).is_some());
+        assert!(select_ahb_decoder(false, Some(available_decoder), &[]).is_none());
+        assert!(select_ahb_decoder(true, None, &[]).is_none());
+        assert!(select_ahb_decoder(true, Some(available_decoder), &[]).is_some());
     }
 }
 
@@ -658,12 +601,12 @@ fn decode_with_zune(data: &[u8]) -> Result<NormalizedImage, EngineError> {
     let (width, height) = image.dimensions();
 
     // Flatten to RGBA bytes
-    let rgba = image.flatten_to_u8().pop().ok_or_else(|| {
+    let mut rgba = image.flatten_to_u8().pop().ok_or_else(|| {
         EngineError::new(ErrorCode::ImageReadError).with_detail("zune: no image data")
     })?;
 
     // Verify we got RGBA (4 bytes per pixel)
-    let expected_len = (width * height * 4) as usize;
+    let expected_len = width * height * 4;
     if rgba.len() != expected_len {
         return Err(
             EngineError::new(ErrorCode::ImageReadError).with_detail(format!(
@@ -672,6 +615,10 @@ fn decode_with_zune(data: &[u8]) -> Result<NormalizedImage, EngineError> {
                 rgba.len()
             )),
         );
+    }
+
+    if let Some(icc) = image.metadata().icc_chunk() {
+        normalize_rgb_icc(&mut rgba, icc)?;
     }
 
     Ok(NormalizedImage {
@@ -684,7 +631,7 @@ fn decode_with_zune(data: &[u8]) -> Result<NormalizedImage, EngineError> {
 /// Decode image using the `image` crate (fallback).
 #[cfg(feature = "rust-image-decode")]
 fn decode_with_image_crate(data: &[u8]) -> Result<NormalizedImage, EngineError> {
-    use image::GenericImageView;
+    use image::{GenericImageView, ImageDecoder};
     use std::io::Cursor;
 
     // Bound the decoder's allocation to the pixel cap BEFORE decoding, so a
@@ -701,8 +648,18 @@ fn decode_with_image_crate(data: &[u8]) -> Result<NormalizedImage, EngineError> 
             EngineError::new(ErrorCode::ImageReadError)
                 .with_detail(format!("image crate format detection error: {}", e))
         })?;
-    reader.limits(limits);
-    let img = reader.decode().map_err(|e| {
+    reader.limits(limits.clone());
+    let mut decoder = reader.into_decoder().map_err(|e| {
+        EngineError::new(ErrorCode::ImageReadError)
+            .with_detail(format!("image crate decoder error: {e}"))
+    })?;
+    // Keep ImageReader::decode's native allocation check when retaining the
+    // decoder long enough to obtain its ICC metadata.
+    limits
+        .reserve(decoder.total_bytes())
+        .map_err(|e| EngineError::new(ErrorCode::OutOfMemory).with_detail(e.to_string()))?;
+    let icc = decoder.icc_profile().unwrap_or(None);
+    let img = image::DynamicImage::from_decoder(decoder).map_err(|e| {
         EngineError::new(ErrorCode::ImageReadError)
             .with_detail(format!("image crate decode error: {}", e))
     })?;
@@ -715,13 +672,55 @@ fn decode_with_image_crate(data: &[u8]) -> Result<NormalizedImage, EngineError> 
     // squeaked under `max_alloc` can't balloon past the RGBA ceiling here,
     // before the caller's post-decode check ever runs.
     enforce_pixel_cap(width, height)?;
-    let rgba = img.into_rgba8().into_raw();
+    let mut rgba = img.into_rgba8().into_raw();
+    if let Some(icc) = icc {
+        normalize_rgb_icc(&mut rgba, &icc)?;
+    }
 
     Ok(NormalizedImage {
         width,
         height,
         rgba: Arc::new(rgba),
     })
+}
+
+/// The renderer consumes sRGB bytes. These decoders have already expanded
+/// pixels to RGBA, so only RGB profiles describe their current samples.
+/// Invalid/other-model profiles keep the existing assumed-sRGB fallback.
+#[cfg(feature = "rust-image-decode")]
+fn normalize_rgb_icc(rgba: &mut [u8], icc: &[u8]) -> Result<(), EngineError> {
+    use moxcms::{ColorProfile, DataColorSpace, Layout, RenderingIntent, TransformOptions};
+    let Ok(source) = ColorProfile::new_from_slice(icc) else {
+        return Ok(());
+    };
+    if source.color_space != DataColorSpace::Rgb {
+        return Ok(());
+    }
+    let options = TransformOptions {
+        rendering_intent: RenderingIntent::RelativeColorimetric,
+        ..TransformOptions::default()
+    };
+    let Ok(transform) = source.create_transform_8bit(
+        Layout::Rgba,
+        &ColorProfile::new_srgb(),
+        Layout::Rgba,
+        options,
+    ) else {
+        return Ok(());
+    };
+    // ICC transforms are pixel-local. A fixed scratch slice avoids copying a
+    // whole image or making the working set depend on a pathological width.
+    let mut input = [0u8; 4096];
+    for output in rgba.chunks_mut(input.len()) {
+        input[..output.len()].copy_from_slice(output);
+        transform
+            .transform(&input[..output.len()], output)
+            .map_err(|e| {
+                EngineError::new(ErrorCode::ImageReadError)
+                    .with_detail(format!("ICC transform failed: {e}"))
+            })?;
+    }
+    Ok(())
 }
 
 /// Resize a decoded image to fit within `target_w x target_h`, preserving
@@ -901,6 +900,130 @@ pub fn try_resize_image(
 ) -> Result<NormalizedImage, EngineError> {
     Err(EngineError::new(ErrorCode::Unsupported)
         .with_msg("CPU image resize requires the cpu-image-resize feature"))
+}
+
+#[cfg(test)]
+mod orientation_tests {
+    use super::*;
+    use base64::Engine as _;
+
+    fn fixtures() -> serde_json::Value {
+        serde_json::from_str(include_str!(
+            "../tests/fixtures/images/orientation-cases.json"
+        ))
+        .unwrap()
+    }
+
+    fn bytes(case: &serde_json::Value) -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD
+            .decode(case["encoded"].as_str().unwrap())
+            .unwrap()
+    }
+
+    #[test]
+    fn exif_orientation_reads_jpeg_png_and_webp() {
+        for case in fixtures()["cases"].as_array().unwrap() {
+            assert_eq!(
+                detect_exif_orientation(&bytes(case)),
+                Some(case["orientation"].as_u64().unwrap() as u8),
+                "{} orientation {}",
+                case["format"],
+                case["orientation"]
+            );
+        }
+    }
+
+    #[cfg(feature = "rust-image-decode")]
+    #[test]
+    fn exif_orientation_roundtrips_images() {
+        for case in fixtures()["cases"].as_array().unwrap() {
+            let decoded = decode_image_fast(&bytes(case), None).unwrap();
+            assert_eq!(
+                (decoded.width, decoded.height),
+                (
+                    case["width"].as_u64().unwrap() as u32,
+                    case["height"].as_u64().unwrap() as u32
+                ),
+                "{} orientation {}",
+                case["format"],
+                case["orientation"]
+            );
+            let expected = case["rgba"].as_array().unwrap();
+            assert_eq!(decoded.rgba.len(), expected.len());
+            for (i, (actual, expected)) in decoded.rgba.iter().zip(expected).enumerate() {
+                let tolerance = if case["format"] == "JPEG" && i % 4 != 3 {
+                    4
+                } else {
+                    0
+                };
+                assert!(
+                    (i64::from(*actual) - expected.as_i64().unwrap()).abs() <= tolerance,
+                    "{} orientation {}, byte {i}: {actual} vs {expected}",
+                    case["format"],
+                    case["orientation"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn exif_orientation_ignores_invalid_fields_and_handles_truncation() {
+        let fixture = fixtures();
+        for case in fixture["invalid"].as_array().unwrap() {
+            assert_eq!(
+                detect_exif_orientation(&bytes(case)),
+                None,
+                "{}",
+                case["name"]
+            );
+        }
+        for case in fixture["cases"].as_array().unwrap() {
+            let encoded = bytes(case);
+            for end in 0..encoded.len() {
+                let orientation = detect_exif_orientation(&encoded[..end]);
+                assert!(
+                    orientation.is_none()
+                        || orientation == Some(case["orientation"].as_u64().unwrap() as u8)
+                );
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "rust-image-decode"))]
+mod icc_tests {
+    use super::*;
+    use base64::Engine as _;
+
+    #[test]
+    fn rgb_icc_images_decode_to_srgb_without_changing_alpha() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/images/icc-cases.json")).unwrap();
+        for case in fixture["cases"].as_array().unwrap() {
+            let encoded = base64::engine::general_purpose::STANDARD
+                .decode(case["encoded"].as_str().unwrap())
+                .unwrap();
+            let decoded = decode_image_fast(&encoded, None).unwrap();
+            assert_eq!(
+                (decoded.width, decoded.height),
+                (
+                    case["width"].as_u64().unwrap() as u32,
+                    case["height"].as_u64().unwrap() as u32
+                )
+            );
+            let expected = case["rgba"].as_array().unwrap();
+            assert_eq!(decoded.rgba.len(), expected.len());
+            for (i, (actual, expected)) in decoded.rgba.iter().zip(expected).enumerate() {
+                let tolerance = if i % 4 == 3 { 0 } else { 2 };
+                assert!(
+                    (i64::from(*actual) - expected.as_i64().unwrap()).abs() <= tolerance,
+                    "{} {} byte {i}: {actual} vs {expected}",
+                    case["format"],
+                    case["profile"]
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

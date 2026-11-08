@@ -115,8 +115,7 @@ struct CachedImage {
 impl CachedImage {
     fn new(image: NormalizedImage, session: i32) -> Self {
         let size_bytes = image.rgba.len();
-        let mut owners = Vec::with_capacity(1);
-        owners.push(session);
+        let owners = vec![session];
         Self {
             image,
             size_bytes,
@@ -556,30 +555,32 @@ impl ImageCache {
             }
             None => false,
         };
-        if self.current_size + new_size > self.max_size && !newcomer_pinned && !already_resident {
-            if let Some((victim_key, victim)) = self.cache.peek_lru() {
-                // Only count the true LRU tail as the victim when
-                // it's not pinned — a pinned tail item doesn't
-                // represent a real eviction candidate and its
-                // sketch count shouldn't gate newcomers.
-                let victim_pinned = victim.pins > 0;
-                let victim_freq = if victim_pinned {
-                    0
-                } else {
-                    self.sketch.estimate(victim_key)
-                };
-                if !victim_pinned && new_freq < victim_freq {
-                    // The sketch says the newcomer is colder than
-                    // the item we'd have to evict. Drop it on the
-                    // floor — on retry its sketch count will have
-                    // advanced, which is how cold-but-hot paths
-                    // eventually earn their way in.
-                    self.admissions_rejected += 1;
-                    shared::stats::io_metrics_global()
-                        .image_cache_admissions_rejected
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return;
-                }
+        if self.current_size + new_size > self.max_size
+            && !newcomer_pinned
+            && !already_resident
+            && let Some((victim_key, victim)) = self.cache.peek_lru()
+        {
+            // Only count the true LRU tail as the victim when
+            // it's not pinned — a pinned tail item doesn't
+            // represent a real eviction candidate and its
+            // sketch count shouldn't gate newcomers.
+            let victim_pinned = victim.pins > 0;
+            let victim_freq = if victim_pinned {
+                0
+            } else {
+                self.sketch.estimate(victim_key)
+            };
+            if !victim_pinned && new_freq < victim_freq {
+                // The sketch says the newcomer is colder than
+                // the item we'd have to evict. Drop it on the
+                // floor — on retry its sketch count will have
+                // advanced, which is how cold-but-hot paths
+                // eventually earn their way in.
+                self.admissions_rejected += 1;
+                shared::stats::io_metrics_global()
+                    .image_cache_admissions_rejected
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return;
             }
         }
 

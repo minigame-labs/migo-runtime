@@ -64,6 +64,13 @@ adb shell settings put system user_rotation 1
 adb shell am start -n com.migo.chost/android.app.NativeActivity
 ```
 
+`surface-recreate-probe` uses window information for its green/red verdict on
+Full. Slim has no window-info API, so it draws blue and logs `reference=native`.
+Compare those canvas dimensions with the actual native surface width and height,
+divided by the host's display density and rounded to whole CSS pixels, before
+and after rotation. Blue alone is not a passing verdict; also check that the
+reported frame count continues to increase.
+
 ## What each platform proves that the other cannot
 
 The Linux host maps one mouse to one touch point, so it cannot exercise the

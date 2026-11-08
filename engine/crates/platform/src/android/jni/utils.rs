@@ -1,19 +1,21 @@
 use jni::{
-    JNIEnv,
+    Env, jni_sig, jni_str,
     objects::{JObject, JString},
+    signature::FieldSignature,
+    strings::JNIStr,
 };
 
 /// Get an optional String field from a Java object.
 /// Returns `None` if the field is null, empty, or cannot be read.
 pub(crate) fn get_optional_string_field(
-    env: &mut JNIEnv,
-    field_name: &str,
+    env: &mut Env,
+    field_name: &JNIStr,
     obj: &JObject,
 ) -> Option<String> {
-    let val = match env.get_field(obj, field_name, "Ljava/lang/String;") {
+    let val = match env.get_field(obj, field_name, jni_sig!("Ljava/lang/String;")) {
         Ok(v) => v,
         Err(_) => {
-            let _ = env.exception_clear();
+            env.exception_clear();
             return None;
         }
     };
@@ -21,20 +23,20 @@ pub(crate) fn get_optional_string_field(
     if jobj.is_null() {
         return None;
     }
-    let jstr = JString::from(jobj);
-    let s: String = env.get_string(&jstr).ok().map(|s| s.into())?;
+    let jstr = JString::cast_local(env, jobj).ok()?;
+    let s: String = jstr.mutf8_chars(env).ok().map(|s| s.into())?;
     if s.is_empty() { None } else { Some(s) }
 }
 
 pub(crate) fn get_string_field(
-    env: &mut JNIEnv,
-    field_name: &str,
+    env: &mut Env,
+    field_name: &JNIStr,
     obj: &JObject,
 ) -> Result<String, String> {
-    let val = match env.get_field(obj, field_name, "Ljava/lang/String;") {
+    let val = match env.get_field(obj, field_name, jni_sig!("Ljava/lang/String;")) {
         Ok(v) => v,
         Err(e) => {
-            let _ = env.exception_clear();
+            env.exception_clear();
             return Err(format!("Failed to get field '{field_name}': {e}"));
         }
     };
@@ -47,18 +49,19 @@ pub(crate) fn get_string_field(
         return Err(format!("Field '{}' is null", field_name));
     }
 
-    let jstr = JString::from(jobj);
+    let jstr = JString::cast_local(env, jobj)
+        .map_err(|error| format!("Field '{field_name}' is not a String: {error}"))?;
 
-    env.get_string(&jstr)
+    jstr.mutf8_chars(env)
         .map_err(|e| format!("Failed to convert '{field_name}' to Rust String: {e}"))
         .map(|s| s.into())
 }
 
-pub(crate) fn get_f32(env: &mut JNIEnv, field_name: &str, obj: &JObject) -> Result<f32, String> {
-    let val = match env.get_field(obj, field_name, "F") {
+pub(crate) fn get_f32(env: &mut Env, field_name: &JNIStr, obj: &JObject) -> Result<f32, String> {
+    let val = match env.get_field(obj, field_name, jni_sig!("F")) {
         Ok(v) => v,
         Err(e) => {
-            let _ = env.exception_clear();
+            env.exception_clear();
             return Err(format!("Failed to get field '{field_name}': {e}"));
         }
     };
@@ -67,11 +70,11 @@ pub(crate) fn get_f32(env: &mut JNIEnv, field_name: &str, obj: &JObject) -> Resu
         .map_err(|e| format!("Failed to convert field '{field_name}' to f32: {e}"))
 }
 
-pub(crate) fn get_i32(env: &mut JNIEnv, field_name: &str, obj: &JObject) -> Result<i32, String> {
-    let val = match env.get_field(obj, field_name, "I") {
+pub(crate) fn get_i32(env: &mut Env, field_name: &JNIStr, obj: &JObject) -> Result<i32, String> {
+    let val = match env.get_field(obj, field_name, jni_sig!("I")) {
         Ok(v) => v,
         Err(e) => {
-            let _ = env.exception_clear();
+            env.exception_clear();
             return Err(format!("Failed to get field '{field_name}': {e}"));
         }
     };
@@ -80,11 +83,11 @@ pub(crate) fn get_i32(env: &mut JNIEnv, field_name: &str, obj: &JObject) -> Resu
         .map_err(|e| format!("Failed to convert field '{field_name}' to i32: {e}"))
 }
 
-pub(crate) fn get_bool(env: &mut JNIEnv, field_name: &str, obj: &JObject) -> Result<bool, String> {
-    let val = match env.get_field(obj, field_name, "Z") {
+pub(crate) fn get_bool(env: &mut Env, field_name: &JNIStr, obj: &JObject) -> Result<bool, String> {
+    let val = match env.get_field(obj, field_name, jni_sig!("Z")) {
         Ok(v) => v,
         Err(e) => {
-            let _ = env.exception_clear();
+            env.exception_clear();
             return Err(format!("Failed to get field '{field_name}': {e}"));
         }
     };
@@ -134,15 +137,15 @@ pub(crate) fn or_default<T>(read: Result<T, String>, fallback: T) -> T {
 /// which is a surprising answer to a field nobody set. Which default is right
 /// belongs to the caller that knows what the field means.
 pub(crate) fn get_enum_ordinal(
-    env: &mut JNIEnv,
-    field_name: &str,
-    field_sig: &str,
+    env: &mut Env,
+    field_name: &JNIStr,
+    field_sig: FieldSignature<'_>,
     obj: &JObject,
 ) -> Result<Option<i32>, String> {
     let val = match env.get_field(obj, field_name, field_sig) {
         Ok(v) => v,
         Err(e) => {
-            let _ = env.exception_clear();
+            env.exception_clear();
             return Err(format!("Failed to get enum field '{field_name}': {e}"));
         }
     };
@@ -155,10 +158,10 @@ pub(crate) fn get_enum_ordinal(
         return Ok(None);
     }
 
-    let ordinal = match env.call_method(&enum_obj, "ordinal", "()I", &[]) {
+    let ordinal = match env.call_method(&enum_obj, jni_str!("ordinal"), jni_sig!("()I"), &[]) {
         Ok(v) => v,
         Err(e) => {
-            let _ = env.exception_clear();
+            env.exception_clear();
             return Err(format!("Failed to call ordinal() on '{field_name}': {e}"));
         }
     };

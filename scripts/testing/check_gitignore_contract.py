@@ -702,7 +702,7 @@ def main():
     required = REQUIRED.copy()
     # The provenance gates check every path from their verified archive + patch
     # inventory. This fast gate checks the known broad-pattern exceptions.
-    for name in ['deno_core-0.413.0', 'v8-150.4.0', 'ada-url-4.0.0', 'skia-bindings-0.93.1',
+    for name in ['deno_core-0.413.0', 'v8-150.4.0', 'ada-url-4.0.0', 'skia-bindings-0.157.0',
                  'tungstenite-0.30.0', 'cpal-0.18.2']:
         required.extend(f'engine/third_party/{name}/{file}'
                         for file in ['Cargo.lock', 'Cargo.toml.orig'])

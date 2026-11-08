@@ -80,21 +80,30 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      # The key this archive has to answer to, asked of the tool rather than
-      # spelled out here.
-      #
-      # skia-bindings builds it from the rust-skia commit, the triple and its own
-      # replacement table for feature names (`jpeg-decode` becomes `jpegd`).
-      # Writing that table into a workflow would be a third copy of a naming
-      # rule -- so this does one ordinary build first, lets skia-bindings
-      # download whatever upstream has for this configuration, and reads the key
-      # out of what it unpacked. Fast: it is a download, not a build.
-      - name: Ask skia-bindings which key it wants
+      # Use the exact key emitted by the same source build we package; no
+      # downloaded archive or duplicate feature-name mapping is needed.
+      - name: Build corrected Skia and record its key
         if: steps.wanted.outputs.run == 'yes'
         id: key
         working-directory: engine
         run: |
           export CC=clang CXX=clang++
+          export MIGO_SKIA_FROM_SOURCE=1
+          # The macOS deployment floor, exported exactly as build-apple-sdk.sh
+          # exports it for its own macOS build -- the variable and the value
+          # both come from contracts/apple/deployment-floor.json through that
+          # script, so this file names neither. Without it clang falls back to
+          # the runner's own OS: the first archives published from here carried
+          # `minos 15.0` in every Skia object and `15.5` in the bindings against
+          # an 11.0 floor, and the apple-sdk floor gate turned red on every
+          # macOS leg that linked them. skia-bindings also turns the floor into
+          # the version-bound defines Skia's sources branch on, so the archive
+          # is only the build apple-sdk.yml would make from source with it set.
+          deployment_env="$(bash ../scripts/build-apple-sdk.sh --print-deployment-env macos)"
+          export "${deployment_env?}"
+          echo "deployment environment: $deployment_env"
+          # shellcheck source=scripts/apple-skia-gl-env.sh
+          . ../scripts/apple-skia-gl-env.sh ${{ matrix.target }}
           cargo build -p migo-graphics --target ${{ matrix.target }} --lib
           # Every key found, not the last one. A tree can hold more than one
           # skia-bindings output directory -- this workspace's profiles differ by
@@ -118,45 +127,13 @@ jobs:
             found="$this"
           done
           if [[ -z "$found" ]]; then
-            echo "::error::no key.txt under the build tree, so upstream published nothing for this" >&2
-            echo "::error::configuration and the key cannot be read from the tool. Supply it by hand." >&2
+            echo "::error::the source build did not record its exact Skia key" >&2
             exit 1
           fi
-          echo "Upstream key: $found"
+          echo "Source-built key: $found"
           suffix="${found#*-${{ matrix.target }}-}"
           echo "features=$suffix" >> "$GITHUB_OUTPUT"
           echo "key=$found" >> "$GITHUB_OUTPUT"
-
-      # And now the one that matters: the same configuration, built from source
-      # with the correction, into a tree with no downloaded bytes left in it.
-      - name: Build Skia from source with the ES correction
-        if: steps.wanted.outputs.run == 'yes'
-        working-directory: engine
-        run: |
-          rm -rf target/${{ matrix.target }}/debug/build/skia-bindings-*
-          rm -rf target/debug/build/skia-bindings-*
-          # MIGO_SKIA_FROM_SOURCE, because this job publishes what it builds and
-          # the fragment now DOWNLOADS by default. Without it this workflow would
-          # fetch the archive it is about to replace and package that --
-          # `package-apple-skia-binaries.sh` refuses a downloaded build, so it
-          # would fail rather than lie, but it would fail for an obscure reason.
-          export MIGO_SKIA_FROM_SOURCE=1
-          # The macOS deployment floor, exported exactly as build-apple-sdk.sh
-          # exports it for its own macOS build -- the variable and the value
-          # both come from contracts/apple/deployment-floor.json through that
-          # script, so this file names neither. Without it clang falls back to
-          # the runner's own OS: the first archives published from here carried
-          # `minos 15.0` in every Skia object and `15.5` in the bindings against
-          # an 11.0 floor, and the apple-sdk floor gate turned red on every
-          # macOS leg that linked them. skia-bindings also turns the floor into
-          # the version-bound defines Skia's sources branch on, so the archive
-          # is only the build apple-sdk.yml would make from source with it set.
-          deployment_env="$(bash ../scripts/build-apple-sdk.sh --print-deployment-env macos)"
-          export "${deployment_env?}"
-          echo "deployment environment: $deployment_env"
-          # shellcheck source=scripts/apple-skia-gl-env.sh
-          . ../scripts/apple-skia-gl-env.sh ${{ matrix.target }}
-          cargo build -p migo-graphics --target ${{ matrix.target }} --lib
 
       - name: Package
         if: steps.wanted.outputs.run == 'yes'

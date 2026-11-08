@@ -99,6 +99,28 @@ fn prepare_inner(paths: &StoragePaths) -> io::Result<()> {
     prepare_inner_with(paths, || {})
 }
 
+fn lock_initialization(file: &File) -> io::Result<()> {
+    // Rust 1.95's File::lock omits Android. Bionic provides flock at our API
+    // floor; use the same primitive on Linux so host tests exercise this path.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        use std::os::fd::AsRawFd;
+        loop {
+            // SAFETY: the borrowed file keeps this descriptor valid throughout
+            // the syscall. Ownership stays with File; closing it releases lock.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+                return Ok(());
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    file.lock()
+}
+
 fn prepare_inner_with(paths: &StoragePaths, after_lock: impl FnOnce()) -> io::Result<()> {
     let target = paths.directory();
     let parent = target
@@ -120,7 +142,7 @@ fn prepare_inner_with(paths: &StoragePaths, after_lock: impl FnOnce()) -> io::Re
     };
     // Kernel lock serializes independent GamePaths instances and namespace
     // preparation across processes. It does not add multi-process KV support.
-    lock.lock()?;
+    lock_initialization(&lock)?;
     after_lock();
     let ready = match parent_root.open_regular(Path::new(READY)) {
         Ok(mut file) => {

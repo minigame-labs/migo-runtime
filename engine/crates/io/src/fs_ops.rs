@@ -246,10 +246,10 @@ fn open_append_created_aware(path: &str, read: bool) -> Result<(std::fs::File, b
 fn fsync_parent_dir(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                return crate::durable::sync_dir(parent);
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            return crate::durable::sync_dir(parent);
         }
     }
     #[cfg(not(unix))]
@@ -348,15 +348,15 @@ fn read_zip_entry_limited<R: Read>(
     length: Option<u64>,
 ) -> Result<Vec<u8>, EngineError> {
     let start = position.unwrap_or(0).min(total_size);
-    if let Some(len) = length {
-        if len > MAX_READ_LENGTH {
-            return Err(
-                EngineError::new(ErrorCode::InvalidArgument).with_detail(format!(
-                    "read length {} exceeds limit {}",
-                    len, MAX_READ_LENGTH
-                )),
-            );
-        }
+    if let Some(len) = length
+        && len > MAX_READ_LENGTH
+    {
+        return Err(
+            EngineError::new(ErrorCode::InvalidArgument).with_detail(format!(
+                "read length {} exceeds limit {}",
+                len, MAX_READ_LENGTH
+            )),
+        );
     }
     let effective = length.unwrap_or_else(|| total_size.saturating_sub(start));
     if effective > MAX_READ_LENGTH {
@@ -547,6 +547,12 @@ pub struct FileTable {
     synthetic_stats: HashMap<FileId, FileStat>,
     #[cfg(test)]
     after_native_open: Option<NativeOpenHook>,
+}
+
+impl Default for FileTable {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FileTable {
@@ -1223,43 +1229,6 @@ fn next_temp_id() -> u64 {
 // File reads (5)
 // ---------------------------------------------------------------------------
 
-/// Threshold above which whole-file reads are served via mmap.
-///
-/// The mmap path is not zero-copy — it maps, then `to_vec`s — so it is not
-/// saving a copy. What it trades is one mapping plus a page fault per page
-/// against a presized `read`. That trade only pays once the file is large
-/// enough for the fault stream to beat the read, and it is a loss below that.
-///
-/// Measured by `bench_mmap_vs_presized_read` on ext4 with a warm page cache,
-/// as a ratio of `read` time to `mmap` time (above 1.0 means mmap wins):
-///
-/// ```text
-///   256 KiB  0.45      2 MiB  0.71       8 MiB  1.20
-///   512 KiB  0.61      4 MiB  0.68      16 MiB  1.48
-///     1 MiB  0.69
-/// ```
-///
-/// The crossover sits between 4 and 8 MiB, so that is where the threshold
-/// goes. It used to be 256 KiB, on the theory that a single mapping issues one
-/// readahead where `read` issues many; the measurement says the opposite at
-/// that size, and everything from 256 KiB to 4 MiB — which is most of a game's
-/// atlases and JSON bundles — was paying 1.4–2.2x for the branch.
-///
-/// Re-run the bench before moving this. Absolute numbers are host-specific;
-/// the shape (per-page fault overhead dominating until the file is large) is
-/// not, which is why the old value was wrong on any filesystem.
-const MMAP_READ_THRESHOLD: u64 = 8 * 1024 * 1024;
-
-// Which path `read_file` took, per thread. `read_file` runs on its caller's
-// thread and the test harness runs each test on its own, so a test reads only
-// its own calls. They were process-wide statics, and a test asserting "no read
-// path taken" failed whenever another test read a file in parallel.
-#[cfg(test)]
-thread_local! {
-    static MMAP_PATH_TAKEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    static READ_PATH_TAKEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
 /// Read a file (or a range within it). Enforces MAX_READ_LENGTH.
 ///
 /// Opens the file **once** and uses a single `fstat` for the size /
@@ -1267,39 +1236,30 @@ thread_local! {
 /// path-based `std::fs::metadata` before opening on every whole-file
 /// read.
 ///
-/// Whole-file reads (`position == None && length == None`) of at least
-/// [`MMAP_READ_THRESHOLD`] bytes are served via `mmap` + a single
-/// `to_vec` copy **only when `allow_mmap` is set**. mmap is gated to
-/// read-only backends (`/code`) because mapping a *writable* file is
-/// unsound: if a concurrent writer truncates it while we copy pages
-/// out, touching a page past the new EOF raises `SIGBUS` and crashes
-/// the process. `/code` is read-only and immutable within a mount
-/// generation, so it is safe there; `/user` `/cache` `/tmp` are not and
-/// fall back to a presized `read`. Smaller whole-file reads and all
-/// range reads use `read` regardless.
+/// Whole-file reads own a bounded byte buffer. A virtual read-only mount does
+/// not prevent a host or another process from modifying its native files, so
+/// it cannot establish the immutability required for a file-backed mapping.
 pub fn read_file(
     path: &str,
     position: Option<u64>,
     length: Option<u64>,
-    allow_mmap: bool,
 ) -> Result<Vec<u8>, EngineError> {
     let started_at = Instant::now();
-    if let Some(len) = length {
-        if len > MAX_READ_LENGTH {
-            return Err(
-                EngineError::new(ErrorCode::InvalidArgument).with_detail(format!(
-                    "read length {} exceeds limit {}",
-                    len, MAX_READ_LENGTH
-                )),
-            );
-        }
+    if let Some(len) = length
+        && len > MAX_READ_LENGTH
+    {
+        return Err(
+            EngineError::new(ErrorCode::InvalidArgument).with_detail(format!(
+                "read length {} exceeds limit {}",
+                len, MAX_READ_LENGTH
+            )),
+        );
     }
 
     // Open once; every subsequent size check uses this handle's `fstat`.
     let mut file = std::fs::File::open(path).map_err(|e| io_err_ctx(e, "read_file", path))?;
 
-    // Whole-file read: one fstat serves the limit check, the mmap
-    // decision, and the presized allocation.
+    // Whole-file read: one fstat serves the limit check and presized allocation.
     if position.is_none() && length.is_none() {
         let file_len = file
             .metadata()
@@ -1314,37 +1274,8 @@ pub fn read_file(
             );
         }
 
-        if allow_mmap && file_len >= MMAP_READ_THRESHOLD {
-            // Map the already-open handle (no second `open`). NOT
-            // zero-copy: `.to_vec()` still owns a `Vec<u8>` of the full
-            // length. Only reached for read-only backends (see fn doc)
-            // so the truncation→SIGBUS window doesn't apply.
-            match crate::mmap_reader::mmap_bytes_from_file(&file) {
-                Ok(mapped) => {
-                    let data = mapped.as_slice().to_vec();
-                    trace_fs_edge(
-                        "read_file",
-                        path,
-                        started_at,
-                        &format!("size={}B mmap=1", data.len()),
-                    );
-                    #[cfg(test)]
-                    MMAP_PATH_TAKEN.set(MMAP_PATH_TAKEN.get() + 1);
-                    return Ok(data);
-                }
-                Err(e) => {
-                    // Exotic FS / kernel restriction: fall through to the
-                    // read path using the same open handle.
-                    tracing::debug!("mmap read failed for {path}, falling back: {e}");
-                }
-            }
-        }
-
-        // Non-mmap whole-file read: presize to the exact length (bounded
-        // by MAX_READ_LENGTH, checked above) so we skip the `Vec` realloc
-        // growth loop.
-        #[cfg(test)]
-        READ_PATH_TAKEN.set(READ_PATH_TAKEN.get() + 1);
+        // Bound the read to the checked handle length, even if a writer grows
+        // it concurrently. Truncation yields fewer bytes, never a mapped fault.
         let mut buf = Vec::with_capacity(file_len as usize);
         (&mut file)
             .take(file_len)
@@ -1566,8 +1497,7 @@ fn read_zip_entries_from_reader<R: Read + std::io::Seek>(
         // repeating the exact request cannot produce another observable row.
         // Requests for different ranges or encodings remain distinct and are
         // charged independently.
-        let mut seen_requests: HashSet<(String, Option<String>, Option<u64>, Option<u64>)> =
-            HashSet::with_capacity(arr.len().min(MAX_ZIP_CALL_ENTRIES));
+        let mut seen_requests = HashSet::with_capacity(arr.len().min(MAX_ZIP_CALL_ENTRIES));
         for item in arr {
             let path = match item.get("path").and_then(|v| v.as_str()) {
                 Some(p) => p.to_string(),
@@ -1912,11 +1842,7 @@ mod tests {
         d
     }
 
-    /// Does the mmap branch in `read_file` earn its keep?
-    ///
-    /// This compares explicit backend entry points only at and above the
-    /// production threshold; smaller files are covered by the policy test
-    /// below rather than mislabeled as mmap work.
+    /// Explicitly immutable fixtures only; this is not a production backend.
     #[test]
     #[ignore]
     fn bench_mmap_vs_presized_read() {
@@ -1925,36 +1851,25 @@ mod tests {
             let dir = tmp_dir(&format!("bench_mmap_{size_kib}"));
             let path = dir.join("payload.bin");
             std::fs::write(&path, vec![0xA5u8; size_kib * 1024]).unwrap();
-            let p = path.to_str().unwrap();
-
+            let mapped_copy = || {
+                // SAFETY: this fixture has no writers until all maps drop.
+                let mapped = unsafe { crate::mmap_reader::mmap_file_bytes(&path) }.unwrap();
+                mapped.as_slice().to_vec()
+            };
             for _ in 0..5 {
-                std::hint::black_box(read_file(p, None, None, false).unwrap());
-                MMAP_PATH_TAKEN.set(0);
-                std::hint::black_box(read_file(p, None, None, true).unwrap());
+                std::hint::black_box(read_file(path.to_str().unwrap(), None, None).unwrap());
+                std::hint::black_box(mapped_copy());
             }
-            assert_eq!(
-                MMAP_PATH_TAKEN.get(),
-                1,
-                "the mmap-labeled path must actually take mmap for {size_kib} KiB"
-            );
-
-            let via_read = {
-                let started = Instant::now();
-                for _ in 0..ITERATIONS {
-                    std::hint::black_box(read_file(p, None, None, false).unwrap());
-                }
-                started.elapsed()
-            };
-            let via_mmap = {
-                let started = Instant::now();
-                for _ in 0..ITERATIONS {
-                    MMAP_PATH_TAKEN.set(0);
-                    std::hint::black_box(read_file(p, None, None, true).unwrap());
-                    assert_eq!(MMAP_PATH_TAKEN.get(), 1);
-                }
-                started.elapsed()
-            };
-
+            let started = Instant::now();
+            for _ in 0..ITERATIONS {
+                std::hint::black_box(read_file(path.to_str().unwrap(), None, None).unwrap());
+            }
+            let via_read = started.elapsed();
+            let started = Instant::now();
+            for _ in 0..ITERATIONS {
+                std::hint::black_box(mapped_copy());
+            }
+            let via_mmap = started.elapsed();
             eprintln!(
                 "{size_kib:>5} KiB   read {:>10?}/call   mmap {:>10?}/call   read/mmap {:.2}x",
                 via_read / ITERATIONS,
@@ -1963,33 +1878,6 @@ mod tests {
             );
             let _ = std::fs::remove_dir_all(&dir);
         }
-    }
-
-    #[test]
-    fn mmap_path_is_selected_only_at_or_above_threshold() {
-        let below_dir = tmp_dir("mmap_threshold_below");
-        let above_dir = tmp_dir("mmap_threshold_above");
-        let below = below_dir.join("payload.bin");
-        let above = above_dir.join("payload.bin");
-        std::fs::write(&below, vec![0xA5u8; MMAP_READ_THRESHOLD as usize - 1]).unwrap();
-        std::fs::write(&above, vec![0xA5u8; MMAP_READ_THRESHOLD as usize]).unwrap();
-
-        MMAP_PATH_TAKEN.set(0);
-        READ_PATH_TAKEN.set(0);
-        let below_data = read_file(below.to_str().unwrap(), None, None, true).unwrap();
-        assert_eq!(below_data.len(), MMAP_READ_THRESHOLD as usize - 1);
-        assert_eq!(MMAP_PATH_TAKEN.get(), 0);
-        assert_eq!(READ_PATH_TAKEN.get(), 1);
-
-        MMAP_PATH_TAKEN.set(0);
-        READ_PATH_TAKEN.set(0);
-        let above_data = read_file(above.to_str().unwrap(), None, None, true).unwrap();
-        assert_eq!(above_data.len(), MMAP_READ_THRESHOLD as usize);
-        assert_eq!(MMAP_PATH_TAKEN.get(), 1);
-        assert_eq!(READ_PATH_TAKEN.get(), 0);
-
-        let _ = std::fs::remove_dir_all(below_dir);
-        let _ = std::fs::remove_dir_all(above_dir);
     }
 
     // ---------------------------------------------------------------------
@@ -2677,15 +2565,15 @@ mod tests {
         std::fs::write(&path, b"0123456789").unwrap();
 
         // Full read
-        let data = read_file(path.to_str().unwrap(), None, None, true).unwrap();
+        let data = read_file(path.to_str().unwrap(), None, None).unwrap();
         assert_eq!(&data, b"0123456789");
 
         // Partial read with position + length
-        let data2 = read_file(path.to_str().unwrap(), Some(3), Some(4), true).unwrap();
+        let data2 = read_file(path.to_str().unwrap(), Some(3), Some(4)).unwrap();
         assert_eq!(&data2, b"3456");
 
         // Read from position to end
-        let data3 = read_file(path.to_str().unwrap(), Some(7), None, true).unwrap();
+        let data3 = read_file(path.to_str().unwrap(), Some(7), None).unwrap();
         assert_eq!(&data3, b"789");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2701,85 +2589,34 @@ mod tests {
     }
 
     #[test]
-    fn read_file_mmap_path_returns_bit_exact_bytes() {
-        // Payload well above MMAP_READ_THRESHOLD so the mmap branch
-        // fires. We round-trip through both `read_file` (which
-        // takes the mmap fast path) and `std::fs::read` (the raw
-        // reference) and verify byte-exact equality.
+    fn read_file_large_file_returns_bit_exact_bytes() {
+        // Whole-file reads must agree with independently read bytes even for
+        // files that used to take the copy-only mapping shortcut.
         let dir = tmp_dir("rf_mmap_bits");
         let path = dir.join("big.bin");
-        let payload = big_payload((MMAP_READ_THRESHOLD as usize) + 8 * 1024);
+        let payload = big_payload((8 * 1024 * 1024) + 8 * 1024);
         std::fs::write(&path, &payload).unwrap();
 
-        let via_mmap = read_file(path.to_str().unwrap(), None, None, true).unwrap();
+        let actual = read_file(path.to_str().unwrap(), None, None).unwrap();
         let via_std = std::fs::read(&path).unwrap();
-        assert_eq!(via_mmap.len(), payload.len());
-        assert_eq!(via_mmap, via_std);
+        assert_eq!(actual.len(), payload.len());
+        assert_eq!(actual, via_std);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn read_file_mmap_threshold_is_effective() {
-        // Two files, one below threshold and one above. Both must
-        // come back with correct content — the test isn't timing-
-        // sensitive, just a regression guard that the size branch
-        // doesn't flip behaviour on the boundary.
-        let dir = tmp_dir("rf_mmap_thresh");
-        let small = dir.join("small.bin");
-        let big = dir.join("big.bin");
-        let small_data = big_payload((MMAP_READ_THRESHOLD as usize) - 1024);
-        let big_data = big_payload((MMAP_READ_THRESHOLD as usize) + 1);
-        std::fs::write(&small, &small_data).unwrap();
-        std::fs::write(&big, &big_data).unwrap();
-
-        assert_eq!(
-            read_file(small.to_str().unwrap(), None, None, true)
-                .unwrap()
-                .len(),
-            small_data.len()
-        );
-        assert_eq!(
-            read_file(big.to_str().unwrap(), None, None, true)
-                .unwrap()
-                .len(),
-            big_data.len()
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn read_file_disallow_mmap_still_returns_correct_bytes() {
-        // Writable-dir reads pass allow_mmap=false (mmap of a truncatable
-        // file risks SIGBUS). A large file must still read correctly via
-        // the presized read path.
-        let dir = tmp_dir("rf_no_mmap");
-        let path = dir.join("big.bin");
-        let payload = big_payload((MMAP_READ_THRESHOLD as usize) + 4096);
-        std::fs::write(&path, &payload).unwrap();
-
-        let via_read = read_file(path.to_str().unwrap(), None, None, false).unwrap();
-        assert_eq!(via_read.len(), payload.len());
-        assert_eq!(via_read, payload);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn read_file_partial_range_skips_mmap_but_still_correct() {
-        // Sub-range reads must never take the mmap shortcut; the
-        // mmap branch is only for whole-file reads. Here the file
-        // is big enough that the mmap threshold would trigger if
-        // the branch were taken incorrectly, and we assert the
-        // bytes match exactly. Behaviour regression guard.
+    fn read_file_large_partial_range_returns_exact_bytes() {
+        // A range reads only its requested bytes from the middle of a large
+        // file, independently of the whole-file implementation.
         let dir = tmp_dir("rf_partial_mmap");
         let path = dir.join("big.bin");
-        let payload = big_payload((MMAP_READ_THRESHOLD as usize) + 1024);
+        let payload = big_payload((8 * 1024 * 1024) + 1024);
         std::fs::write(&path, &payload).unwrap();
 
         // Read a 64-byte range from the middle.
         let start = payload.len() as u64 / 2;
-        let got = read_file(path.to_str().unwrap(), Some(start), Some(64), true).unwrap();
+        let got = read_file(path.to_str().unwrap(), Some(start), Some(64)).unwrap();
         assert_eq!(got.len(), 64);
         assert_eq!(
             got.as_slice(),
@@ -2797,7 +2634,7 @@ mod tests {
         // `err.errno === -2` / `err.path === '/…'` without
         // string-parsing.
         let bad = "/does/not/exist/migo_errno_probe";
-        let err = read_file(bad, None, None, true).unwrap_err();
+        let err = read_file(bad, None, None).unwrap_err();
         assert_eq!(err.code, ErrorCode::NotFound);
         // errno is the raw OS error, negated (Node convention). Its numeric
         // value is platform-specific (ENOENT=2 on Unix, ERROR_PATH_NOT_FOUND=3
@@ -2858,27 +2695,19 @@ mod tests {
 
     #[test]
     fn read_file_whole_file_over_max_read_length_rejected() {
-        // Regression: the mmap fast path must still honour the
-        // MAX_READ_LENGTH quota. Construct a synthetic metadata
-        // check via a real file whose size exceeds MAX_READ_LENGTH
-        // would be too slow; instead we verify the length guard on
-        // the explicit-length code path (shared behaviour, same
-        // error message).
-        //
-        // The metadata-sourced size check in the mmap branch uses
-        // the exact same MAX_READ_LENGTH constant, so the unit
-        // test here is asserting the guard is the same constant
-        // we advertise in the public doc comment.
         let dir = tmp_dir("rf_max");
         let path = dir.join("tiny.bin");
+        // A sparse file exercises the actual whole-file metadata limit
+        // without allocating or writing the advertised payload.
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_READ_LENGTH + 1).unwrap();
+        let err = read_file(path.to_str().unwrap(), None, None).unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+        drop(file);
+
+        // An oversized explicit request is rejected even for a small file.
         std::fs::write(&path, b"tiny").unwrap();
-        let err = read_file(
-            path.to_str().unwrap(),
-            None,
-            Some(MAX_READ_LENGTH + 1),
-            true,
-        )
-        .unwrap_err();
+        let err = read_file(path.to_str().unwrap(), None, Some(MAX_READ_LENGTH + 1)).unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidArgument);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2894,12 +2723,11 @@ mod tests {
         std::fs::write(&path, b"0123456789").unwrap();
 
         // length far larger than the file, but within MAX_READ_LENGTH.
-        let data = read_file(path.to_str().unwrap(), None, Some(8 * 1024 * 1024), true).unwrap();
+        let data = read_file(path.to_str().unwrap(), None, Some(8 * 1024 * 1024)).unwrap();
         assert_eq!(&data, b"0123456789");
 
         // With a position + oversized length: returns from position to EOF.
-        let data2 =
-            read_file(path.to_str().unwrap(), Some(4), Some(8 * 1024 * 1024), true).unwrap();
+        let data2 = read_file(path.to_str().unwrap(), Some(4), Some(8 * 1024 * 1024)).unwrap();
         assert_eq!(&data2, b"456789");
         let _ = std::fs::remove_dir_all(&dir);
     }

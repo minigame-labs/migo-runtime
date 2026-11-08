@@ -29,7 +29,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use lru::LruCache;
-use skia_safe::{ImageFilter, PathEffect, Point, Shader, TileMode, gradient_shader, image_filters};
+use skia_safe::{ImageFilter, PathEffect, Point, Shader, TileMode, gradient, image_filters};
 
 use shared::protocol::render_cmd::GradientStop;
 
@@ -334,14 +334,11 @@ pub fn get_or_build_linear_gradient(
     };
     lookup_or_build_gradient(key, stops, || {
         let (colors, positions) = build_colors_positions(stops, global_alpha)?;
-        gradient_shader::linear(
-            (Point::new(x0, y0), Point::new(x1, y1)),
-            gradient_shader::GradientShaderColors::Colors(&colors),
-            Some(&positions[..]),
-            TileMode::Clamp,
-            None,
-            None,
-        )
+        let spec = gradient::Gradient::new(
+            gradient::Colors::new(&colors, Some(&positions), TileMode::Clamp, None),
+            gradient::Interpolation::default(),
+        );
+        gradient::shaders::linear_gradient((Point::new(x0, y0), Point::new(x1, y1)), &spec, None)
     })
 }
 
@@ -374,15 +371,14 @@ pub fn get_or_build_radial_gradient(
     };
     lookup_or_build_gradient(key, stops, || {
         let (colors, positions) = build_colors_positions(stops, global_alpha)?;
-        gradient_shader::two_point_conical(
-            Point::new(x0, y0),
-            r0,
-            Point::new(x1, y1),
-            r1,
-            gradient_shader::GradientShaderColors::Colors(&colors),
-            Some(&positions[..]),
-            TileMode::Clamp,
-            None,
+        let spec = gradient::Gradient::new(
+            gradient::Colors::new(&colors, Some(&positions), TileMode::Clamp, None),
+            gradient::Interpolation::default(),
+        );
+        gradient::shaders::two_point_conical_gradient(
+            (Point::new(x0, y0), r0),
+            (Point::new(x1, y1), r1),
+            &spec,
             None,
         )
     })
@@ -415,15 +411,11 @@ pub fn get_or_build_conic_gradient(
         let (colors, positions) = build_colors_positions(stops, global_alpha)?;
         let start_deg = start_angle_rad.to_degrees();
         let end_deg = start_deg + 360.0;
-        gradient_shader::sweep(
-            Point::new(cx, cy),
-            gradient_shader::GradientShaderColors::Colors(&colors),
-            Some(&positions[..]),
-            TileMode::Clamp,
-            Some((start_deg, end_deg)),
-            None,
-            None,
-        )
+        let spec = gradient::Gradient::new(
+            gradient::Colors::new(&colors, Some(&positions), TileMode::Clamp, None),
+            gradient::Interpolation::default(),
+        );
+        gradient::shaders::sweep_gradient(Point::new(cx, cy), (start_deg, end_deg), &spec, None)
     })
 }
 
@@ -501,7 +493,7 @@ fn lookup_or_build_gradient<F: FnOnce() -> Option<Shader>>(
 fn build_colors_positions(
     stops: &[GradientStop],
     global_alpha: f32,
-) -> Option<(Vec<skia_safe::Color>, Vec<f32>)> {
+) -> Option<(Vec<skia_safe::Color4f>, Vec<f32>)> {
     if stops.len() < 2 {
         return None;
     }
@@ -510,7 +502,11 @@ fn build_colors_positions(
     // samples pick it up automatically.
     let colors = stops
         .iter()
-        .map(|s| super::color::to_sk_color4f_modulated(s.color, global_alpha).to_color())
+        .map(|s| {
+            skia_safe::Color4f::from(
+                super::color::to_sk_color4f_modulated(s.color, global_alpha).to_color(),
+            )
+        })
         .collect::<Vec<_>>();
     let positions = stops.iter().map(|s| s.offset.clamp(0.0, 1.0)).collect();
     Some((colors, positions))

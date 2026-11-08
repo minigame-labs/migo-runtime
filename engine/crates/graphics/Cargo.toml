@@ -71,27 +71,5 @@ migo-alloc-probe = { path = "../../testing/alloc-probe", default-features = fals
 # PNG encode/decode for golden image pixel-diff tests.
 # Avoid the workspace `image` crate (drops PNG in release profile).
 png = "0.17"
-
-# Windows and Apple. skia-bindings always compiles its jpeg/pdf/pathops
-# wrappers, but Skia builds pathops only as a dependency of optional("pdf"), so
-# with pdf off those wrappers reference symbols that do not exist. GNU ld hides
-# this with --gc-sections, which drops the referencing sections before it has to
-# resolve anything. MSVC cannot, because /OPT:REF discards unreferenced COMDATs
-# only after symbol resolution.
-#
-# Apple was added second, and how it surfaced is the part worth keeping. ld64's
-# -dead_strip runs after resolution too, exactly like /OPT:REF -- but nothing had
-# ever asked it to, because linking is not something building a library does.
-# `xcodebuild` compiled the whole shipping Swift package for all three Apple
-# platforms without touching a linker; the first executable to link libmigo.a was
-# the XCTest bundle in .github/workflows/apple-sdk.yml, and it reported
-# seventeen undefined SkPathOps, SkJpeg and SkPDF symbols at once. No Apple
-# product could ever have linked, and no amount of compiling would have said so.
-#
-# The same is true of every static consumer that links into a shared object --
-# Android and OpenHarmony both hand a host `libmigo_capi.a` to link into its own
-# .so, where undefined symbols are resolved at load time and therefore tolerated
-# at link time. They keep the smaller Skia because their link does not need
-# these symbols to exist. An executable's does.
-[target.'cfg(any(windows, target_vendor = "apple"))'.dependencies]
-skia-safe = { workspace = true, features = ["pdf"] }
+base64 = "0.22"
+serde_json.workspace = true

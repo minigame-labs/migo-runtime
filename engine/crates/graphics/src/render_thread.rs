@@ -3833,14 +3833,18 @@ impl RenderThread {
                             // 1) Signal RAF first (free-run), unconditionally while
                             // animating, so JS produces the next frame in parallel
                             // with this drain+swap and never blocks between frames.
-                            let has_waiter = raf_demand.take_waiter().is_some();
+                            let waiter = raf_demand.take_waiter();
+                            let has_waiter = waiter.is_some();
                             if has_waiter {
                                 warm_frames = RAF_WARM_FRAMES;
                             } else if warm_frames > 0 {
                                 warm_frames -= 1;
                             }
-                            if has_waiter || warm_frames > 0 {
-                                let _ = signal_raf(paused, ts);
+                            if (has_waiter || warm_frames > 0)
+                                && !signal_raf(paused, ts)
+                                && let Some(ticket) = waiter
+                            {
+                                raf_demand.restore_waiter(ticket);
                             }
 
                             // 2) Drain all pending commands from the previous frame.
@@ -3933,15 +3937,21 @@ impl RenderThread {
                             // primed signal and never blocks — keeping the compute
                             // thread busy (high clock). The warm window decays a few
                             // frames after JS stops, then the clock idles.
-                            let has_waiter = raf_demand.take_waiter().is_some();
+                            let waiter = raf_demand.take_waiter();
+                            let has_waiter = waiter.is_some();
                             if has_waiter {
                                 warm_frames = RAF_WARM_FRAMES;
                             } else if warm_frames > 0 {
                                 warm_frames -= 1;
                             }
                             let animating = has_waiter || warm_frames > 0;
-                            if animating {
-                                let _ = signal_raf(paused, decision.raf_time_ms);
+                            // A late tick can arrive after Pause. Keep the
+                            // unsignalled waiter so Resume can restart RAF.
+                            if animating
+                                && !signal_raf(paused, decision.raf_time_ms)
+                                && let Some(ticket) = waiter
+                            {
+                                raf_demand.restore_waiter(ticket);
                             }
 
                             // 2) Drain all pending commands (in parallel with JS

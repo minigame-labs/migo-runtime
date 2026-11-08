@@ -153,6 +153,27 @@ sys.exit(0 if any("ios" in t for t in lock["targets"]) else 1)' "$LOCK"; then
     fail "$LOCK names an iOS target. iOS needs no correction and has no archive here."
 fi
 
+# The published lock remains immutable during an upgrade. Until new macOS
+# slices are built and measured, the environment fragment must select source
+# with the ES correction, never the previous version's archive.
+if ! python3 - "$LOCK" engine/Cargo.lock <<'PY'
+import json, sys, tomllib
+published = json.load(open(sys.argv[1]))['source']['crate_version']
+selected = [p['version'] for p in tomllib.load(open(sys.argv[2], 'rb'))['package']
+            if p['name'] == 'skia-bindings']
+assert len(selected) == 1
+sys.exit(0 if selected[0] == published else 1)
+PY
+then
+    env -u MIGO_SKIA_FROM_SOURCE -u FORCE_SKIA_BUILD -u SKIA_BINARIES_URL \
+        bash -c 'set -e; . scripts/apple-skia-gl-env.sh aarch64-apple-darwin x86_64-apple-darwin;
+        [[ "$FORCE_SKIA_BUILD" == 1 && -z "${SKIA_BINARIES_URL:-}" ]];
+        [[ "$SKIA_GN_ARGS" == *"skia_gl_standard=\"\""* ]]' \
+        || fail "the upgraded version did not choose the corrected source build"
+    c_ok "selected version uses corrected source; new native macOS archive validation remains pending"
+    exit 0
+fi
+
 RELEASE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["release"])' "$LOCK")"
 c_info "release $RELEASE"
 

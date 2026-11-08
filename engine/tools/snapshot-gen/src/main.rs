@@ -85,8 +85,9 @@ fn main() {
     // without the data it will run with is a snapshot of a different V8.
     runtime_v8::install_icu_data();
 
-    // The embedder's ICU package must precede platform/isolate initialization.
-    deno_core::JsRuntime::init_platform(None);
+    // Preserve a common read-only heap; create_snapshot selects snapshot-mode
+    // platform initialization itself after the embedder ICU package is ready.
+    runtime_v8::snapshot::prepare_snapshot_creation();
 
     let extensions = match snapshot_kind {
         SnapshotKind::Host => runtime_v8::snapshot::lazy_extensions(),

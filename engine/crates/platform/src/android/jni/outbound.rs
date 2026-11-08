@@ -1,7 +1,7 @@
 use std::sync::{Arc, OnceLock};
 
 use jni::{
-    JNIEnv,
+    Env,
     objects::JStaticMethodID,
     signature::{Primitive, ReturnType},
     sys::jvalue,
@@ -26,11 +26,11 @@ const SLOW_JNI_CALL_SECS: u64 = 3;
 
 /// Clear any pending JNI exception, logging it if present.
 #[inline]
-fn clear_jni_exception(env: &mut JNIEnv, context: &str) {
-    if env.exception_check().unwrap_or(false) {
-        env.exception_describe().ok();
+fn clear_jni_exception(env: &mut Env, context: &str) {
+    if env.exception_check() {
+        env.exception_describe();
         tracing::error!("JNI exception in {context}");
-        env.exception_clear().ok();
+        env.exception_clear();
     }
 }
 
@@ -41,7 +41,7 @@ fn call_static_method<R, F>(
     args: &[jvalue],
 ) -> Result<R, String>
 where
-    F: FnOnce(&mut JNIEnv, jni::objects::JValueOwned) -> Result<R, String>,
+    F: FnOnce(&mut Env, jni::objects::JValueOwned) -> Result<R, String>,
 {
     with_env(|env| {
         let cache = JAVA_METHOD_CACHE
@@ -59,7 +59,7 @@ where
 /// `call_static_method` so a per-frame call site can resolve its method id once
 /// and still take the identical path for everything after that.
 fn invoke_static_method<R, F>(
-    env: &mut JNIEnv,
+    env: &mut Env,
     cache: &JavaMethodCache,
     method_id: JStaticMethodID,
     method_name: &str,
@@ -68,7 +68,7 @@ fn invoke_static_method<R, F>(
     args: &[jvalue],
 ) -> Result<R, String>
 where
-    F: FnOnce(&mut JNIEnv, jni::objects::JValueOwned) -> Result<R, String>,
+    F: FnOnce(&mut Env, jni::objects::JValueOwned) -> Result<R, String>,
 {
     // Clear any pre-existing JNI exception so a stale exception from a prior
     // call does not cause cascading failures (see notify_error).
@@ -95,8 +95,8 @@ where
 }
 
 /// Internal helper for void JNI calls with pre-constructed arguments.
-/// Takes `&mut JNIEnv` directly to avoid nested `with_env` calls.
-fn call_void_impl(env: &mut JNIEnv, method_name: &str, args: &[jvalue]) -> Result<(), String> {
+/// Takes `&mut Env` directly to avoid nested `with_env` calls.
+fn call_void_impl(env: &mut Env, method_name: &str, args: &[jvalue]) -> Result<(), String> {
     clear_jni_exception(env, method_name);
 
     let cache = JAVA_METHOD_CACHE
@@ -258,8 +258,10 @@ pub fn get_window_info(host_id: i32) -> Result<WindowInfo, String> {
         ReturnType::Object,
         |env, result| {
             let byte_array = result.l().map_err(|_| "Null byte array from Java")?;
+            let byte_array = jni::objects::JByteArray::cast_local(env, byte_array)
+                .map_err(|error| format!("Unexpected Java result type: {error}"))?;
             let bytes = env
-                .convert_byte_array(jni::objects::JByteArray::from(byte_array))
+                .convert_byte_array(byte_array)
                 .map_err(|e| format!("Failed to convert byte array: {}", e))?;
 
             if bytes.len() < 52 {
@@ -334,8 +336,10 @@ pub fn get_system_settings(host_id: i32) -> Result<SystemSettings, String> {
         ReturnType::Object,
         |env, result| {
             let byte_array = result.l().map_err(|_| "Null byte array from Java")?;
+            let byte_array = jni::objects::JByteArray::cast_local(env, byte_array)
+                .map_err(|error| format!("Unexpected Java result type: {error}"))?;
             let bytes = env
-                .convert_byte_array(jni::objects::JByteArray::from(byte_array))
+                .convert_byte_array(byte_array)
                 .map_err(|e| format!("Failed to convert byte array: {}", e))?;
 
             if bytes.len() < 4 {
@@ -363,8 +367,9 @@ pub fn get_device_info_json() -> Result<String, String> {
         ReturnType::Object,
         |env, result| {
             let jstring = result.l().map_err(|_| "Null string from Java")?;
-            let json_str = env
-                .get_string(&jni::objects::JString::from(jstring))
+            let json_str = jni::objects::JString::cast_local(env, jstring)
+                .map_err(|error| format!("Unexpected Java result type: {error}"))?
+                .mutf8_chars(env)
                 .map_err(|e| format!("Failed to convert JSON string: {}", e))?
                 .into();
             Ok(json_str)
@@ -380,8 +385,9 @@ pub fn get_host_app_info_json(host_id: i32) -> Result<String, String> {
         ReturnType::Object,
         |env, result| {
             let jstring = result.l().map_err(|_| "Null string from Java")?;
-            let json_str = env
-                .get_string(&jni::objects::JString::from(jstring))
+            let json_str = jni::objects::JString::cast_local(env, jstring)
+                .map_err(|error| format!("Unexpected Java result type: {error}"))?
+                .mutf8_chars(env)
                 .map_err(|e| format!("Failed to convert host app info JSON string: {}", e))?
                 .into();
             Ok(json_str)
@@ -396,8 +402,9 @@ pub fn get_app_authorization_setting_json(host_id: i32) -> Result<String, String
         ReturnType::Object,
         |env, result| {
             let jstring = result.l().map_err(|_| "Null string from Java")?;
-            let json_str = env
-                .get_string(&jni::objects::JString::from(jstring))
+            let json_str = jni::objects::JString::cast_local(env, jstring)
+                .map_err(|error| format!("Unexpected Java result type: {error}"))?
+                .mutf8_chars(env)
                 .map_err(|e| format!("Failed to convert authorization JSON string: {}", e))?
                 .into();
             Ok(json_str)
@@ -467,8 +474,9 @@ pub fn get_battery_info_json() -> Result<String, String> {
             if jstring.is_null() {
                 return Err("getBatteryInfo:fail not supported".to_string());
             }
-            let json_str = env
-                .get_string(&jni::objects::JString::from(jstring))
+            let json_str = jni::objects::JString::cast_local(env, jstring)
+                .map_err(|error| format!("Unexpected Java result type: {error}"))?
+                .mutf8_chars(env)
                 .map_err(|e| format!("Failed to convert battery info JSON string: {}", e))?
                 .into();
             Ok(json_str)
@@ -552,7 +560,7 @@ pub fn set_keep_screen_on(host_id: i32, keep_on: bool) -> Result<i32, String> {
         "setKeepScreenOn",
         ReturnType::Primitive(Primitive::Int),
         |_env, val| Ok(val.i().unwrap_or(-1)),
-        &[jvalue { i: host_id }, jvalue { z: keep_on as u8 }],
+        &[jvalue { i: host_id }, jvalue { z: keep_on }],
     )
 }
 
@@ -601,7 +609,7 @@ pub fn set_enable_debug(host_id: i32, enabled: bool) -> Result<i32, String> {
         "setEnableDebug",
         ReturnType::Primitive(Primitive::Int),
         |_env, val| Ok(val.i().unwrap_or(-1)),
-        &[jvalue { i: host_id }, jvalue { z: enabled as u8 }],
+        &[jvalue { i: host_id }, jvalue { z: enabled }],
     )
 }
 
@@ -695,7 +703,7 @@ pub fn set_visual_effect_on_capture(host_id: i32, hidden: bool) -> Result<i32, S
         "setVisualEffectOnCapture",
         ReturnType::Primitive(Primitive::Int),
         |_env, val| Ok(val.i().unwrap_or(-1)),
-        &[jvalue { i: host_id }, jvalue { z: hidden as u8 }],
+        &[jvalue { i: host_id }, jvalue { z: hidden }],
     )
 }
 
@@ -710,8 +718,9 @@ pub fn get_network_type_json(host_id: i32) -> Result<String, String> {
         ReturnType::Object,
         |env, result| {
             let jstring = result.l().map_err(|_| "Null string from Java")?;
-            let json_str = env
-                .get_string(&jni::objects::JString::from(jstring))
+            let json_str = jni::objects::JString::cast_local(env, jstring)
+                .map_err(|error| format!("Unexpected Java result type: {error}"))?
+                .mutf8_chars(env)
                 .map_err(|e| format!("Failed to convert network type JSON string: {}", e))?
                 .into();
             Ok(json_str)
@@ -730,8 +739,9 @@ pub fn get_available_audio_sources(host_id: i32) -> Result<String, String> {
         ReturnType::Object,
         |env, result| {
             let jstring = result.l().map_err(|_| "Null string from Java")?;
-            let json_str = env
-                .get_string(&jni::objects::JString::from(jstring))
+            let json_str = jni::objects::JString::cast_local(env, jstring)
+                .map_err(|error| format!("Unexpected Java result type: {error}"))?
+                .mutf8_chars(env)
                 .map_err(|e| format!("Failed to convert audio sources string: {}", e))?
                 .into();
             Ok(json_str)
@@ -792,7 +802,8 @@ pub fn encode_gbk(data: &str) -> Result<Vec<u8>, String> {
                 if obj.is_null() {
                     return Err("GBK encode error".to_string());
                 }
-                let byte_array = jni::objects::JByteArray::from(obj);
+                let byte_array = jni::objects::JByteArray::cast_local(env, obj)
+                    .map_err(|error| format!("Unexpected Java result type: {error}"))?;
                 let bytes = env
                     .convert_byte_array(byte_array)
                     .map_err(|e| format!("encodeGbk: failed to convert byte array: {e}"))?;
@@ -841,9 +852,10 @@ pub fn decode_gbk(data: &[u8]) -> Result<String, String> {
                 if obj.is_null() {
                     return Err("GBK decode error".to_string());
                 }
-                let j_str = jni::objects::JString::from(obj);
-                let s = env
-                    .get_string(&j_str)
+                let j_str = jni::objects::JString::cast_local(env, obj)
+                    .map_err(|error| format!("Unexpected Java result type: {error}"))?;
+                let s = j_str
+                    .mutf8_chars(env)
                     .map_err(|e| format!("decodeGbk: failed to get string: {e}"))?;
                 Ok(s.into())
             }
@@ -898,8 +910,9 @@ pub fn unzip_file(zip_path: &str, dest_dir: &str) -> Result<usize, String> {
         match result {
             Ok(val) => {
                 let jstring = val.l().map_err(|_| "Null string from Java")?;
-                let result_str: String = env
-                    .get_string(&jni::objects::JString::from(jstring))
+                let result_str: String = jni::objects::JString::cast_local(env, jstring)
+                    .map_err(|error| format!("Unexpected Java result type: {error}"))?
+                    .mutf8_chars(env)
                     .map_err(|e| format!("Failed to convert unzip result string: {e}"))?
                     .into();
 
@@ -972,8 +985,9 @@ pub fn get_clipboard_data(host_id: i32) -> Result<String, String> {
         ReturnType::Object,
         |env, result| {
             let jstring = result.l().map_err(|_| "Null string from Java")?;
-            let data = env
-                .get_string(&jni::objects::JString::from(jstring))
+            let data = jni::objects::JString::cast_local(env, jstring)
+                .map_err(|error| format!("Unexpected Java result type: {error}"))?
+                .mutf8_chars(env)
                 .map_err(|e| format!("Failed to convert clipboard string: {}", e))?
                 .into();
             Ok(data)
@@ -1028,8 +1042,9 @@ fn call_json_method(method_name: &str, host_id: i32, options_json: &str) -> Resu
         match result {
             Ok(val) => {
                 let jstring = val.l().map_err(|_| "Null string from Java")?;
-                let json_str = env
-                    .get_string(&jni::objects::JString::from(jstring))
+                let json_str = jni::objects::JString::cast_local(env, jstring)
+                    .map_err(|error| format!("Unexpected Java result type: {error}"))?
+                    .mutf8_chars(env)
                     .map_err(|e| format!("Failed to convert JSON string: {e}"))?
                     .into();
                 Ok(json_str)
@@ -1354,7 +1369,8 @@ pub fn decode_image_rgba_jni(data: &[u8]) -> Result<NormalizedImage, EngineError
                 if obj.is_null() {
                     return Err("BitmapFactory returned null".into());
                 }
-                let byte_array = jni::objects::JByteArray::from(obj);
+                let byte_array = jni::objects::JByteArray::cast_local(env, obj)
+                    .map_err(|error| format!("Unexpected Java result type: {error}"))?;
                 let bytes = env
                     .convert_byte_array(byte_array)
                     .map_err(|e| format!("Failed to read result bytes: {e}"))?;
@@ -1445,7 +1461,8 @@ pub fn decode_image_ahb_jni(
                 if obj.is_null() {
                     return Err("decodeImageAhb returned null".into());
                 }
-                let byte_array = jni::objects::JByteArray::from(obj);
+                let byte_array = jni::objects::JByteArray::cast_local(env, obj)
+                    .map_err(|error| format!("Unexpected Java result type: {error}"))?;
                 let bytes = env
                     .convert_byte_array(byte_array)
                     .map_err(|e| format!("Failed to read AHB header: {e}"))?;

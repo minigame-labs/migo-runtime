@@ -152,7 +152,9 @@ impl PreparedEglSurface for AndroidPreparedSurface {
     }
 
     fn request_frame_rate(&self, fps: u32) {
-        super::surface::request_frame_rate(self.handle.as_ptr(), fps);
+        // SAFETY: the installed SurfaceLease retains the matching
+        // AndroidSurfaceWrapper's strong window reference for this call.
+        unsafe { super::surface::request_frame_rate(self.handle.as_ptr(), fps) };
     }
 }
 

@@ -1,6 +1,8 @@
 # Migo 开发者文档维护手册
 
-本文档说明如何在本地维护开发者文档、发布新版本,并把站点发布到门户站点仓库（私有）。所有命令默认在 `developer-docs/` 目录执行;Node.js 版本以 `package.json` 的 `engines` 为准(Astro 7 要求 ≥ 22.12,本仓库统一钉在 ≥ 22.19,与门户一致)。
+本文档说明如何在本地维护开发者文档、发布新版本,并把站点发布到门户站点仓库（私有）。所有命令默认在 `developer-docs/` 目录执行;Node.js 版本以 `package.json` 的 `engines` 为准(Astro 7.4 要求 ≥ 22.23.4；CI 使用 Node 26.13 LTS)。
+
+文档依赖统一由 `package-lock.json` 锁定，使用 `npm ci` 安装。`package.json` 暂时将 linter 固定的 markdownlint 提升到修复版 0.42.1，并将 micromark 数学渲染使用的 KaTeX 固定到 0.18.11；对应上游更新依赖后再移除这两项覆盖。两项覆盖已通过完整文档检查和数学渲染兼容性用例。
 
 技术栈:**Astro 7 + @astrojs/starlight**。搜索用 Starlight 内置的 Pagefind,内部链接由 `starlight-links-validator` 在构建时校验,Mermaid 由 `astro-mermaid` 客户端渲染。构建产物输出到 `build/`(不要在 Astro 配置里改这个目录,门户站点仓库依赖它)。
 

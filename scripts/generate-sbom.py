@@ -15,7 +15,7 @@ import urllib.parse
 from collections import deque
 from typing import Any
 
-from lib.supply_chain import PolicyError, load_policy, read_json, validate_metadata
+from lib.supply_chain import PolicyError, load_policy, read_json, spdx_ids, validate_metadata
 
 
 def timestamp() -> str:
@@ -141,6 +141,81 @@ def compiled_subset(
     return kept
 
 
+def native_source_hash(directory: pathlib.Path) -> str:
+    """Hash sorted relative paths and their SHA-256 bytes, including notices."""
+    digest = hashlib.sha256()
+    files = sorted(directory.rglob("*"))
+    if not directory.is_dir() or not files:
+        raise PolicyError(f"native source directory is missing or empty: {directory}")
+    count = 0
+    for path in files:
+        if path.is_symlink():
+            raise PolicyError(f"native source must be a regular vendored file: {path}")
+        if path.is_file():
+            count += 1
+            digest.update(path.relative_to(directory).as_posix().encode() + b"\0")
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+    if count == 0:
+        raise PolicyError(f"native source directory contains no files: {directory}")
+    return digest.hexdigest()
+
+
+def native_components(
+    policy: dict[str, Any], workspace_root: pathlib.Path,
+    packages: dict[str, dict[str, Any]], refs: dict[str, str],
+    builds: list[tuple[str, set[str]]],
+) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
+    """Add native sources compiled directly by selected Rust build scripts."""
+    components: list[dict[str, Any]] = []
+    dependencies: dict[str, list[str]] = {}
+    for record in policy.get("native_components", []):
+        owners = [key for key, package in packages.items()
+                  if package["name"] == record["owner_package"]]
+        if not owners:
+            continue
+        platforms = record["platforms"]
+        if platforms != ["*"]:
+            if not builds:
+                raise PolicyError("native component selection requires --cargo-target")
+            # A multi-build artifact must not combine an Android slice without
+            # audio with a Linux slice with audio and invent an Oboe dependency.
+            if not any(record["owner_package"] in compiled and platform in target.split("-")
+                       for platform in platforms for target, compiled in builds):
+                continue
+        name, version = record["name"], record["version"]
+        expression = record["license"]
+        if spdx_ids(expression) - set(policy["licenses"]["allowed"]):
+            raise PolicyError(f"{name}: native license is not approved: {expression}")
+        directory = (workspace_root / record["source_dir"]).resolve()
+        if not directory.is_relative_to(workspace_root.resolve()):
+            raise PolicyError(f"{name}: native source is outside the workspace")
+        if native_source_hash(directory) != record["source_sha256"]:
+            raise PolicyError(f"{name}: native source hash differs from policy")
+        license_file = directory / record["license_file"]
+        if not license_file.resolve().is_relative_to(directory):
+            raise PolicyError(f"{name}: native license is outside its source directory")
+        if hashlib.sha256(license_file.read_bytes()).hexdigest() != record["license_sha256"]:
+            raise PolicyError(f"{name}: native license hash differs from policy")
+        ref = f"pkg:generic/{urllib.parse.quote(name, safe='')}@{urllib.parse.quote(version, safe='')}"
+        if any(item["bom-ref"] == ref for item in components):
+            raise PolicyError(f"duplicate native component: {ref}")
+        components.append({
+            "type": "library", "bom-ref": ref, "purl": ref,
+            "name": name, "version": version, "scope": "required",
+            "licenses": [{"expression": expression}],
+            "externalReferences": [{"type": "vcs", "url": record["repository"]}],
+            "properties": [
+                {"name": f"migo:{key.replace('_', '-')}",
+                 "value": str(record[key]).lower() if isinstance(record[key], bool) else str(record[key])}
+                for key in ("source_dir", "source_sha256", "upstream_revision",
+                            "upstream_archive_sha256", "source_modified")
+            ],
+        })
+        for owner in owners:
+            dependencies.setdefault(refs[owner], []).append(ref)
+    return components, dependencies
+
+
 def build(args: argparse.Namespace) -> dict[str, Any]:
     metadata = merged_metadata(args.metadata)
     policy = load_policy(args.policy.resolve())
@@ -196,18 +271,33 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             component["externalReferences"] = [{"type": "vcs", "url": repository}]
         components.append(component)
 
+    if args.cargo_target and len(args.cargo_target) != len(args.compiled):
+        raise PolicyError("each --cargo-target requires its matching --compiled graph")
+    builds = [
+        (target, {str(packages[key]["name"]) for key in compiled_subset(
+            metadata, root_id, reached, [tree],
+        )})
+        for target, tree in zip(args.cargo_target, args.compiled)
+    ]
+    native, native_edges = native_components(
+        policy, args.workspace_root.resolve(), packages, refs, builds,
+    )
+    components.extend(native)
     dependencies = []
     for package_id in sorted(reached, key=lambda item: refs[item]):
         dependencies.append(
             {
                 "ref": refs[package_id],
-                "dependsOn": sorted(
-                    refs[dependency]
+                "dependsOn": sorted(set(
+                    [refs[dependency]
                     for dependency in edges.get(package_id, [])
-                    if dependency in reached and dependency != root_id
-                ),
+                    if dependency in reached and dependency != root_id]
+                    + native_edges.get(refs[package_id], [])
+                )),
             }
         )
+    dependencies.extend({"ref": component["bom-ref"], "dependsOn": []} for component in native)
+    dependencies.sort(key=lambda item: item["ref"])
 
     return {
         "bomFormat": "CycloneDX",
@@ -246,6 +336,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--artifact", type=pathlib.Path, required=True)
     result.add_argument("--artifact-kind", required=True)
     result.add_argument("--target", required=True)
+    result.add_argument("--cargo-target", action="append", default=[])
     result.add_argument("--profile", required=True)
     result.add_argument("--root-package", required=True)
     result.add_argument("--policy", type=pathlib.Path, required=True)

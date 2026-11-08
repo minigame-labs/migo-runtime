@@ -8,6 +8,10 @@ use std::{
 };
 
 pub(crate) const BLOCK: usize = 128;
+
+pub(crate) fn history_frames() -> usize {
+    unsafe { migo_src_history_frames() }
+}
 #[repr(C)]
 struct Data {
     input: *const f32,
@@ -71,10 +75,18 @@ impl Converter {
 
     /// WebAudio retains its f64 compound rate and sub-frame start position.
     /// The InnerAudio thousandth-rate entry points keep their original arithmetic.
-    pub(crate) fn reset_fractional(&mut self, samples: &[f32], position: f64) -> EngineResult<()> {
+    pub(crate) fn reset_fractional(
+        &mut self,
+        samples: &[f32],
+        position: f64,
+        looping: Option<(usize, usize)>,
+    ) -> EngineResult<()> {
+        let frames = samples.len() / self.channels;
         if !position.is_finite()
             || position < 0.0
-            || position > (samples.len() / self.channels) as f64
+            || position >= c_long::MAX as f64
+            || (looping.is_none() && position > frames as f64)
+            || looping.is_some_and(|(start, end)| start >= end || end > frames)
         {
             return Err(failure());
         }
@@ -84,14 +96,20 @@ impl Converter {
         let mut discard = [0.; BLOCK * 32];
         while remaining > 0 {
             let n = remaining.min(BLOCK);
-            self.render(samples, 1000, false, &mut discard[..n * self.channels])?;
+            self.render_ratio_available(
+                samples,
+                1.0,
+                looping,
+                true,
+                &mut discard[..n * self.channels],
+            )?;
             remaining -= n;
         }
         if phase != 0.0 {
             self.render_ratio_available(
                 samples,
                 1.0 / (1.0 + phase),
-                false,
+                looping,
                 true,
                 &mut discard[..self.channels],
             )?;
@@ -103,12 +121,13 @@ impl Converter {
         &mut self,
         samples: &[f32],
         rate: f64,
+        looping: Option<(usize, usize)>,
         output: &mut [f32],
     ) -> EngineResult<()> {
         if !(0.5..=2.0).contains(&rate) {
             return Err(failure());
         }
-        let frames = self.render_ratio_available(samples, 1.0 / rate, false, true, output)?;
+        let frames = self.render_ratio_available(samples, 1.0 / rate, looping, true, output)?;
         if frames * self.channels != output.len() {
             return Err(failure());
         }
@@ -173,7 +192,7 @@ impl Converter {
         if native(|| unsafe { src_reset(self.state.as_ptr()) }) != 0 {
             return Err(failure());
         }
-        let history = unsafe { migo_src_history_frames() };
+        let history = history_frames();
         let warm = if phase == 0 {
             past_frames.min(history)
         } else {
@@ -261,7 +280,7 @@ impl Converter {
         self.render_ratio_available(
             samples,
             1000.0 / f64::from(units),
-            looping,
+            looping.then_some((0, samples.len() / self.channels)),
             complete,
             output,
         )
@@ -271,7 +290,7 @@ impl Converter {
         &mut self,
         samples: &[f32],
         ratio: f64,
-        looping: bool,
+        looping: Option<(usize, usize)>,
         complete: bool,
         output: &mut [f32],
     ) -> EngineResult<usize> {
@@ -279,6 +298,10 @@ impl Converter {
         let mut input_scratch = [0.; BLOCK * 32];
         let frames = samples.len() / self.channels;
         if frames == 0 && complete {
+            return Err(failure());
+        }
+        let (loop_start, loop_end) = looping.unwrap_or((0, frames));
+        if looping.is_some() && (loop_start >= loop_end || loop_end > frames) {
             return Err(failure());
         }
         let mut written = 0;
@@ -290,14 +313,21 @@ impl Converter {
                 let n = (-self.read_frame as usize).min(BLOCK) * self.channels;
                 input_scratch[..n].fill(0.);
                 &input_scratch[..n]
-            } else if looping || self.read_frame < 0 {
-                let start = self.read_frame.rem_euclid(frames as c_long) as usize;
+            } else if looping.is_some() || self.read_frame < 0 {
+                let start = if self.read_frame < 0 || self.read_frame >= loop_end as c_long {
+                    loop_start
+                        + (self.read_frame - loop_start as c_long)
+                            .rem_euclid((loop_end - loop_start) as c_long)
+                            as usize
+                } else {
+                    self.read_frame as usize
+                };
                 let count = if self.read_frame < 0 {
                     (-self.read_frame as usize).min(BLOCK)
                 } else {
                     BLOCK
                 };
-                if start + count <= frames {
+                if start + count <= loop_end {
                     &samples[start * self.channels..(start + count) * self.channels]
                 } else {
                     // Coalesce short periods in the existing bounded scratch;
@@ -305,13 +335,13 @@ impl Converter {
                     let mut copied = 0;
                     let mut offset = start;
                     while copied < count {
-                        let n = (frames - offset).min(count - copied);
+                        let n = (loop_end - offset).min(count - copied);
                         input_scratch[copied * self.channels..(copied + n) * self.channels]
                             .copy_from_slice(
                                 &samples[offset * self.channels..(offset + n) * self.channels],
                             );
                         copied += n;
-                        offset = 0;
+                        offset = loop_start;
                     }
                     &input_scratch[..count * self.channels]
                 }
@@ -350,8 +380,9 @@ impl Converter {
                 break;
             }
             self.read_frame += data.used;
-            if looping && self.read_frame >= frames as c_long {
-                self.read_frame %= frames as c_long;
+            if looping.is_some() && self.read_frame >= loop_end as c_long {
+                self.read_frame = loop_start as c_long
+                    + (self.read_frame - loop_start as c_long) % (loop_end - loop_start) as c_long;
             }
             written += data.produced as usize * self.channels;
         }

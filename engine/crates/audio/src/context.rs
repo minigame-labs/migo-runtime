@@ -1560,11 +1560,16 @@ impl AudioContext {
         if let Some(node) = self.nodes.get_mut(&node_id) {
             let any = node.as_any_mut();
             if let Some(source) = any.downcast_mut::<BufferSourceNode>() {
-                let prepared =
-                    match source.prepare_loop_rate(self.node_retirement.as_ref(), enabled, now) {
-                        Ok(prepared) => prepared,
-                        Err(_) => return false,
-                    };
+                let prepared = match source.prepare_loop_rate(
+                    self.node_retirement.as_ref(),
+                    enabled,
+                    start,
+                    end,
+                    now,
+                ) {
+                    Ok(prepared) => prepared,
+                    Err(_) => return false,
+                };
                 source.set_loop(enabled, start, end);
                 source.install_rate(prepared);
                 return true;

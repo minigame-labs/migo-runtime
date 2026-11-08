@@ -41,6 +41,7 @@ import com.migo.runtime.ErrorCode;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.ColorSpace;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -606,10 +607,8 @@ public final class NativeExports {
      * Decode image bytes to RGBA using Android's BitmapFactory.
      * Returns [width_le32, height_le32, RGBA_bytes...] or null on failure.
      *
-     * <p>ARGB_8888 (backed by Skia kRGBA_8888) stores bytes as R,G,B,A from low
-     * to high address on little-endian devices (all Android).
-     * {@code copyPixelsToBuffer} writes these bytes in memory order, so the
-     * output is already in RGBA byte order — no swizzle needed.
+     * <p>{@code getPixels} exports straight-alpha sRGB colors without copying
+     * native row padding or relying on the bitmap's storage layout.
      *
      * @param imageData Raw image file bytes (JPEG, PNG, BMP, etc.)
      * @return Packed byte array: 8-byte header (width + height as little-endian int32) + RGBA pixels, or null
@@ -666,6 +665,8 @@ public final class NativeExports {
             // Pass 2 -- real decode.
             opts.inJustDecodeBounds = false;
             opts.inPreferredConfig = Bitmap.Config.ARGB_8888;
+            // API 26: the native renderer consumes sRGB rather than the image's source ICC space.
+            opts.inPreferredColorSpace = ColorSpace.get(ColorSpace.Named.SRGB);
             // Decode as non-premultiplied so RGB channels are unmodified.
             // The GL pipeline handles alpha blending; premultiplied data
             // would corrupt colours when used with straight-alpha blending.
@@ -685,9 +686,9 @@ public final class NativeExports {
             int w = bitmap.getWidth();
             int h = bitmap.getHeight();
             long pixelCountLong = (long) w * (long) h;
-            if (pixelCountLong > Integer.MAX_VALUE / 4) {
-                bitmap.recycle();
-                return null;  // Image too large
+            if (w <= 0 || h <= 0 || pixelCountLong > MAX_IMAGE_PIXELS
+                    || pixelCountLong > (Integer.MAX_VALUE - 8) / 4) {
+                return null;  // Recheck actual dimensions before allocating the export.
             }
             int pixelCount = (int) pixelCountLong;
 
@@ -698,20 +699,32 @@ public final class NativeExports {
             buf.putInt(w);
             buf.putInt(h);
 
-            // copyPixelsToBuffer writes raw pixel bytes in native memory order.
-            // Android's ARGB_8888 (backed by Skia kRGBA_8888) stores bytes as
-            // R, G, B, A from low to high address — already RGBA byte order.
-            // No swizzle needed.
-            bitmap.copyPixelsToBuffer(buf);
-            bitmap.recycle();
-            bitmap = null;
+            // API 26's copyPixelsToBuffer can release an offset heap-array pointer
+            // when the buffer position is past our header, aborting under CheckJNI.
+            // getPixels returns straight sRGB ARGB colors for every storage layout.
+            // A 4 KiB scratch bounds memory even for images with very wide rows.
+            int[] colors = new int[Math.min(w, 1024)];
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x += colors.length) {
+                    int count = Math.min(colors.length, w - x);
+                    bitmap.getPixels(colors, 0, count, x, y, count, 1);
+                    for (int i = 0; i < count; i++) {
+                        int color = colors[i];
+                        buf.put((byte) (color >>> 16));
+                        buf.put((byte) (color >>> 8));
+                        buf.put((byte) color);
+                        buf.put((byte) (color >>> 24));
+                    }
+                }
+            }
 
             return buf.array();
         } catch (OutOfMemoryError e) {
+            return null;
+        } finally {
             if (bitmap != null && !bitmap.isRecycled()) {
                 bitmap.recycle();
             }
-            return null;
         }
     }
 

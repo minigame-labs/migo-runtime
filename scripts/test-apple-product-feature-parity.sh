@@ -60,23 +60,6 @@ REFERENCE_TARGET="x86_64-unknown-linux-gnu"
 # skipped the stale-exemption check when it was written that way, which the
 # injection test caught only because the check failed to fire.
 EXEMPT=(
-    # skia-bindings compiles its jpeg/pdf/pathops C++ wrappers unconditionally,
-    # while Skia builds pathops only as a dependency of optional("pdf"). With pdf
-    # off, those wrappers reference symbols that do not exist. GNU ld drops the
-    # referencing sections with --gc-sections before it has to resolve anything,
-    # which is why the reference target has never needed this; ld64's
-    # -dead_strip and MSVC's /OPT:REF both run after resolution and cannot.
-    #
-    # Not a hypothetical on Apple. The first executable ever to link libmigo.a --
-    # the XCTest bundle in .github/workflows/apple-sdk.yml -- reported seventeen
-    # undefined SkPathOps, SkJpeg and SkPDF symbols. Every Apple compile step had
-    # passed, because compiling a library does not link one. So this difference
-    # is what makes an Apple product linkable at all, and its cost is the PDF and
-    # JPEG codecs' code size, which Android and OpenHarmony do not pay: their
-    # hosts link libmigo_capi.a into a shared object, where undefined symbols are
-    # resolved at load time and tolerated at link time.
-    "skia-safe=pdf, so Skia builds the pathops its always-compiled wrappers reference; ld64 cannot hide them the way GNU ld does"
-    "skia-bindings=jpeg/jpeg-decode/jpeg-encode/pdf arrive with skia-safe's pdf feature above, which is what supplies SkJpeg* and SkPDF* to the linker"
     # The audio device, which is the one thing a host cannot be portable about.
     # `host-audio` is part of `external-frames` because the Performance+ lane
     # plays sound in this process (WebContent never touches PCM), and cpal
@@ -97,7 +80,8 @@ EXEMPT=(
     "block2=Objective-C notification blocks owned by the iOS route/interruption backend"
     "dispatch2=dispatch queues used by the Apple Objective-C bindings"
     "mach2=coreaudio-rs's, for the Mach timebase its render callbacks are timed against"
-    "bitflags=the CoreAudio crates take it with its default feature; the Linux graph has it without"
+    "errno=rustix's libc backend for IO tempfile on Apple; Linux uses raw syscalls"
+    "linux-raw-sys=rustix's Linux syscall backend used by tempfile and tar's xattr dependency"
     # Explicit platform TLS trust from W07: Apple uses Security.framework;
     # Linux loads host certificates. These are different implementations of
     # the same selected platform-trust policy, not alternative trust fallbacks.

@@ -4,6 +4,7 @@ import {
     op_get_canvas_info,
     op_resize_canvas,
     op_destroy_canvas,
+    op_encode_canvas_image,
     op_write_or_append_file,
     op_write_or_append_file_sync,
 } from "ext:core/ops";
@@ -261,7 +262,7 @@ class Canvas {
     toDataURL(type, quality) {
         const w = this._width, h = this._height;
         if (w === 0 || h === 0) return "data:,";
-        return encodeDataUrl(this._readAllPixels(), w, h, type, quality);
+        return encodeDataUrl(this._readAllPixels(), w, h, type, quality, op_encode_canvas_image);
     }
     // `canvas.toTempFilePathSync(options)`: the region `x`, `y`, `width`, `height` of the canvas (the whole of it by
     // default) as a PNG or JPEG file of `destWidth` x `destHeight` (the canvas's size by default), in the game's
@@ -303,7 +304,7 @@ class Canvas {
     _encode(type, quality) {
         const w = this._width, h = this._height;
         if (w === 0 || h === 0) return null;
-        return encodeImage(this._readAllPixels(), w, h, type, quality);
+        return encodeImage(this._readAllPixels(), w, h, type, quality, op_encode_canvas_image);
     }
     getContext(contextType, options) {
         watchFrameContent();
@@ -395,7 +396,7 @@ function _encodeRegion(canvas, request) {
         pixels = target._readAllPixels();
     }
     const type = request.fileType === "jpg" ? "image/jpeg" : "image/png";
-    return encodeImage(pixels, destWidth, destHeight, type, request.quality).bytes;
+    return encodeImage(pixels, destWidth, destHeight, type, request.quality, op_encode_canvas_image).bytes;
 }
 
 // What a share shows when content gives it no image: the screen as the player sees it, at the end of the next frame

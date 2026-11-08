@@ -25,9 +25,9 @@ allowed = [
 ]
 
 [gradle]
-distribution_url = "https://services.gradle.org/distributions/gradle-8.4-bin.zip"
-distribution_sha256 = "3e1af3ae886920c3ac87f7a91f816c0c7c436f276a6eefdb3da152100fef72ae"
-wrapper_jar_sha256 = "7d3a4ac4de1c32b59bc6a4eb8ecb8e612ccd0cf1ae1e99f66902da64df296172"
+distribution_url = "https://services.gradle.org/distributions/gradle-9.9.0-bin.zip"
+distribution_sha256 = "0b00b0ffe07c4d4789c12d4935a44a7057d55774b7540bd4a3f76f336deb177a"
+wrapper_jar_sha256 = "621008afc4f5d59357fcf06ffa644dd5aade5e091bdc363742710445f73cdaf8"
 
 [[advisory_exceptions]]
 id = "RUSTSEC-2024-0436"
@@ -37,3 +37,35 @@ kind = "unmaintained"
 expires = "2027-02-28"
 reason = "V8 code generation and a test decoder still pull paste; review on upstream update."
 tracking = "https://rustsec.org/advisories/RUSTSEC-2024-0436.html"
+
+# Direct native sources used by audio/build.rs; digest includes every vendored
+# path and SHA-256, including upstream license/attribution files.
+[[native_components]]
+name = "libsamplerate"
+version = "0.2.2"
+owner_package = "migo-audio"
+platforms = ["*"]
+license = "BSD-2-Clause"
+source_dir = "engine/third_party/libsamplerate-0.2.2"
+source_sha256 = "977957b39d43054625e09e994f69fb7c2d4288794e0a7baa07db07f9a8fea1f0"
+license_file = "COPYING"
+license_sha256 = "2c1f76ce2effdddb425018405d5690c0b1ab4e6976e35296b0a6db65c5e1a55d"
+repository = "https://github.com/libsndfile/libsamplerate"
+upstream_revision = "c96f5e3de9c4488f4e6c97f59f5245f22fda22f7"
+upstream_archive_sha256 = "35ceb3e63eb8884ec802b5be685a9aacf2458c4eb3c0ea38dc18ef1b00648c44"
+source_modified = true
+
+[[native_components]]
+name = "oboe"
+version = "1.11.0"
+owner_package = "migo-audio"
+platforms = ["android"]
+license = "Apache-2.0"
+source_dir = "engine/third_party/oboe-1.11.0"
+source_sha256 = "cc6d55f5cbc3cef50e2cd712b71d93cca3209c7e30d1355319e852f2b534baf1"
+license_file = "LICENSE"
+license_sha256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+repository = "https://github.com/google/oboe"
+upstream_revision = "b115f47593969fd67a21e9f63640ffef749b5067"
+upstream_archive_sha256 = "1694a9756d6b3f9385c57ef6e67e516dfd519accc3c42f3834c8f95f6c3a0301"
+source_modified = false

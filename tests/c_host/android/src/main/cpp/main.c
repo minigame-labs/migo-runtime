@@ -587,14 +587,6 @@ static int create_engine(struct host *h, const char *files_dir) {
     snprintf(cache_dir, sizeof cache_dir, "%s/migo-cache", files_dir);
     snprintf(code_cache_dir, sizeof code_cache_dir, "%s/migo-code-cache", files_dir);
 
-    /* No JNI reaches this process on its own -- ANativeActivity_onCreate is not
-     * JNI_OnLoad. Without this, the audio backend's first output stream aborts
-     * the process instead of failing an op: see migo_android_init_context's
-     * doc comment in migo/platform/android.h. */
-    if (h->activity != NULL) {
-        migo_android_init_context(h->activity->vm, h->activity->clazz);
-    }
-
     /* Ask the library what it supports before building anything on top of it.
      * MIGO_C_ABI_HAS_RUNTIME is a preprocessor macro and describes the headers
      * this file compiled against; only this call describes the linked library.

@@ -4,7 +4,7 @@
 # Skia used to link its own ICU (unrenamed `u_strCompare`, `icu::`) beside V8's (`u_strCompare_77`,
 # `icu_77::`). The names never collide, so the linker kept both: 1.36 MB of libmigo.so on arm64,
 # and two Unicode versions (74 and 77) in one process. The vendored skia-bindings
-# (engine/third_party/skia-bindings-0.93.1, patch in engine/third_party/skia-bindings-patches/)
+# (engine/third_party/skia-bindings-0.157.0, patch in engine/third_party/skia-bindings-patches/)
 # reads SKIA_EXTERNAL_ICU_INCLUDE_DIRS and then builds Skia with `skia_use_system_icu` against
 # those headers; the final link resolves Skia's ICU calls against V8's. The headers are the ones
 # the v8 crate itself ships, so they are V8's ICU by construction, and a version mismatch is a
@@ -19,6 +19,14 @@ source "${BASH_SOURCE[0]%/*}/python-cmd.sh"
 
 skia_external_icu_export() { # <workspace directory> <target triple>
     local py v8_dir common i18n
+    # A failed selection must not leave another target's provider in the environment.
+    unset SKIA_EXTERNAL_ICU_INCLUDE_DIRS
+    case "$2" in
+        *-apple-ios*)
+            echo "skia-external-icu: iOS uses standalone Skia ICU, without V8" >&2
+            return 1
+            ;;
+    esac
     py="$(python_cmd)" || return 1
     # --locked, not --offline: a cold CARGO_HOME has nothing to answer from yet, and this runs
     # before the build that would fetch it.

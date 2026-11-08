@@ -67,7 +67,11 @@ fn native_window_set_frame_rate() -> Option<SetFrameRateFn> {
 /// just not as even. Asking for the visible switch would be trading a permanent
 /// improvement for a visible cost at every rate change, including a mid-game
 /// `setPreferredFramesPerSecond`.
-pub fn request_frame_rate(window: *mut ANativeWindow, fps: u32) {
+///
+/// # Safety
+/// `window` must be a live, non-null ANativeWindow. Its owning strong reference
+/// must remain held until this call returns.
+pub unsafe fn request_frame_rate(window: *mut ANativeWindow, fps: u32) {
     let Some(set_frame_rate) = native_window_set_frame_rate() else {
         return;
     };
@@ -104,6 +108,11 @@ impl fmt::Debug for AndroidSurfaceWrapper {
 impl AndroidSurfaceWrapper {
     /// Use this when you already own a strong ref (e.g. `ANativeWindow_fromSurface()`).
     /// Do NOT call `acquire()` again.
+    ///
+    /// # Safety
+    /// A non-null `handle` must own a live ANativeWindow strong reference.
+    /// On success that reference is transferred to this wrapper; the caller
+    /// must not release it independently.
     pub unsafe fn from_surface_owned(
         handle: *mut ANativeWindow,
         width: u32,
@@ -117,6 +126,10 @@ impl AndroidSurfaceWrapper {
     }
 
     /// Use this when you only borrowed a pointer and must acquire a strong ref.
+    ///
+    /// # Safety
+    /// A non-null `handle` must refer to a live ANativeWindow whose owner keeps
+    /// it alive until this function has acquired the wrapper's own reference.
     pub unsafe fn from_borrowed_acquire(
         handle: *mut ANativeWindow,
         width: u32,

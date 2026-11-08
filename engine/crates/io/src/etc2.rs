@@ -97,7 +97,7 @@ pub fn encode_etc2_rgb(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, 
     if width == 0 || height == 0 {
         return Err("etc2: zero dimensions");
     }
-    if width % 4 != 0 || height % 4 != 0 {
+    if !width.is_multiple_of(4) || !height.is_multiple_of(4) {
         return Err("etc2: dimensions must be multiples of 4");
     }
     let expected = (width as usize)
@@ -209,7 +209,7 @@ pub fn encode_etc2_rgba(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>,
     if width == 0 || height == 0 {
         return Err("etc2: zero dimensions");
     }
-    if width % 4 != 0 || height % 4 != 0 {
+    if !width.is_multiple_of(4) || !height.is_multiple_of(4) {
         return Err("etc2: dimensions must be multiples of 4");
     }
     let expected = (width as usize)
@@ -430,10 +430,10 @@ fn encode_block(pixels: &[[u8; 3]; 16]) -> [u8; ETC2_RGB_BLOCK_BYTES] {
     let table = &SUBBLOCK_TABLE[flip as usize];
 
     let mut bytes = [0u8; ETC2_RGB_BLOCK_BYTES];
-    for channel in 0..3 {
+    for (channel, byte) in bytes.iter_mut().enumerate().take(3) {
         // High nibble is sub-block 0, low nibble sub-block 1; the decoder
         // expands each by replicating it into the low bits.
-        bytes[channel] = (fits[0].quantized[channel] << 4) | fits[1].quantized[channel];
+        *byte = (fits[0].quantized[channel] << 4) | fits[1].quantized[channel];
     }
     // bits 7..5 = sub-block 0 codeword, 4..2 = sub-block 1, bit 1 = diff (0 for
     // individual mode), bit 0 = flip.

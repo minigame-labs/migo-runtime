@@ -196,8 +196,16 @@ fn web_process(ctx: &mut crate::context::AudioContext, output: &mut [f32], chann
 fn web_reference_at(input: &[f32], channels: usize, position: f64) -> Reference {
     let frame = position.floor() as usize;
     let phase = position - frame as f64;
-    let mut oracle = Reference::new(input, channels);
-    for _ in 0..frame - usize::from(phase != 0.0) {
+    let mut oracle = if frame == 0 && phase != 0.0 {
+        // The fractional phase step starts one frame before the source. Give
+        // the independent oracle that explicit zero frame rather than wrapping.
+        let mut padded = vec![0.0; channels];
+        padded.extend_from_slice(input);
+        Reference::new(&padded, channels)
+    } else {
+        Reference::new(input, channels)
+    };
+    for _ in 0..frame.saturating_sub(usize::from(phase != 0.0)) {
         oracle.one_ratio(1.0);
     }
     if phase != 0.0 {
@@ -561,6 +569,277 @@ fn webaudio_native_admission_and_late_controls_preserve_unity_and_original_cpu()
         });
     }
 }
+#[test]
+fn webaudio_integer_loops_use_native_pcm_and_keep_the_authoritative_duration() {
+    for channels in [1, 2, 32] {
+        for (case, (start, end, offset, rate, cents, sample_rate)) in [
+            (0, 67, 0.375, 0.7312345f32, -67.1f32, 48000u32),
+            (3, 17, 1.375, 1.33337, 53.25, 44100),
+            (2, 3, 9.0, 0.625, 0.0, 48000),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (_io, ledger, mut ctx) =
+                web_context(channels, 1600 + case as i32 * 64 + channels as i32);
+            let mut input = signal(67, channels);
+            input[end * channels..].fill(1000.0);
+            let buffer = ctx
+                .add_buffer(DecodedAudio {
+                    samples: input.clone(),
+                    sample_rate,
+                    channels: channels as u32,
+                })
+                .unwrap();
+            assert!(ctx.create_buffer_source(46));
+            ctx.connect(46, crate::context::DESTINATION_NODE_ID);
+            assert!(ctx.set_buffer(46, Some(buffer)));
+            assert!(ctx.set_loop(
+                46,
+                true,
+                start as f64 / sample_rate as f64,
+                if case == 0 {
+                    0.0
+                } else {
+                    end as f64 / sample_rate as f64
+                },
+            ));
+            assert!(ctx.set_node_param(46, "playbackRate", rate));
+            assert!(ctx.set_node_param(46, "detune", cents));
+            assert!(ctx.watch_source_ended(46, true));
+            let before = ledger.used_bytes();
+            #[cfg(migo_native_alloc_probe)]
+            let allocated = unsafe { probe_alloc_count() };
+            assert!(ctx.start_source(
+                46,
+                0.0,
+                offset / sample_rate as f64,
+                Some(257.25 / sample_rate as f64),
+            ));
+            assert!(
+                ledger.used_bytes()
+                    >= before + unsafe { migo_src_required_bytes(channels as c_int) },
+                "integer WebAudio loop did not admit its native converter"
+            );
+            #[cfg(migo_native_alloc_probe)]
+            assert_eq!(unsafe { probe_alloc_count() } - allocated, 3);
+
+            // Explicitly unroll the intro and the selected PCM period before
+            // handing the entire independent signal to the raw-C oracle.
+            let mut unrolled = input[..end * channels].to_vec();
+            while unrolled.len() / channels < 12288 {
+                unrolled.extend_from_slice(&input[start * channels..end * channels]);
+            }
+            let initial = if offset >= end as f64 {
+                start as f64
+            } else {
+                offset
+            };
+            let mut reference = web_reference_at(&unrolled, channels, initial);
+            let effective =
+                rate as f64 * 2.0f64.powf(cents as f64 / 1200.0) * (sample_rate as f64 / 48000.0);
+            let (mut actual, mut expected) = (Vec::new(), Vec::new());
+            let (mut elapsed, mut ended, mut turn) = (0.0, 0, 0);
+            while elapsed < 257.25 {
+                let request = [1, 17, 127, 128, 129, 257][turn % 6];
+                turn += 1;
+                let mut output = vec![0.0; request * channels];
+                let before = migo_alloc_probe::thread_counts();
+                #[cfg(migo_native_alloc_probe)]
+                let allocated = unsafe { probe_alloc_count() };
+                web_process(&mut ctx, &mut output, channels);
+                let after = migo_alloc_probe::thread_counts();
+                assert_eq!(
+                    (before.allocations, before.reallocations),
+                    (after.allocations, after.reallocations)
+                );
+                #[cfg(migo_native_alloc_probe)]
+                assert_eq!(unsafe { probe_alloc_count() }, allocated);
+                let mut count = 0;
+                while count < request && elapsed < 257.25 {
+                    expected.extend(
+                        reference
+                            .one_ratio(1.0 / effective)
+                            .into_iter()
+                            .map(|v| 0.0 + v),
+                    );
+                    elapsed += effective;
+                    count += 1;
+                }
+                assert!(output[count * channels..].iter().all(|v| *v == 0.0));
+                actual.extend_from_slice(&output[..count * channels]);
+                ended += ctx.drain_ended().filter(|id| *id == 46).count();
+            }
+            assert_eq!(
+                ended, 1,
+                "native WebAudio loop lost its duration or ended boundary"
+            );
+            assert!(
+                actual
+                    .iter()
+                    .zip(&expected)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "native WebAudio loop PCM disagrees with the unrolled signal"
+            );
+            save(
+                &format!("web-native-loop-{channels}-{case}"),
+                &actual,
+                &expected,
+            );
+        }
+    }
+}
+
+#[test]
+fn webaudio_loop_activation_admission_and_fallbacks_keep_the_existing_owner() {
+    let (_io, ledger, mut ctx) = web_context(2, 1810);
+    let input = signal(67, 2);
+    let buffer = ctx
+        .add_buffer(DecodedAudio {
+            samples: input.clone(),
+            sample_rate: 48000,
+            channels: 2,
+        })
+        .unwrap();
+    assert!(ctx.create_buffer_source(47));
+    ctx.connect(47, crate::context::DESTINATION_NODE_ID);
+    assert!(ctx.set_buffer(47, Some(buffer)));
+    assert!(ctx.set_loop(47, true, 0.0, 0.0));
+    #[cfg(migo_native_alloc_probe)]
+    let allocated = unsafe { probe_alloc_count() };
+    assert!(ctx.start_source(47, 0.0, 0.0, None));
+    // Traverse far more than the native history window before activation.
+    let unity_frames = 8193;
+    web_process(&mut ctx, &mut vec![0.0; unity_frames * 2], 2);
+    #[cfg(migo_native_alloc_probe)]
+    assert_eq!(
+        unsafe { probe_alloc_count() },
+        allocated,
+        "unity loop constructed native state"
+    );
+    let deny = ledger
+        .try_reserve((32 << 20) - ledger.used_bytes(), "loop activation peer")
+        .unwrap();
+    assert!(
+        !ctx.set_playback_rate(47, 0.7312345),
+        "loop rate bypassed native admission"
+    );
+    let mut held = [0.0; 34];
+    ctx.process(&mut held);
+    let expected: Vec<_> = (unity_frames..unity_frames + 17)
+        .flat_map(|n| {
+            input[(n % 67) * 2..(n % 67 + 1) * 2]
+                .iter()
+                .map(|v| 0.0 + v)
+        })
+        .collect();
+    assert_eq!(
+        held.as_slice(),
+        expected,
+        "refused loop rate changed its PCM or clock"
+    );
+    drop(deny);
+    assert!(ctx.set_playback_rate(47, 0.7312345));
+    #[cfg(migo_native_alloc_probe)]
+    assert_eq!(unsafe { probe_alloc_count() } - allocated, 3);
+    let unrolled = input.repeat(256);
+    let mut reference = web_reference_at(&unrolled, 2, (unity_frames + 17) as f64);
+    for (part, frames) in [(0, 513), (1, 129)] {
+        if part == 1 {
+            assert!(ctx.set_loop(47, true, 0.0, 0.0));
+        }
+        let mut output = vec![0.0; frames * 2];
+        let expected: Vec<_> = (0..frames)
+            .flat_map(|_| reference.one_ratio(1.0 / 0.7312345f32 as f64))
+            .map(|v| 0.0 + v)
+            .collect();
+        web_process(&mut ctx, &mut output, 2);
+        assert!(
+            output
+                .iter()
+                .zip(&expected)
+                .all(|(a, b)| a.to_bits() == b.to_bits()),
+            "loop activation or repeated setting lost real past or filter phase"
+        );
+        save(&format!("web-loop-activation-{part}"), &output, &expected);
+    }
+    let now = ctx.current_time();
+    #[cfg(migo_native_alloc_probe)]
+    let automation_allocated = unsafe { probe_alloc_count() };
+    assert!(ctx.param_set_value_at_time(47, "playbackRate", 1.33337, now + 31.0 / 48000.0));
+    assert!(ctx.param_set_value_at_time(47, "detune", -600.0, now + 129.0 / 48000.0));
+    // Events inside a quantum take effect at the next k-rate block boundary.
+    for (block, rate) in [
+        0.7312345f32 as f64,
+        1.33337f32 as f64,
+        1.33337f32 as f64 * 2.0f64.powf(-600.0 / 1200.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let expected: Vec<_> = (0..128)
+            .flat_map(|_| reference.one_ratio(1.0 / rate))
+            .map(|v| 0.0 + v)
+            .collect();
+        let mut output = [0.0; 256];
+        let before = migo_alloc_probe::thread_counts();
+        ctx.process(&mut output);
+        let after = migo_alloc_probe::thread_counts();
+        assert_eq!(
+            (before.allocations, before.reallocations),
+            (after.allocations, after.reallocations)
+        );
+        assert!(
+            output
+                .iter()
+                .zip(&expected)
+                .all(|(a, b)| a.to_bits() == b.to_bits()),
+            "native loop automation lost k-rate timing or continuous history"
+        );
+        save(&format!("web-loop-automation-{block}"), &output, &expected);
+    }
+    #[cfg(migo_native_alloc_probe)]
+    assert_eq!(unsafe { probe_alloc_count() }, automation_allocated);
+    #[cfg(migo_native_alloc_probe)]
+    let allocated = unsafe { probe_alloc_count() };
+    let deny = ledger
+        .try_reserve((32 << 20) - ledger.used_bytes(), "retained loop peer")
+        .unwrap();
+    assert!(ctx.set_loop(47, true, 3.25 / 48000.0, 17.75 / 48000.0));
+    assert!(ctx.set_playback_rate(47, 0.25));
+    ctx.process(&mut [0.0; 34]);
+    assert!(ctx.set_loop(47, true, 3.0 / 48000.0, 17.0 / 48000.0));
+    assert!(ctx.set_playback_rate(47, 1.33337));
+    ctx.process(&mut [0.0; 34]);
+    assert!(ctx.set_loop(47, false, 0.0, 0.0));
+    ctx.process(&mut [0.0; 34]);
+    #[cfg(migo_native_alloc_probe)]
+    assert_eq!(
+        unsafe { probe_alloc_count() },
+        allocated,
+        "loop controls reconstructed an existing native owner"
+    );
+    drop(deny);
+
+    // A fractional loop can run without a native owner under a full ledger.
+    // Changing it to an exact integer period must admit before changing bounds.
+    assert!(ctx.create_buffer_source(48));
+    ctx.connect(48, crate::context::DESTINATION_NODE_ID);
+    assert!(ctx.set_buffer(48, Some(buffer)));
+    assert!(ctx.set_loop(48, true, 3.25 / 48000.0, 17.75 / 48000.0));
+    assert!(ctx.set_playback_rate(48, 0.7312345));
+    assert!(ctx.start_source(48, 0.0, 0.0, None));
+    let deny = ledger
+        .try_reserve((32 << 20) - ledger.used_bytes(), "loop geometry peer")
+        .unwrap();
+    assert!(
+        !ctx.set_loop(48, true, 3.0 / 48000.0, 17.0 / 48000.0),
+        "loop geometry bypassed native admission"
+    );
+    drop(deny);
+    assert!(ctx.set_loop(48, true, 3.0 / 48000.0, 17.0 / 48000.0));
+}
+
 fn stream_pcm(
     tx: &tokio::sync::mpsc::Sender<StreamMsg>,
     pool: &mut crate::streaming::PcmPool,

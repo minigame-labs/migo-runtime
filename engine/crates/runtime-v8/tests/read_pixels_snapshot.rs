@@ -28,9 +28,27 @@ async fn official_snapshot_read_pixels_preserves_destination_offsets() {
         "snapshot-read-pixels-offsets",
         include_str!("fixtures/read_pixels_offset.js"),
     );
+    let encoding = runtime.execute_script(
+        "snapshot-native-image-encoding",
+        r#"
+        {
+          const pixels = new Uint8Array([99, 200, 100, 50, 128, 99]).subarray(1, 5);
+          const encode = Deno.core.ops.op_encode_canvas_image;
+          const png = encode(pixels, 1, 1, false, 92);
+          const jpeg = encode(pixels, 1, 1, true, 92);
+          if (png[0] !== 137 || png[1] !== 80 || jpeg[0] !== 255 || jpeg[1] !== 216)
+            throw new Error('restored image encoder returned an invalid signature');
+          let rejected = false;
+          try { encode(pixels.subarray(0, 3), 1, 1, false, 92); }
+          catch (e) { rejected = e.message.includes('InvalidArgument'); }
+          if (!rejected) throw new Error('restored image encoder accepted incomplete pixels');
+        }
+        "#,
+    );
     drop(runtime);
     let lengths = responder.join().unwrap();
     result.unwrap();
+    encoding.unwrap();
     responder::assert_lengths(lengths);
 }
 

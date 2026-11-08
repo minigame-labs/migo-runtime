@@ -5,9 +5,8 @@
 //! The underlying backend is a single WAL-mode SQLite database per
 //! game storage directory, created lazily at `<storage_dir>/storage.db` on first
 //! access.  See [`crate::kv_store`] for the schema and concurrency
-//! model; everything here is a thin wrapper that also routes work
-//! through the `IoScheduler` so the host thread never blocks on
-//! disk.
+//! model. Async work uses the existing `IoScheduler`; synchronous entry points
+//! run inline and can wait for database locks, commit sync and checkpoints.
 //!
 //! ## Migration from the previous file-per-key layout
 //!
@@ -61,19 +60,19 @@ impl From<KvInfo> for StorageInfo {
 // Per-session KvStore handle cache
 // ---------------------------------------------------------------------------
 //
-// Opening SQLite is ~sub-ms but still involves syscalls and WAL
-// setup; we keep a bounded LRU of handles per storage directory. The
+// Opening SQLite involves filesystem IO, WAL setup and potentially a busy
+// wait; we keep a bounded LRU of handles per storage directory. The
 // cache is keyed by absolute path so different `HostOpState` instances
 // (e.g. separate app ids in a test harness) get separate DBs.
 //
-// The per-handle `KvStore` is itself `Clone` + `Sync`, so `Mutex`
-// contention is normally limited to cache bookkeeping. A cold SQLite open
-// intentionally keeps the lock: concurrent first opens race WAL setup and can
-// fail with `database is locked`.
+// A directory's slot serializes first opens without holding the cache mutex.
+// Different directories can proceed while SQLite waits on one database.
+// If all slots are opening or in use, reject the new directory: an uncached
+// connection could create a second owner of the same cached quota totals.
 const MAX_CACHED_STORES: usize = 64;
 
 struct StoreEntry {
-    store: KvStore,
+    store: Arc<Mutex<Option<KvStore>>>,
     last_used: u64,
 }
 
@@ -87,59 +86,62 @@ fn next_store_tick() -> u64 {
 }
 
 fn store_for(dir: &Path, quota_bytes: u64) -> Result<KvStore, EngineError> {
+    store_for_in(&STORES, dir, quota_bytes)
+}
+
+fn store_for_in(
+    stores: &Mutex<HashMap<PathBuf, StoreEntry>>,
+    dir: &Path,
+    quota_bytes: u64,
+) -> Result<KvStore, EngineError> {
     let key = dir.to_path_buf();
-    // The lock is held across `open`, not released around it.
-    //
-    // It used to be released, on the reasoning that two callers both reaching
-    // `open` was harmless because "opening the same file twice is cheap". It is
-    // not: `KvStore::open` sets `journal_mode=WAL`, and that pragma needs a lock
-    // no other connection holds. Ten `setStorage` calls issued together -- which
-    // is ordinary content code -- arrive on ten scheduler threads, all miss this
-    // cache because the file does not exist yet, and all open at once; one loses
-    // and the write fails with `kv: pragma journal_mode: database is locked`.
-    // Reproduced at roughly one run in five before this change.
-    //
-    // Serialising here costs one brief hold per storage directory per process,
-    // on a path that runs once.
-    let mut map = STORES.lock();
-    if let Some(entry) = map.get_mut(&key) {
-        entry.last_used = next_store_tick();
-        return Ok(entry.store.clone());
-    }
-    let new_kv = KvStore::open(dir.join("storage.db"), quota_bytes)?;
-
-    // Never evict an in-use handle. If every cached handle is active,
-    // leave this one uncached; its Arc is then released with the caller
-    // instead of growing the process-lifetime path/connection set.
-    let evicted = if map.len() >= MAX_CACHED_STORES {
-        let victim = map
-            .iter()
-            .filter(|(_, entry)| entry.store.strong_count() == 1)
-            .min_by_key(|(_, entry)| entry.last_used)
-            .map(|(path, _)| path.clone());
-        match victim {
-            Some(path) => map.remove(&path),
-            None => {
-                drop(map);
-                return Ok(new_kv);
-            }
+    let (slot, evicted) = {
+        let mut map = stores.lock();
+        if let Some(entry) = map.get_mut(&key) {
+            entry.last_used = next_store_tick();
+            (entry.store.clone(), None)
+        } else {
+            let evicted = if map.len() >= MAX_CACHED_STORES {
+                let victim = map
+                    .iter()
+                    .filter(|(_, entry)| {
+                        Arc::strong_count(&entry.store) == 1
+                            && entry.store.try_lock().is_some_and(|slot| {
+                                slot.as_ref().is_none_or(|store| store.strong_count() == 1)
+                            })
+                    })
+                    .min_by_key(|(_, entry)| entry.last_used)
+                    .map(|(path, _)| path.clone());
+                let path = victim.ok_or_else(|| {
+                    EngineError::new(shared::error::ErrorCode::ExceedMaxConcurrentFdLimit)
+                        .with_msg("storage handle limit reached; retry after an active operation")
+                })?;
+                map.remove(&path)
+            } else {
+                None
+            };
+            let slot = Arc::new(Mutex::new(None));
+            map.insert(
+                key,
+                StoreEntry {
+                    store: slot.clone(),
+                    last_used: next_store_tick(),
+                },
+            );
+            (slot, evicted)
         }
-    } else {
-        None
     };
-
-    map.insert(
-        key,
-        StoreEntry {
-            store: new_kv.clone(),
-            last_used: next_store_tick(),
-        },
-    );
-    drop(map);
-    // Closing an evicted SQLite handle must not happen while the global
-    // cache mutex is held. In the usual case this is just an Arc drop.
+    // SQLite close/checkpoint and cold open must both run outside the cache
+    // mutex. Arc pins keep opening/waiting slots out of the eviction set.
     drop(evicted);
-    Ok(new_kv)
+    let mut ready = slot.lock();
+    if let Some(store) = ready.as_ref() {
+        return Ok(store.clone());
+    }
+    let store = KvStore::open(dir.join("storage.db"), quota_bytes)?;
+    // Keep a failed open empty so a waiting/later caller can retry.
+    *ready = Some(store.clone());
+    Ok(store)
 }
 
 // No test-only cache reset exists on purpose. Every test keys off its own
@@ -427,6 +429,132 @@ mod tests {
     }
 
     #[test]
+    fn a_blocked_cold_open_does_not_hold_up_other_directories() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        // A private cache exercises the production function without clearing
+        // the process-wide cache used by parallel tests.
+        let stores = Mutex::new(HashMap::new());
+        let blocked_dir = fresh_dir();
+        let warm_dir = fresh_dir();
+        let new_dir = fresh_dir();
+        let warm = store_for_in(&stores, warm_dir.path(), QUOTA).unwrap();
+        warm.set("seed", "stable").unwrap();
+        let blocker = rusqlite::Connection::open(blocked_dir.path().join("storage.db")).unwrap();
+        blocker
+            .execute_batch("CREATE TABLE blocker(v); BEGIN EXCLUSIVE")
+            .unwrap();
+
+        std::thread::scope(|scope| {
+            let cold = scope.spawn(|| store_for_in(&stores, blocked_dir.path(), QUOTA));
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let opening = loop {
+                if let Some(map) = stores.try_lock() {
+                    if let Some(entry) = map.get(blocked_dir.path()) {
+                        if entry.store.try_lock().is_none() {
+                            break true;
+                        }
+                    }
+                }
+                if Instant::now() >= deadline {
+                    break false;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            };
+            let (send, receive) = mpsc::channel();
+            let stores = &stores;
+            let warm_path = warm_dir.path();
+            let new_path = new_dir.path();
+            let other = scope.spawn(move || {
+                let started = Instant::now();
+                let value = store_for_in(stores, warm_path, QUOTA)
+                    .unwrap()
+                    .get("seed")
+                    .unwrap();
+                store_for_in(stores, new_path, QUOTA)
+                    .unwrap()
+                    .set("new", "value")
+                    .unwrap();
+                send.send((started.elapsed(), value)).unwrap();
+            });
+            // This timeout guards a lock dependency, not a throughput target:
+            // the blocked database is deliberately released only afterwards.
+            let progress = receive.recv_timeout(Duration::from_secs(2));
+            blocker.execute_batch("ROLLBACK").unwrap();
+            let cold_result = cold.join().unwrap();
+            other.join().unwrap();
+            assert!(opening, "cold open must not hold the cache mutex");
+            let (elapsed, value) = progress.expect("other directories must finish before unlock");
+            assert_eq!(value.as_deref(), Some("stable"));
+            cold_result.unwrap().set("after", "unlock").unwrap();
+            eprintln!("warm read + unrelated cold write before SQLite unlock: {elapsed:?}");
+        });
+    }
+
+    #[test]
+    fn saturated_cache_does_not_create_unshared_quota_owners() {
+        let stores = Mutex::new(HashMap::new());
+        let dirs: Vec<_> = (0..MAX_CACHED_STORES).map(|_| fresh_dir()).collect();
+        let mut active: Vec<_> = dirs
+            .iter()
+            .map(|dir| store_for_in(&stores, dir.path(), QUOTA).unwrap())
+            .collect();
+        let overflow = fresh_dir();
+        let value = "x".repeat(50);
+        match store_for_in(&stores, overflow.path(), 150) {
+            Err(error) => {
+                assert_eq!(
+                    error.code,
+                    shared::error::ErrorCode::ExceedMaxConcurrentFdLimit
+                );
+                assert!(!overflow.path().join("storage.db").exists());
+            }
+            Ok(first) => {
+                // A second uncached connection would also load a zero total,
+                // allowing two 115-byte charges into a 150-byte store.
+                let second = store_for_in(&stores, overflow.path(), 150).unwrap();
+                first.set("a", &value).unwrap();
+                assert!(
+                    second.set("b", &value).is_err(),
+                    "an overflow open must not bypass the store quota"
+                );
+            }
+        }
+        drop(active.pop());
+        let first = store_for_in(&stores, overflow.path(), 150).unwrap();
+        let second = store_for_in(&stores, overflow.path(), 150).unwrap();
+        first.set("a", &value).unwrap();
+        assert!(second.set("b", &value).is_err());
+        assert_eq!(second.info().unwrap().current_bytes, 115);
+        assert_eq!(second.info().unwrap().keys, vec!["a"]);
+        assert_eq!(stores.lock().len(), MAX_CACHED_STORES);
+    }
+
+    #[test]
+    fn failed_cold_open_can_be_retried_in_the_same_slot() {
+        let stores = Mutex::new(HashMap::new());
+        let dir = fresh_dir();
+        let db = dir.path().join("storage.db");
+        std::fs::create_dir(&db).unwrap();
+        assert!(store_for_in(&stores, dir.path(), QUOTA).is_err());
+        std::fs::remove_dir(&db).unwrap();
+        store_for_in(&stores, dir.path(), QUOTA)
+            .unwrap()
+            .set("retry", "works")
+            .unwrap();
+        assert_eq!(
+            store_for_in(&stores, dir.path(), QUOTA)
+                .unwrap()
+                .get("retry")
+                .unwrap()
+                .as_deref(),
+            Some("works")
+        );
+        assert_eq!(stores.lock().len(), 1);
+    }
+
+    #[test]
     fn set_get_remove_roundtrip() {
         let dir = fresh_dir();
         storage_set(dir.path(), "k", "v", QUOTA).unwrap();
@@ -552,10 +680,8 @@ mod tests {
 
     // --- Lightweight benchmarks (run with `cargo test -- --ignored`) ---
     //
-    // Not real criterion benches; just a sanity check that batch writes
-    // beat per-key writes by at least an order of magnitude. Numbers
-    // are illustrative (host filesystem, debug/release vary), but the
-    // *ratio* is the property we care about regressing on.
+    // Both paths use the same durable commit policy. Report host observations
+    // without a fixed timing/ratio assertion: filesystem sync latency varies.
 
     const BENCH_QUOTA: u64 = 32 * 1024 * 1024;
 
@@ -570,14 +696,6 @@ mod tests {
         }
         let elapsed = start.elapsed();
         eprintln!("sequential 1000×200B set: {:.3?}", elapsed);
-        // Floor: anything over a second on a modern host suggests a
-        // regression back to per-op fsync. 10s is a very conservative
-        // upper bound that still flags pathological slowdowns.
-        assert!(
-            elapsed < std::time::Duration::from_secs(10),
-            "sequential set way too slow: {:?}",
-            elapsed
-        );
     }
 
     #[test]
@@ -593,12 +711,5 @@ mod tests {
         storage_set_batch(dir.path(), &items, BENCH_QUOTA).unwrap();
         let elapsed = start.elapsed();
         eprintln!("batch 1000×200B set: {:.3?}", elapsed);
-        // A single WAL transaction of 1000 small upserts should be
-        // comfortably under 100ms on any reasonable filesystem.
-        assert!(
-            elapsed < std::time::Duration::from_secs(1),
-            "batch set way too slow: {:?}",
-            elapsed
-        );
     }
 }

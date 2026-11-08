@@ -1,14 +1,14 @@
 //! Initialize the upstream verifier with an application Context. The raw JNI
 //! boundary keeps the SDK's existing JNI wrappers out of the verifier's API.
-use jni::JNIEnv;
+use jni::{Env, jni_sig, jni_str};
 
-pub(super) fn init(env: &mut JNIEnv<'_>) -> Result<(), String> {
+pub(super) fn init(env: &mut Env<'_>) -> Result<(), String> {
     let result = (|| {
         let context = env
             .call_static_method(
-                "com/migo/runtime/internal/AppContext",
-                "getOrNull",
-                "()Landroid/content/Context;",
+                jni_str!("com/migo/runtime/internal/AppContext"),
+                jni_str!("getOrNull"),
+                jni_sig!("()Landroid/content/Context;"),
                 &[],
             )
             .and_then(|value| value.l())
@@ -18,7 +18,7 @@ pub(super) fn init(env: &mut JNIEnv<'_>) -> Result<(), String> {
             // the application Context/class loader into owned global refs.
             unsafe {
                 migo_services::network::tls::init_android(
-                    env.get_native_interface().cast(),
+                    env.get_raw().cast(),
                     context.as_raw().cast(),
                 )
             }?;
@@ -27,8 +27,8 @@ pub(super) fn init(env: &mut JNIEnv<'_>) -> Result<(), String> {
         // tlsTrust=mozilla. Platform configuration then fails before connecting.
         Ok(())
     })();
-    if result.is_err() && env.exception_check().unwrap_or(false) {
-        let _ = env.exception_clear();
+    if result.is_err() && env.exception_check() {
+        env.exception_clear();
     }
     result
 }

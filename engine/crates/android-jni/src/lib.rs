@@ -15,7 +15,7 @@
 #[cfg(target_os = "android")]
 mod android_entry {
     use jni::JavaVM;
-    use jni::sys::jint;
+    use jni::sys::{JNI_ERR, jint};
     use std::ffi::c_void;
 
     /// Called by the Android runtime when `System.loadLibrary("migo")` runs.
@@ -24,7 +24,16 @@ mod android_entry {
     /// Invoked by the JVM with a valid `JavaVM`; the signature is fixed by the
     /// JNI specification.
     #[unsafe(no_mangle)]
-    pub extern "system" fn JNI_OnLoad(vm: JavaVM, _reserved: *mut c_void) -> jint {
+    pub unsafe extern "system" fn JNI_OnLoad(
+        vm: *mut jni::sys::JavaVM,
+        _reserved: *mut c_void,
+    ) -> jint {
+        if vm.is_null() {
+            return JNI_ERR;
+        }
+        // SAFETY: the JVM supplies a live VM pointer at this entry point.
+        // from_raw also initializes jni-rs's shared VM state.
+        let vm = unsafe { JavaVM::from_raw(vm) };
         platform::android::jni::on_load(vm)
     }
 }

@@ -459,13 +459,14 @@
       }
     },
     "host_v8_web": {
-      "reason": "Timers and offscreen canvases. Time comes from WebContent's own monotonic clock, which is the clock content's frame timestamps are compared with; canvas lifetime rides the stream so a canvas created mid-frame exists for the draws after it.",
+      "reason": "Timers and offscreen canvases. Time comes from WebContent's own monotonic clock, which is the clock content's frame timestamps are compared with; canvas lifetime rides the stream so a canvas created mid-frame exists for the draws after it. Image encoding is local: V8 uses Rust encoders, while WebContent returns null from the native encoder op to select the shared JavaScript codec.",
       "ops": {
         "op_create_offscreen_canvas": {
           "lane": "stream",
           "local_answer": "the canvas id, allocated by the producer as GL resource ids already are"
         },
         "op_destroy_canvas": "stream",
+        "op_encode_canvas_image": "local",
         "op_get_canvas_info": "local",
         "op_now": "local",
         "op_now_us": "local",

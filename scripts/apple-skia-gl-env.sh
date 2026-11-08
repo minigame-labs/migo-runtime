@@ -181,19 +181,48 @@ export SKIA_GN_ARGS="${SKIA_GN_ARGS:+$SKIA_GN_ARGS }skia_gl_standard=\"\""
 # Named rather than defaulted to "all of them", because a sourced file with no
 # arguments sees its CALLER's positional parameters, and a build script's own
 # arguments are not triples. A triple the lock does not have is refused.
-if [ -n "${MIGO_SKIA_FROM_SOURCE:-}" ]; then
+_migo_skia_scripts="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+if ! _migo_skia_archive_mode="$(python3 - "$_migo_skia_scripts/.." <<'PY'
+import json, pathlib, sys, tomllib
+root = pathlib.Path(sys.argv[1])
+packages = tomllib.loads((root / 'engine/Cargo.lock').read_text())['package']
+selected = [p['version'] for p in packages if p['name'] == 'skia-bindings']
+assert len(selected) == 1, 'expected one selected skia-bindings version'
+lock = json.loads((root / 'contracts/artifact-manifest/apple-skia.lock.json').read_text())
+print('pinned' if lock['source']['crate_version'] == selected[0] else 'source')
+PY
+)"; then
+    unset _migo_skia_scripts _migo_skia_archive_mode
+    return 1 2>/dev/null || exit 1
+fi
+
+# A version upgrade has no matching macOS archive until the native recipe runs.
+# Keep the old published lock immutable and build the selected source with the
+# ES correction. A matching lock's network/integrity failures still fail below.
+if [ -z "${MIGO_SKIA_FROM_SOURCE:-}" ] && [ "$#" -eq 0 ]; then
+    echo "apple-skia-gl-env.sh: name the target triples, e.g." >&2
+    echo "  . scripts/apple-skia-gl-env.sh aarch64-apple-darwin" >&2
+    return 1 2>/dev/null || exit 1
+fi
+for _migo_skia_target in "$@"; do
+    case "$_migo_skia_target" in
+        aarch64-apple-darwin|x86_64-apple-darwin) ;;
+        *) echo "apple-skia-gl-env.sh: unsupported macOS target: $_migo_skia_target" >&2
+           return 1 2>/dev/null || exit 1 ;;
+    esac
+done
+unset _migo_skia_target
+if [ -n "${MIGO_SKIA_FROM_SOURCE:-}" ] || [ "$_migo_skia_archive_mode" = source ]; then
     export FORCE_SKIA_BUILD=1
-else
-    if [ "$#" -eq 0 ]; then
-        echo "apple-skia-gl-env.sh: name the target triples, e.g." >&2
-        echo "  . scripts/apple-skia-gl-env.sh aarch64-apple-darwin" >&2
-        return 1 2>/dev/null || exit 1
+    unset SKIA_BINARIES_URL
+    if [ "$_migo_skia_archive_mode" = source ]; then
+        echo "apple-skia-gl-env.sh: no matching version in the published lock; building selected Skia from source." >&2
     fi
+else
     # Not a fallback to a source build when this fails. An archive that does not
     # match the lock is an integrity failure, and a network that cannot reach the
     # release is a machine that should say so; `MIGO_SKIA_FROM_SOURCE=1` is the
     # deliberate way to build without it.
-    _migo_skia_scripts="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
     if ! SKIA_BINARIES_URL="$(python3 "$_migo_skia_scripts/materialise-apple-skia.py" "$@")"; then
         unset _migo_skia_scripts
         unset SKIA_BINARIES_URL
@@ -201,6 +230,6 @@ else
         echo "  Set MIGO_SKIA_FROM_SOURCE=1 to build Skia from source instead (8-9 minutes a target)." >&2
         return 1 2>/dev/null || exit 1
     fi
-    unset _migo_skia_scripts
     export SKIA_BINARIES_URL
 fi
+unset _migo_skia_scripts _migo_skia_archive_mode

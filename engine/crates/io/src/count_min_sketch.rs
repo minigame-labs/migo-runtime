@@ -164,7 +164,7 @@ impl CountMinSketch {
         // Carry forward half the previous sample count to avoid
         // resetting the aging clock to zero each cycle — matches
         // Caffeine's "doorkeeper decay" semantics.
-        self.sample_count = self.sample_count / 2;
+        self.sample_count /= 2;
     }
 
     /// Wipe everything. Used by `ImageCache::clear` when the host

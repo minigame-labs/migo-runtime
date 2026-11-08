@@ -17,7 +17,7 @@
 //! [`load_derived`]; this is portable (no `utimensat` dependency) and
 //! close enough for LRU purposes.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -52,10 +52,9 @@ pub struct DerivedKey {
 /// A sidecar's validity depends on decoder behaviour, not just on the key
 /// fields: change how an image decodes, how it resizes, or which colour space
 /// it lands in, and every existing sidecar is now wrong while still matching
-/// its key perfectly. [`DERIVED_VERSION`] guards the *file format*, so it does
-/// not catch this, and relying on someone remembering to bump it for a
-/// semantic change is how you ship corrupted textures that vanish the moment a
-/// user clears their cache — the least diagnosable bug shape there is.
+/// its key perfectly. The SDK namespace invalidates these across releases;
+/// [`DERIVED_VERSION`] also guards persisted normalization changes within the
+/// same package version (for example, newly applying PNG/WebP EXIF).
 ///
 /// Folding the version into the filename makes it automatic: a new build looks
 /// for names the old build never wrote, so it re-transcodes once and
@@ -143,7 +142,9 @@ impl DerivedKey {
 // File format:
 // [MDRV magic: 4][version: 1][key_len: 2][key_bytes: key_len][kind: 1][width: 4][height: 4][vk_format: 4][data_len: 4][payload: data_len]
 const DERIVED_MAGIC: [u8; 4] = *b"MDRV";
-const DERIVED_VERSION: u8 = 4; // Bumped from 3: compressed entries carry a mip-level table.
+// Versions 4/5 may have ignored EXIF/ICC. Rebuild those sidecars even when
+// the asset, SDK package version and serialized layout are unchanged.
+const DERIVED_VERSION: u8 = 6;
 const KIND_RGBA: u8 = 0;
 const KIND_COMPRESSED: u8 = 1;
 
@@ -154,15 +155,6 @@ pub fn derived_cache_dir(game_cache_dir: &Path) -> PathBuf {
 /// Maximum derived cache file size we'll read: 256 MB.
 /// Prevents a poisoned/oversized file from consuming all memory.
 const MAX_DERIVED_FILE_SIZE: u64 = 256 * 1024 * 1024;
-
-/// Files larger than this threshold are read via mmap instead of
-/// `std::fs::read`.  Rationale: the tail of the distribution
-/// (high-res textures, pre-composited atlases) pays two full
-/// payload copies on the old path — one for the disk buffer and
-/// one for `Arc<Vec<u8>>` — and the first is avoidable with mmap.
-/// For small entries the mmap syscall pair is pure overhead, so
-/// we stay on `fs::read` up to 1 MiB.
-const MMAP_THRESHOLD_BYTES: u64 = 1024 * 1024;
 
 /// Default directory-wide budget for derived cache. Chosen so the
 /// cache comfortably holds a full session's warm textures but never
@@ -179,26 +171,17 @@ pub fn load_derived(game_cache_dir: &Path, key: &DerivedKey) -> Option<DecodedIm
     let dir = derived_cache_dir(game_cache_dir);
     let path = dir.join(format!("{}.bin", key.hash()));
 
-    // Check file size BEFORE reading to prevent large-file poisoning.
-    let meta = std::fs::metadata(&path).ok()?;
+    // Inspect and read the same object. A path-based size check followed by
+    // another open could read an unbounded replacement. Cache files are mutable;
+    // their read-only handles do not satisfy mmap's immutability contract.
+    let file = std::fs::File::open(&path).ok()?;
+    let meta = file.metadata().ok()?;
     let size = meta.len();
-    if size > MAX_DERIVED_FILE_SIZE {
+    if !meta.is_file() || size > MAX_DERIVED_FILE_SIZE {
         let _ = std::fs::remove_file(&path);
         return None;
     }
-
-    // Two read paths — both produce `&[u8]` for the shared parser.
-    // The mmap path avoids the intermediate `Vec<u8>` the kernel
-    // would otherwise copy into; the payload copy inside
-    // `parse_derived_entry` still happens but costs one allocation
-    // instead of two at the peak.
-    let parsed = if size > MMAP_THRESHOLD_BYTES {
-        let mapped = crate::mmap_reader::mmap_file_bytes(&path).ok()?;
-        parse_derived_entry(mapped.as_slice(), key)
-    } else {
-        let data = std::fs::read(&path).ok()?;
-        parse_derived_entry(&data, key)
-    };
+    let parsed = parse_derived_entry(file.take(size), key);
     match parsed {
         Some(img) => {
             // Approximate LRU: successful reads bump mtime so the
@@ -217,19 +200,10 @@ pub fn load_derived(game_cache_dir: &Path, key: &DerivedKey) -> Option<DecodedIm
 }
 
 fn touch_file_mtime(path: &Path) {
-    // Opening O_RDWR would break in a read-only mount; `File::open`
-    // then `set_len(len)` with `seek=0` is a portable no-op write
-    // that bumps mtime on any Unix filesystem Android cares about.
-    // Swallow all failures — mtime touch is a hint, not correctness.
-    use std::fs::OpenOptions;
-    if let Ok(f) = OpenOptions::new().append(true).open(path) {
-        // Re-opening for append + immediately dropping is enough on
-        // Linux to bump ctime, but we need mtime — so we explicitly
-        // call `set_len` to the existing length, which is a write of
-        // zero bytes and always updates mtime.
-        if let Ok(meta) = f.metadata() {
-            let _ = f.set_len(meta.len());
-        }
+    // Best-effort LRU metadata only. Never use set_len to touch mtime: a
+    // concurrent writer can change the length after the metadata query.
+    if let Ok(file) = std::fs::OpenOptions::new().write(true).open(path) {
+        let _ = file.set_modified(SystemTime::now());
     }
 }
 
@@ -277,95 +251,80 @@ pub fn schedule_save_derived(
         });
 }
 
-fn parse_derived_entry(data: &[u8], expected_key: &DerivedKey) -> Option<DecodedImage> {
-    // Magic + version.
-    if data.len() < 7 {
+fn parse_derived_entry(
+    mut input: std::io::Take<std::fs::File>,
+    expected_key: &DerivedKey,
+) -> Option<DecodedImage> {
+    let mut prefix = [0; 7];
+    input.read_exact(&mut prefix).ok()?;
+    if prefix[..4] != DERIVED_MAGIC || prefix[4] != DERIVED_VERSION {
         return None;
     }
-    if data[0..4] != DERIVED_MAGIC || data[4] != DERIVED_VERSION {
+    let key_len = u16::from_le_bytes(prefix[5..7].try_into().ok()?) as usize;
+    {
+        let mut key_bytes = Vec::new();
+        key_bytes.try_reserve_exact(key_len).ok()?;
+        key_bytes.resize(key_len, 0);
+        input.read_exact(&mut key_bytes).ok()?;
+        let (key, consumed) = DerivedKey::from_bytes(&key_bytes)?;
+        if key != *expected_key || consumed != key_len {
+            return None;
+        }
+    }
+    let mut header = [0; 17];
+    input.read_exact(&mut header).ok()?;
+    let kind = header[0];
+    let width = u32::from_le_bytes(header[1..5].try_into().ok()?);
+    let height = u32::from_le_bytes(header[5..9].try_into().ok()?);
+    let vk_format = u32::from_le_bytes(header[9..13].try_into().ok()?);
+    let data_len = u32::from_le_bytes(header[13..17].try_into().ok()?) as usize;
+    if data_len as u64 > input.limit() {
         return None;
     }
-
-    // Embedded key.
-    let key_len = u16::from_le_bytes(data[5..7].try_into().ok()?) as usize;
-    let key_start = 7;
-    if data.len() < key_start + key_len {
-        return None;
-    }
-    let (embedded_key, _) = DerivedKey::from_bytes(&data[key_start..key_start + key_len])?;
-
-    // Verify key matches — prevents collision and stale cache.
-    if embedded_key != *expected_key {
-        return None;
-    }
-
-    // Image data follows key.
-    let img_start = key_start + key_len;
-    if data.len() < img_start + 17 {
-        return None;
-    } // kind(1) + w(4) + h(4) + vk(4) + dlen(4)
-
-    let kind = data[img_start];
-    let width = u32::from_le_bytes(data[img_start + 1..img_start + 5].try_into().ok()?);
-    let height = u32::from_le_bytes(data[img_start + 5..img_start + 9].try_into().ok()?);
-    let vk_format = u32::from_le_bytes(data[img_start + 9..img_start + 13].try_into().ok()?);
-    let data_len =
-        u32::from_le_bytes(data[img_start + 13..img_start + 17].try_into().ok()?) as usize;
-
-    let payload_start = img_start + 17;
-    if data.len() < payload_start + data_len {
-        return None;
-    }
-    let payload = &data[payload_start..payload_start + data_len];
-
     match kind {
         KIND_RGBA => {
-            // Validate RGBA invariant.
             let expected_len = (width as usize)
                 .checked_mul(height as usize)?
                 .checked_mul(4)?;
-            if payload.len() != expected_len {
+            if data_len != expected_len || data_len as u64 != input.limit() {
                 return None;
             }
-            Some(DecodedImage::Rgba(NormalizedImage {
-                width,
-                height,
-                rgba: Arc::new(payload.to_vec()),
-            }))
         }
         KIND_COMPRESSED => {
-            // The level table follows the payload: count, then one length per
-            // level. `from_concatenated` rejects a table that does not account
-            // for exactly the payload, so a truncated or corrupted entry is a
-            // cache miss rather than a texture with overlapping levels.
-            let table_start = payload_start + data_len;
-            if data.len() < table_start + 4 {
+            if input.limit() - (data_len as u64) < 4 {
                 return None;
             }
-            let level_count =
-                u32::from_le_bytes(data[table_start..table_start + 4].try_into().ok()?) as usize;
-            let lengths_end = table_start
-                .checked_add(4)?
-                .checked_add(level_count.checked_mul(4)?)?;
-            if data.len() < lengths_end {
-                return None;
-            }
-            let mut level_lengths = Vec::with_capacity(level_count);
-            for i in 0..level_count {
-                let at = table_start + 4 + i * 4;
-                level_lengths.push(u32::from_le_bytes(data[at..at + 4].try_into().ok()?));
-            }
-            CompressedImage::from_concatenated(
-                width,
-                height,
-                vk_format,
-                Arc::new(payload.to_vec()),
-                level_lengths,
-            )
-            .map(DecodedImage::Compressed)
         }
-        _ => None,
+        _ => return None,
     }
+    // Read directly into the retained payload. Reusing an entry-sized Vec and
+    // truncating it would keep header/trailer capacity outside payload budgets.
+    let mut data = Vec::new();
+    data.try_reserve_exact(data_len).ok()?;
+    data.resize(data_len, 0);
+    input.read_exact(&mut data).ok()?;
+    if kind == KIND_RGBA {
+        return Some(DecodedImage::Rgba(NormalizedImage {
+            width,
+            height,
+            rgba: Arc::new(data),
+        }));
+    }
+    let mut word = [0; 4];
+    input.read_exact(&mut word).ok()?;
+    let level_count = u32::from_le_bytes(word) as usize;
+    // Every accepted level is nonempty; reject impossible tables before reserve.
+    if level_count == 0 || level_count > data_len || input.limit() != level_count as u64 * 4 {
+        return None;
+    }
+    let mut level_lengths = Vec::new();
+    level_lengths.try_reserve_exact(level_count).ok()?;
+    for _ in 0..level_count {
+        input.read_exact(&mut word).ok()?;
+        level_lengths.push(u32::from_le_bytes(word));
+    }
+    CompressedImage::from_concatenated(width, height, vk_format, Arc::new(data), level_lengths)
+        .map(DecodedImage::Compressed)
 }
 
 fn serialize_derived_entry(
@@ -629,16 +588,11 @@ mod tests {
         assert!(load_derived(&dir, &key).is_none());
     }
 
-    // ---- mmap read path (P3-1) --------------------------------
+    // ---- Large mutable cache entries --------------------------
 
     #[test]
-    fn roundtrip_rgba_above_mmap_threshold_uses_mmap_path() {
-        // A payload just past the 1 MiB threshold forces the
-        // mmap branch in `load_derived`.  The byte-for-byte
-        // equality of the RGBA payload proves the mmap slice
-        // handed to `parse_derived_entry` matches what
-        // `std::fs::read` would have produced — i.e. the
-        // two paths are observationally identical.
+    fn roundtrip_large_rgba_cache_entry() {
+        // Keep large-cache byte compatibility while using an owned read.
         let dir = tmp("rt_rgba_mmap");
         let key = DerivedKey {
             asset_path: "big.png".into(),
@@ -648,7 +602,7 @@ mod tests {
             target_width: 0,
             target_height: 0,
         };
-        // 520x520x4 = 1.06 MiB > MMAP_THRESHOLD_BYTES (1 MiB).
+        // 520x520x4 = 1.06 MiB, above the former mapping threshold.
         let w = 520u32;
         let h = 520u32;
         let mut rgba = vec![0u8; (w * h * 4) as usize];
@@ -659,7 +613,7 @@ mod tests {
         let img = DecodedImage::Rgba(NormalizedImage::new(w, h, rgba.clone()));
         save_derived(&dir, &key, &img);
 
-        let loaded = load_derived(&dir, &key).expect("hit via mmap path");
+        let loaded = load_derived(&dir, &key).expect("large cache hit");
         match loaded {
             DecodedImage::Rgba(n) => {
                 assert_eq!(n.width, w);
@@ -672,10 +626,68 @@ mod tests {
     }
 
     #[test]
-    fn mmap_path_rejects_corrupted_large_file_and_cleans_up() {
-        // Same corruption scenario as `bad_rgba_length_rejected`
-        // but over the mmap threshold.  Both paths must reject
-        // invalid payloads and delete the poisoned file.
+    fn large_cache_load_owns_one_payload_allocation() {
+        let dir = tmp("one_payload");
+        let mut key = DerivedKey {
+            asset_path: "large.bin".into(),
+            source_generation: 1,
+            gpu_format: 0,
+            variant_kind: 0,
+            target_width: 0,
+            target_height: 0,
+        };
+        let rgba = DecodedImage::Rgba(NormalizedImage::new(
+            1024,
+            1024,
+            vec![0xA5; 4 * 1024 * 1024],
+        ));
+        let level0 = vec![0xAA; 1024 * 1024];
+        let level1 = vec![0xBB; 256 * 1024];
+        let compressed = DecodedImage::Compressed(
+            CompressedImage::new(1024, 1024, 147, &[&level0, &level1]).unwrap(),
+        );
+        for image in [rgba, compressed] {
+            let payload_bytes = match &image {
+                DecodedImage::Rgba(image) => image.rgba.len(),
+                DecodedImage::Compressed(image) => image.levels().map(<[u8]>::len).sum(),
+                _ => panic!("expected a software fixture"),
+            } as u64;
+            save_derived(&dir, &key, &image);
+            let before = migo_alloc_probe::thread_counts();
+            let loaded = load_derived(&dir, &key).expect("cache hit");
+            let allocated =
+                migo_alloc_probe::thread_counts().bytes_allocated - before.bytes_allocated;
+            assert!(
+                allocated >= payload_bytes,
+                "counting allocator must observe the input buffer"
+            );
+            assert!(
+                allocated < payload_bytes + 64 * 1024,
+                "second payload allocated: {allocated} for {payload_bytes} bytes"
+            );
+            match (&image, loaded) {
+                (DecodedImage::Rgba(expected), DecodedImage::Rgba(actual)) => {
+                    assert_eq!(expected.rgba, actual.rgba);
+                    assert_eq!(actual.rgba.capacity(), actual.rgba.len());
+                }
+                (DecodedImage::Compressed(expected), DecodedImage::Compressed(actual)) => {
+                    assert_eq!(
+                        expected.levels().collect::<Vec<_>>(),
+                        actual.levels().collect::<Vec<_>>()
+                    );
+                    assert_eq!(actual.data.capacity(), actual.data.len());
+                }
+                _ => panic!("cache changed the image kind"),
+            }
+            key.source_generation += 1;
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn large_corrupted_cache_entry_is_rejected_and_removed() {
+        // Large cache entries must reject invalid payloads and remove the
+        // poisoned file just as small entries do.
         let dir = tmp("mmap_corrupt");
         let key = DerivedKey {
             asset_path: "big.png".into(),
@@ -693,8 +705,8 @@ mod tests {
 
         let path = derived_cache_dir(&dir).join(format!("{}.bin", key.hash()));
         assert!(
-            std::fs::metadata(&path).unwrap().len() > MMAP_THRESHOLD_BYTES,
-            "test setup must put file over mmap threshold"
+            std::fs::metadata(&path).unwrap().len() > 1024 * 1024,
+            "test setup must exercise a large entry"
         );
         // Truncate to invalidate the embedded payload length.
         let mut data = std::fs::read(&path).unwrap();
@@ -705,6 +717,41 @@ mod tests {
         assert!(!path.exists(), "poisoned file must be cleaned up");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn padded_cache_entries_do_not_allocate_or_retain_the_file_tail() {
+        let dir = tmp("padded_entry");
+        let mut key = DerivedKey {
+            asset_path: "tiny.bin".into(),
+            source_generation: 1,
+            gpu_format: 0,
+            variant_kind: 0,
+            target_width: 0,
+            target_height: 0,
+        };
+        let rgba = DecodedImage::Rgba(NormalizedImage::new(1, 1, vec![1; 4]));
+        let compressed =
+            DecodedImage::Compressed(CompressedImage::new(4, 4, 147, &[&[1; 4], &[2; 1]]).unwrap());
+        for image in [rgba, compressed] {
+            save_derived(&dir, &key, &image);
+            let path = derived_cache_dir(&dir).join(format!("{}.bin", key.hash()));
+            let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            file.set_len(file.metadata().unwrap().len() + 8 * 1024 * 1024)
+                .unwrap();
+            drop(file);
+            let before = migo_alloc_probe::thread_counts().bytes_allocated;
+            assert!(load_derived(&dir, &key).is_none());
+            let allocated = migo_alloc_probe::thread_counts().bytes_allocated - before;
+            assert!(
+                allocated > 0,
+                "allocator must observe the header/path reads"
+            );
+            assert!(allocated < 64 * 1024, "file tail allocated: {allocated}");
+            assert!(!path.exists(), "padded cache entry must be removed");
+            key.source_generation += 1;
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -798,6 +845,39 @@ mod tests {
         assert!(load_derived(&dir, &key2).is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pre_normalization_sidecars_are_discarded_and_rebuilt() {
+        let dir = tmp("pre_exif");
+        let key = DerivedKey {
+            asset_path: "camera.png".into(),
+            source_generation: 1,
+            gpu_format: 0,
+            variant_kind: 0,
+            target_width: 0,
+            target_height: 0,
+        };
+        let stored_order = DecodedImage::Rgba(NormalizedImage::new(3, 2, vec![255; 24]));
+        let path = derived_cache_dir(&dir).join(format!("{}.bin", key.hash()));
+        for version in [4, 5] {
+            save_derived(&dir, &key, &stored_order);
+            let mut legacy = std::fs::read(&path).unwrap();
+            legacy[4] = version;
+            std::fs::write(&path, legacy).unwrap();
+            assert!(load_derived(&dir, &key).is_none());
+            assert!(
+                !path.exists(),
+                "stale sidecar must be removed without a manual cache clear"
+            );
+        }
+        let oriented = DecodedImage::Rgba(NormalizedImage::new(2, 3, vec![255; 24]));
+        save_derived(&dir, &key, &oriented);
+        let DecodedImage::Rgba(reloaded) = load_derived(&dir, &key).unwrap() else {
+            panic!("RGBA sidecar")
+        };
+        assert_eq!((reloaded.width, reloaded.height), (2, 3));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

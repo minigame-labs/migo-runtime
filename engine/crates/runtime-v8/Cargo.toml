@@ -28,9 +28,8 @@ all-extension-js = []
 v8-jitless = []
 v8-limits = ["shared/v8-limits"]
 code-signing = ["shared/code-signing"]
-# Gate the image crate behind a feature flag — runtime-v8 does not use it directly.
-# Image decoding is handled by the `io` crate (which has its own `rust-image-decode` feature).
-rust-image-decode = ["dep:image"]
+# Keep the historical feature as a forwarding edge to the actual decoder.
+rust-image-decode = ["migo-io/rust-image-decode"]
 
 # ---- API group feature gates ----
 #
@@ -92,7 +91,7 @@ crossbeam-channel.workspace = true
 deno_error.workspace = true
 glow.workspace = true
 bytemuck.workspace = true
-image = { workspace = true, optional = true }
+lru = { workspace = true }
 parking_lot = "0.12.4"
 tokio-tungstenite.workspace = true
 # Ensure rustls 0.23 has a concrete crypto provider selected for WebSocket TLS.

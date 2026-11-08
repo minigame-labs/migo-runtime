@@ -194,10 +194,11 @@ pub fn decode_inline_bytes(
         return Err(EngineError::new(ErrorCode::ImageReadError).with_msg("empty image payload"));
     }
     enforce_encoded_pixel_budget(bytes)?;
-    if let (Some(tw), Some(th)) = (target_width, target_height) {
-        if tw > 0 && th > 0 {
-            enforce_pixel_budget(tw, th)?;
-        }
+    if let (Some(tw), Some(th)) = (target_width, target_height)
+        && tw > 0
+        && th > 0
+    {
+        enforce_pixel_budget(tw, th)?;
     }
     let decoded = migo_io::decode_image_fast(bytes, hint_mime).map_err(|e| {
         warn!(

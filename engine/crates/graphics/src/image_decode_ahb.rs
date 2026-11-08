@@ -12,7 +12,7 @@ use shared::{
         io_cmd::{AhbImage, MAX_IMAGE_PIXELS, NormalizedImage},
     },
 };
-use skia_safe::{AlphaType, Codec, ColorType, Data, EncodedOrigin, ImageInfo, codec};
+use skia_safe::{AlphaType, Codec, ColorSpace, ColorType, Data, EncodedOrigin, ImageInfo, codec};
 
 const MIN_SKIA_DECODE_BUDGET: usize = 16 * 1024 * 1024;
 
@@ -88,7 +88,7 @@ impl OpenedCodec {
             self.codec.dimensions(),
             ColorType::RGBA8888,
             AlphaType::Unpremul,
-            None,
+            ColorSpace::new_srgb(),
         )
     }
 

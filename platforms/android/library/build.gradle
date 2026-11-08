@@ -118,7 +118,7 @@ android {
     compileSdk 36
 
     // Output AAR file name
-    project.archivesBaseName = "migo"
+    base.archivesName.set("migo")
 
     defaultConfig {
         // Raised from 21 to 26 with the Skia renderer migration.

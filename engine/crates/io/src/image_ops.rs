@@ -1,8 +1,7 @@
 //! Public async image operations.
 //!
-//! Provides `read_image_rgba8`, `preload_images`, `clear_image_cache`, and
-//! `get_image_cache_stats` as standalone async functions called directly
-//! from runtime-v8 ops.
+//! Provides image loading/cache operations and synchronous Canvas encoding
+//! called directly from runtime-v8 ops.
 //!
 //! Budget limiting and decode-concurrency semaphore keep memory behaviour
 //! bounded.
@@ -31,6 +30,86 @@ use crate::{
     scheduler::IoScheduler,
     task::{BackendKind, IoRequest, PriorityClass, RequestKind},
 };
+
+/// Encode top-to-bottom, unpremultiplied Canvas RGBA8 pixels. The caller has
+/// already normalized MIME and JPEG quality (1..=100). Export is synchronous,
+/// so it shares the readback cap and does not enqueue work on an IO executor.
+pub fn encode_canvas_image(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    jpeg: bool,
+    quality: u32,
+) -> Result<Vec<u8>, EngineError> {
+    let expected = shared::protocol::render_cmd::checked_canvas_rgba_byte_len(width, height);
+    if width == 0 || height == 0 || expected != Some(rgba.len()) || !(1..=100).contains(&quality) {
+        return Err(EngineError::new(ErrorCode::InvalidArgument)
+            .with_msg("invalid canvas encoding dimensions, RGBA length or quality"));
+    }
+    let encoding_error = |e: &dyn std::fmt::Display| {
+        EngineError::new(ErrorCode::Internal)
+            .with_msg("canvas image encoding failed")
+            .with_detail(e.to_string())
+    };
+    let opaque = !jpeg && rgba.chunks_exact(4).all(|pixel| pixel[3] == 255);
+    // Only opaque PNG and JPEG need RGB storage (at most 48 MiB under the
+    // readback cap). Transparent PNG borrows the original RGBA without a copy.
+    let rgb = if jpeg || opaque {
+        let mut rgb = Vec::with_capacity(rgba.len() / 4 * 3);
+        for pixel in rgba.chunks_exact(4) {
+            if opaque {
+                rgb.extend_from_slice(&pixel[..3]);
+            } else {
+                for &channel in &pixel[..3] {
+                    // JPEG has no alpha: Canvas serialization composites on black.
+                    rgb.push(((u32::from(channel) * u32::from(pixel[3]) + 127) / 255) as u8);
+                }
+            }
+        }
+        rgb
+    } else {
+        Vec::new()
+    };
+    let mut bytes = Vec::new();
+    if jpeg {
+        // The shared dimension cap (8192) also fits JPEG's u16 dimensions.
+        let mut encoder = jpeg_encoder::Encoder::new(&mut bytes, quality as u8);
+        encoder.set_sampling_factor(jpeg_encoder::SamplingFactor::R_4_4_4);
+        // Keep the default single interleaved scan. Optimized tables in this
+        // encoder produce separate scans, which the locked zune-jpeg decoder
+        // misreads on odd sizes (upstream zune-image issue #419).
+        encoder.set_density(jpeg_encoder::PixelDensity::dpi(96));
+        encoder
+            .encode(
+                &rgb,
+                width as u16,
+                height as u16,
+                jpeg_encoder::ColorType::Rgb,
+            )
+            .map_err(|e| encoding_error(&e))?;
+    } else {
+        let mut encoder = png::Encoder::new(&mut bytes, width, height);
+        encoder.set_color(if opaque {
+            png::ColorType::Rgb
+        } else {
+            png::ColorType::Rgba
+        });
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_compression(png::Compression::Balanced);
+        encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+        encoder.set_pixel_dims(Some(png::PixelDimensions {
+            xppu: 3780,
+            yppu: 3780,
+            unit: png::Unit::Meter,
+        }));
+        let mut writer = encoder.write_header().map_err(|e| encoding_error(&e))?;
+        writer
+            .write_image_data(if opaque { &rgb } else { rgba })
+            .map_err(|e| encoding_error(&e))?;
+        writer.finish().map_err(|e| encoding_error(&e))?;
+    }
+    Ok(bytes)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageSource {
@@ -111,7 +190,7 @@ impl IoBudget {
             let can_proceed = if bytes <= self.max_bytes {
                 current
                     .checked_add(bytes)
-                    .map_or(false, |sum| sum <= self.max_bytes)
+                    .is_some_and(|sum| sum <= self.max_bytes)
             } else {
                 current == 0
             };
@@ -368,6 +447,10 @@ where
 /// already owns the desired pixels and submitting a worker job would add only
 /// queue latency. Every other path retains source, crop, output and scratch
 /// reservations until the worker finishes publishing the owned result.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep crop and resize geometry explicit at the existing image-job boundary."
+)]
 pub async fn run_subrect_transform(
     scheduler: Arc<IoScheduler>,
     image: NormalizedImage,
@@ -781,6 +864,10 @@ fn compose_lru_key(
 /// - Variant selection (KTX2 compressed, companion upgrade, RGBA fallback)
 /// - Derived disk cache
 /// - LRU cache insert
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep the shared decoder boundary aligned with service, cache and policy inputs."
+)]
 pub async fn read_image_rgba8(
     scheduler: Arc<IoScheduler>,
     path: String,
@@ -877,23 +964,20 @@ pub async fn read_image_rgba8(
                 target_height: target_height.unwrap_or(0),
             };
             let can_probe_rgba = force_rgba || has_resize || (!gpu_caps.etc2 && !gpu_caps.astc);
-            if can_probe_rgba {
-                if let Some(ref cache_dir) = gcd {
-                    if let Some(cached) =
-                        derived_cache::load_derived(std::path::Path::new(cache_dir), &candidate_key)
-                    {
-                        if matches!(cached, DecodedImage::Rgba(_)) {
-                            shared::stats::io_metrics_global()
-                                .derived_cache_hits
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            return Ok(ReadImageResult {
-                                cache_path: worker_source.cache_path,
-                                image: cached,
-                                source_generation: worker_source.source_generation,
-                            });
-                        }
-                    }
-                }
+            if can_probe_rgba
+                && let Some(ref cache_dir) = gcd
+                && let Some(cached) =
+                    derived_cache::load_derived(std::path::Path::new(cache_dir), &candidate_key)
+                && matches!(cached, DecodedImage::Rgba(_))
+            {
+                shared::stats::io_metrics_global()
+                    .derived_cache_hits
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return Ok(ReadImageResult {
+                    cache_path: worker_source.cache_path,
+                    image: cached,
+                    source_generation: worker_source.source_generation,
+                });
             }
 
             let data = read_image_source(
@@ -1106,24 +1190,23 @@ async fn decode_preload_result_with_scheduler(
                     target_height: 0,
                 };
 
-                if let Some(ref cache_dir) = game_cache_dir {
-                    if let Some(cached) =
+                if let Some(ref cache_dir) = game_cache_dir
+                    && let Some(cached) =
                         derived_cache::load_derived(std::path::Path::new(cache_dir), &cache_key)
-                    {
-                        tracing::debug!("preload_images derived cache hit: {}", path);
-                        let dims = (cached.width(), cached.height());
-                        if let DecodedImage::Rgba(ref rgba) = cached {
-                            image_cache::global_cache().insert(
-                                image_cache::full_res_key(
-                                    path.clone(),
-                                    worker_source.source_generation,
-                                ),
-                                rgba.clone(),
-                                session,
-                            );
-                        }
-                        return (path, Ok(dims));
+                {
+                    tracing::debug!("preload_images derived cache hit: {}", path);
+                    let dims = (cached.width(), cached.height());
+                    if let DecodedImage::Rgba(ref rgba) = cached {
+                        image_cache::global_cache().insert(
+                            image_cache::full_res_key(
+                                path.clone(),
+                                worker_source.source_generation,
+                            ),
+                            rgba.clone(),
+                            session,
+                        );
                     }
+                    return (path, Ok(dims));
                 }
 
                 // Prefetch is explicitly a pre-warm of the RGBA LRU
@@ -1213,7 +1296,7 @@ pub async fn preload_images(
         let scheduler = Arc::clone(&scheduler);
         let path_for_error = path.clone();
         let gcd = game_cache_dir.clone();
-        let gpu = gpu_caps.clone();
+        let gpu = gpu_caps;
         let mt = mount_table.clone();
         // A key that failed to resolve has no cache slot to hit, so it decodes
         // under the generation the caller asked for.
@@ -1268,7 +1351,7 @@ pub fn clear_image_cache(game_cache_dir: Option<&str>, session: i32) {
             // Logical invalidation above is synchronous; deletion is detached
             // so a large disposable cache cannot block the V8 fast operation.
             let display_path = derived.display().to_string();
-            let _ = tokio::task::spawn_blocking(move || {
+            drop(tokio::task::spawn_blocking(move || {
                 #[cfg(test)]
                 {
                     TEST_CLEAR_CACHE_STARTED.store(true, Ordering::Release);
@@ -1277,7 +1360,7 @@ pub fn clear_image_cache(game_cache_dir: Option<&str>, session: i32) {
                     }
                 }
                 let _ = std::fs::remove_dir_all(&derived);
-            });
+            }));
             debug!("Derived texture cache removal scheduled: {}", display_path);
         }
     }
@@ -1435,17 +1518,13 @@ fn find_companion(
     let stem = path_stem(path);
     for ext in try_extensions {
         let companion = format!("{}.{}", stem, ext);
-        if let Some(mt) = mount_table {
-            if let Some(relative) = mount_relative_path(&companion, mt) {
-                if let Some(size) = mt.entry_size(&relative) {
-                    if size <= MAX_READ_LENGTH {
-                        if let Ok(data) = mt.read_range_limited(&relative, 0, None, MAX_READ_LENGTH)
-                        {
-                            return Some((companion, data));
-                        }
-                    }
-                }
-            }
+        if let Some(mt) = mount_table
+            && let Some(relative) = mount_relative_path(&companion, mt)
+            && let Some(size) = mt.entry_size(&relative)
+            && size <= MAX_READ_LENGTH
+            && let Ok(data) = mt.read_range_limited(&relative, 0, None, MAX_READ_LENGTH)
+        {
+            return Some((companion, data));
         }
         if let Ok(data) = read_filesystem_companion(&companion) {
             return Some((companion, data));
@@ -1470,12 +1549,11 @@ fn max_variant_source_size(
             max_size = max_size.max(meta.len() as usize);
             continue;
         }
-        if let Some(mt) = mount_table {
-            if let Some(relative) = mount_relative_path(&candidate, mt) {
-                if let Some(size) = mt.entry_size(&relative) {
-                    max_size = max_size.max(size as usize);
-                }
-            }
+        if let Some(mt) = mount_table
+            && let Some(relative) = mount_relative_path(&candidate, mt)
+            && let Some(size) = mt.entry_size(&relative)
+        {
+            max_size = max_size.max(size as usize);
         }
     }
     max_size
@@ -1492,17 +1570,15 @@ fn select_variant(
 ) -> Result<VariantDecision, EngineError> {
     // KTX2 primary
     if crate::ktx2::is_ktx2(&primary_data) {
-        if !has_resize {
-            if let Some(compressed) = try_ktx2_as_compressed(&primary_data, gpu_caps) {
-                tracing::info!(
-                    "variant: compressed direct -- {} ({}x{} fmt={})",
-                    primary_path,
-                    compressed.width,
-                    compressed.height,
-                    compressed.vk_format,
-                );
-                return Ok(VariantDecision::Compressed(compressed));
-            }
+        if !has_resize && let Some(compressed) = try_ktx2_as_compressed(&primary_data, gpu_caps) {
+            tracing::info!(
+                "variant: compressed direct -- {} ({}x{} fmt={})",
+                primary_path,
+                compressed.width,
+                compressed.height,
+                compressed.vk_format,
+            );
+            return Ok(VariantDecision::Compressed(compressed));
         }
 
         if let Some((fb_path, fb_data)) =
@@ -1526,19 +1602,19 @@ fn select_variant(
     }
 
     // Standard image primary -- compressed upgrade
-    if !has_resize && (gpu_caps.etc2 || gpu_caps.astc) {
-        if let Some((_, companion_data)) = find_companion(primary_path, &["ktx2"], mount_table) {
-            if let Some(compressed) = try_ktx2_as_compressed(&companion_data, gpu_caps) {
-                tracing::info!(
-                    "variant: compressed upgrade -- {} ({}x{} fmt={})",
-                    primary_path,
-                    compressed.width,
-                    compressed.height,
-                    compressed.vk_format,
-                );
-                return Ok(VariantDecision::CompressedFromCompanion(compressed));
-            }
-        }
+    if !has_resize
+        && (gpu_caps.etc2 || gpu_caps.astc)
+        && let Some((_, companion_data)) = find_companion(primary_path, &["ktx2"], mount_table)
+        && let Some(compressed) = try_ktx2_as_compressed(&companion_data, gpu_caps)
+    {
+        tracing::info!(
+            "variant: compressed upgrade -- {} ({}x{} fmt={})",
+            primary_path,
+            compressed.width,
+            compressed.height,
+            compressed.vk_format,
+        );
+        return Ok(VariantDecision::CompressedFromCompanion(compressed));
     }
 
     Ok(VariantDecision::DecodeRgba {
@@ -1624,6 +1700,127 @@ fn decode_selected_variant_rgba_only(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn canvas_encoding_rejects_invalid_input_before_allocating() {
+        for (pixels, width, height, quality) in [
+            (&[][..], 0, 1, 92),
+            (&[][..], 1, 1, 92),
+            (&[0; 5][..], 1, 1, 92),
+            (&[][..], u32::MAX, u32::MAX, 92),
+            (&[][..], 4097, 4096, 92),
+            (&[0; 4][..], 1, 1, 0),
+            (&[0; 4][..], 1, 1, 101),
+        ] {
+            for jpeg in [false, true] {
+                let error =
+                    super::encode_canvas_image(pixels, width, height, jpeg, quality).unwrap_err();
+                assert_eq!(error.code, shared::error::ErrorCode::InvalidArgument);
+            }
+        }
+    }
+
+    #[test]
+    fn canvas_png_roundtrip_preserves_rgba_and_resolution() {
+        for (width, height, transparent) in [
+            (1, 1, false),
+            (37, 29, false),
+            (37, 29, true),
+            (512, 512, false),
+        ] {
+            let pixels: Vec<u8> = (0..width * height)
+                .flat_map(|i| {
+                    if width == 512 {
+                        [255; 4]
+                    } else {
+                        [
+                            i as u8,
+                            (i * 3) as u8,
+                            (i * 7) as u8,
+                            if transparent { i as u8 } else { 255 },
+                        ]
+                    }
+                })
+                .collect();
+            let bytes = super::encode_canvas_image(&pixels, width, height, false, 92).unwrap();
+            let mut reader = png::Decoder::new(std::io::Cursor::new(&bytes))
+                .read_info()
+                .unwrap();
+            let dims = reader.info().pixel_dims.unwrap();
+            assert_eq!(
+                (dims.xppu, dims.yppu, dims.unit),
+                (3780, 3780, png::Unit::Meter)
+            );
+            let mut output = vec![0; reader.output_buffer_size().unwrap()];
+            let info = reader.next_frame(&mut output).unwrap();
+            assert_eq!((info.width, info.height), (width, height));
+            if transparent {
+                assert_eq!(info.color_type, png::ColorType::Rgba);
+                assert_eq!(&output[..info.buffer_size()], &pixels);
+            } else {
+                assert_eq!(info.color_type, png::ColorType::Rgb);
+                for (rgb, rgba) in output[..info.buffer_size()]
+                    .chunks_exact(3)
+                    .zip(pixels.chunks_exact(4))
+                {
+                    assert_eq!(rgb, &rgba[..3]);
+                }
+            }
+            if width == 512 {
+                assert!(bytes.len() < 8000, "flat canvas must compress");
+            }
+            #[cfg(feature = "rust-image-decode")]
+            assert_eq!(
+                &*crate::fast_image_decoder::decode_image_fast(&bytes, None)
+                    .unwrap()
+                    .rgba,
+                &pixels
+            );
+        }
+    }
+
+    #[cfg(feature = "rust-image-decode")]
+    #[test]
+    fn canvas_jpeg_roundtrip_composites_black_and_honors_quality() {
+        // Odd size exercises edge replication. Separate flat regions include
+        // alpha 0, half alpha and opaque; the independent production decoder
+        // checks both the colour and the row order after native encoding.
+        let (width, height) = (37, 29);
+        let pixels: Vec<u8> = (0..width * height)
+            .flat_map(|i| {
+                let y = i / width;
+                if y < 8 {
+                    [255, 80, 40, 0]
+                } else if y < 16 {
+                    [200, 100, 50, 128]
+                } else {
+                    [40, 180, 220, 255]
+                }
+            })
+            .collect();
+        for quality in [1, 25, 92, 100] {
+            let bytes = super::encode_canvas_image(&pixels, width, height, true, quality).unwrap();
+            let decoded = crate::fast_image_decoder::decode_image_fast(&bytes, None).unwrap();
+            assert_eq!((decoded.width, decoded.height), (width, height));
+            assert_eq!(&bytes[13..18], &[1, 0, 96, 0, 96]); // JFIF dpi
+            if quality >= 92 {
+                for (y, expected) in [(3, [0, 0, 0]), (11, [100, 50, 25]), (23, [40, 180, 220])] {
+                    let offset = (y * width as usize + 10) * 4;
+                    for (actual, expected) in decoded.rgba[offset..offset + 3].iter().zip(expected)
+                    {
+                        assert!(
+                            (i32::from(*actual) - expected).abs() <= 4,
+                            "q={quality}, y={y}, {actual} vs {expected}"
+                        );
+                    }
+                }
+            }
+        }
+        let low = super::encode_canvas_image(&pixels, width, height, true, 25).unwrap();
+        let high = super::encode_canvas_image(&pixels, width, height, true, 100).unwrap();
+        assert_ne!(low, high);
+        assert!(low.len() < high.len());
+    }
+
     /// The Session these tests load as; none of them is about Session isolation.
     const ONE_SESSION: i32 = 1;
     use std::sync::{

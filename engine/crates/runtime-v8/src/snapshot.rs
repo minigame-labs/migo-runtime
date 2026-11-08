@@ -73,18 +73,18 @@ use crate::{payment, share};
 ///
 /// * **Editing this crate turns the snapshot off.** Validation also hashes every
 ///   `*.rs` and `*.js` under `runtime-v8`, so any edit here -- test code
-///   included -- drops `migo_has_snapshot` until the snapshot is regenerated on
-///   a device. A test that only runs "when a snapshot is embedded" silently
+///   included -- drops `migo_has_snapshot` until a matching snapshot is generated
+///   for its target. A test that only runs "when a snapshot is embedded" silently
 ///   stops running the moment you touch this crate.
 ///
-/// A process must not mix the two boot modes. Creating a snapshot-booted
-/// runtime (`HostJsRuntime`) concurrently with a source-booted bare `JsRuntime`
-/// aborts with SIGILL during process teardown, after every test has already
-/// reported success. `cargo test -p migo-runtime-v8 --lib tests::v8_limits`
-/// reproduces it on a machine that has the host V8 archive; either submodule
-/// alone passes, and `--test-threads=1` passes. Production never mixes -- a
-/// session's runtimes all come from the same build -- so this constrains test
-/// layout, not the engine.
+/// Unit tests deliberately use source bootstrap so ambient generated files do
+/// not change what the suite exercises. Snapshot creation has process-wide V8
+/// initialization flags and belongs in dedicated producer processes. Consumers
+/// may coexist across threads when their images share a compatible read-only
+/// heap; a common build alone does not guarantee that for independently made
+/// Host/Worker images. Use [`prepare_snapshot_creation`] in every producer.
+/// `tests/worker_snapshot_roundtrip.rs` exercises independently generated images
+/// beside a source isolate while the restored Host remains alive.
 #[cfg(migo_has_snapshot)]
 pub static SNAPSHOT_BYTES: Option<&'static [u8]> = Some(include_bytes!(env!("MIGO_SNAPSHOT_PATH")));
 
@@ -99,6 +99,15 @@ pub static WORKER_SNAPSHOT_BYTES: Option<&'static [u8]> =
 
 #[cfg(not(all(feature = "worker-snapshot", migo_has_worker_snapshot)))]
 pub static WORKER_SNAPSHOT_BYTES: Option<&'static [u8]> = None;
+
+/// Configure a snapshot producer before V8 initialization.
+///
+/// Host and Worker images must share V8's original read-only heap: extending it
+/// independently gives the images incompatible offsets in one isolate group.
+/// Let `create_snapshot` initialize V8 in snapshot mode after this call.
+pub fn prepare_snapshot_creation() {
+    deno_core::v8::V8::set_flags_from_string("--no-extensible-ro-snapshot");
+}
 
 /// Worker extension heap used by snapshot generation and restoration.
 /// Runtime-only `WorkerCtx` and `HostOpState` are injected separately.

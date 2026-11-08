@@ -117,7 +117,7 @@ for graph in "${GRAPHS[@]}"; do
         --no-default-features \
         --features "$features" \
         > "$work/metadata-$index.json"
-    metadata_args+=(--metadata "$work/metadata-$index.json")
+    metadata_args+=(--metadata "$work/metadata-$index.json" --cargo-target "$triple")
     # What this build compiles, with its own features: the metadata above is
     # feature-unified across the workspace and over-reports. See compiled_subset.
     cargo tree \

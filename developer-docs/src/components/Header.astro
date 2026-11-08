@@ -190,6 +190,12 @@ const shouldRenderSearch =
 </style>
 
 <script>
+	// Include the visible shortcut in the accessible name, including the
+	// platform-specific key label installed by Starlight's inline script.
+	const searchButton = document.querySelector('button[data-open-modal]');
+	const searchLabel = searchButton?.textContent?.replace(/\s+/g, ' ').trim();
+	if (searchLabel) searchButton?.setAttribute('aria-label', searchLabel);
+
 	// Wide tables get display:block + overflow-x:auto from starlight CSS; a
 	// scrollable region without focus is an axe violation
 	// (scrollable-region-focusable). Make them keyboard-reachable.

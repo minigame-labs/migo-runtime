@@ -68,7 +68,7 @@ check() {
 
 echo "[2/5] javap NativeBridge.onCameraFrameData for both product flavors..."
 for variant in fullDebug slimDebug; do
-    classes_dir="$ANDROID_DIR/library/build/intermediates/javac/$variant/classes"
+    classes_dir="$ANDROID_DIR/library/build/intermediates/javac/$variant/compile${variant^}JavaWithJavac/classes"
     [ -f "$classes_dir/com/migo/runtime/internal/NativeBridge.class" ] \
         || fail "missing freshly compiled $variant NativeBridge.class at $classes_dir"
     check "$variant" "$classes_dir" NativeBridge
@@ -76,7 +76,7 @@ done
 
 echo "[3/5] javap NativeMethods.onCameraFrameData for both product flavors..."
 for variant in fullDebug slimDebug; do
-    classes_dir="$ANDROID_DIR/library/build/intermediates/javac/$variant/classes"
+    classes_dir="$ANDROID_DIR/library/build/intermediates/javac/$variant/compile${variant^}JavaWithJavac/classes"
     [ -f "$classes_dir/com/migo/runtime/internal/NativeMethods.class" ] \
         || fail "missing freshly compiled $variant NativeMethods.class at $classes_dir"
     check "$variant" "$classes_dir" NativeMethods

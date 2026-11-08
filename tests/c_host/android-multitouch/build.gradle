@@ -10,12 +10,12 @@ plugins { id 'com.android.application' }
 // Framework classes only, so every configuration in gradle.lockfile is empty.
 android {
     namespace 'com.migo.chost.multitouch'
-    compileSdk 34
+    compileSdk 36
 
     defaultConfig {
         applicationId 'com.migo.chost.multitouch'
         minSdk 26          // project floor; do not raise
-        targetSdk 34
+        targetSdk 36
         versionCode 1
         versionName '1.0'
     }

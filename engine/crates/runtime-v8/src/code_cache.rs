@@ -7,7 +7,8 @@
 //! Cache invalidation:
 //! - Source hash mismatch -> stale entry deleted, recompile
 //! - V8 version change   -> entire cache dir cleared
-//! - Max 32 MB total      -> LRU eviction by mtime
+//! - Max 32 MB on disk    -> eviction by publication mtime
+//! - Hot data: 32 MB / 4096 entries; pending writes: 32 MB / 64 jobs
 //!
 //! # Scope: one cache per directory, not one per Session
 //!
@@ -51,12 +52,14 @@ use std::{
 };
 
 use deno_core::{ModuleSourceCode, ModuleSpecifier, SourceCodeCacheInfo};
+use lru::LruCache;
 use parking_lot::{Mutex, RwLock};
 
 /// Maximum total cache size in bytes (32 MB).
 const MAX_CACHE_SIZE: u64 = 32 * 1024 * 1024;
 /// Admission bound for writes waiting behind the one cache worker.
 const WRITE_QUEUE_CAPACITY: usize = 64;
+const HOT_ENTRY_CAPACITY: usize = 4096;
 
 /// The cache each directory has, if any Session still holds it.
 ///
@@ -70,12 +73,52 @@ struct CacheState {
     cache_dir: PathBuf,
     v8_version: &'static str,
     directory: RwLock<u64>,
-    hot: Mutex<HashMap<u64, Arc<Vec<u8>>>>,
+    hot: Mutex<HotCache>,
+    pending_write_bytes: AtomicU64,
     pub(crate) write_version: AtomicU64,
 }
 
+struct HotCache {
+    entries: LruCache<u64, Arc<Vec<u8>>>,
+    bytes: usize,
+}
+
+impl HotCache {
+    fn new() -> Self {
+        Self {
+            entries: LruCache::new(std::num::NonZeroUsize::new(HOT_ENTRY_CAPACITY).unwrap()),
+            bytes: 0,
+        }
+    }
+
+    fn insert(&mut self, hash: u64, data: Arc<Vec<u8>>) {
+        self.bytes += data.capacity();
+        if let Some((_, old)) = self.entries.push(hash, data) {
+            self.bytes -= old.capacity();
+        }
+        while self.bytes > MAX_CACHE_SIZE as usize {
+            let (_, old) = self.entries.pop_lru().unwrap();
+            self.bytes -= old.capacity();
+        }
+    }
+
+    fn remove_if_current(&mut self, hash: u64, data: &Arc<Vec<u8>>) {
+        if self
+            .entries
+            .peek(&hash)
+            .is_some_and(|current| Arc::ptr_eq(current, data))
+        {
+            self.bytes -= self.entries.pop(&hash).unwrap().capacity();
+        }
+    }
+}
+
 enum WriteJob {
-    Write { hash: u64, data: Arc<Vec<u8>> },
+    Write {
+        hash: u64,
+        data: Arc<Vec<u8>>,
+    },
+    #[cfg(test)]
     Flush(mpsc::SyncSender<()>),
 }
 
@@ -99,7 +142,8 @@ impl DiskCodeCache {
             cache_dir,
             v8_version,
             directory: RwLock::new(0),
-            hot: Mutex::new(HashMap::new()),
+            hot: Mutex::new(HotCache::new()),
+            pending_write_bytes: AtomicU64::new(0),
             write_version: AtomicU64::new(0),
         });
         // Directory setup, version validation, and cold-cache scan run on the
@@ -111,13 +155,22 @@ impl DiskCodeCache {
             .name("migo-code-cache".to_string())
             .spawn(move || {
                 worker_state.ensure_dir_and_check_version();
-                *worker_state.directory.write() = scan_total_size(&worker_state.cache_dir);
+                let mut total = scan_total_size(&worker_state.cache_dir);
+                evict_if_needed(&worker_state.cache_dir, &mut total);
+                *worker_state.directory.write() = total;
                 // Cold cache reads are prefetched here, never from the
                 // isolate-facing `get` method.
                 prefetch_cache(&worker_state);
                 while let Ok(job) = write_rx.recv() {
                     match job {
-                        WriteJob::Write { hash, data } => publish_job(&worker_state, hash, data),
+                        WriteJob::Write { hash, data } => {
+                            let bytes = data.len() as u64;
+                            publish_job(&worker_state, hash, data);
+                            worker_state
+                                .pending_write_bytes
+                                .fetch_sub(bytes, Ordering::AcqRel);
+                        }
+                        #[cfg(test)]
                         WriteJob::Flush(done) => {
                             let _ = done.send(());
                         }
@@ -144,37 +197,53 @@ impl DiskCodeCache {
         self.state
             .hot
             .lock()
+            .entries
             .get(&hash)
             .map(|data| (**data).clone())
     }
 
     /// Admit a cache write without performing filesystem work on the caller.
     pub fn set(&self, hash: u64, data: &[u8]) {
-        if data.is_empty() {
+        if data.is_empty() || data.len() as u64 > MAX_CACHE_SIZE {
+            return;
+        }
+        let bytes = data.len() as u64;
+        if self
+            .state
+            .pending_write_bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+                (bytes <= MAX_CACHE_SIZE.saturating_sub(pending)).then_some(pending + bytes)
+            })
+            .is_err()
+        {
             return;
         }
         let data = Arc::new(data.to_vec());
         self.state.hot.lock().insert(hash, Arc::clone(&data));
         let Some(tx) = self.write_tx.as_ref() else {
-            self.state.hot.lock().remove(&hash);
+            self.state.hot.lock().remove_if_current(hash, &data);
+            self.state
+                .pending_write_bytes
+                .fetch_sub(bytes, Ordering::AcqRel);
             return;
         };
-        match tx.try_send(WriteJob::Write { hash, data }) {
+        match tx.try_send(WriteJob::Write {
+            hash,
+            data: Arc::clone(&data),
+        }) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
                 // A full or closed queue is an intentional cache miss, not
                 // an isolate stall; the next compilation can retry.
-                self.state.hot.lock().remove(&hash);
+                self.state.hot.lock().remove_if_current(hash, &data);
+                self.state
+                    .pending_write_bytes
+                    .fetch_sub(bytes, Ordering::AcqRel);
             }
         }
     }
 
-    fn clear_all(&self) {
-        let _ = fs::remove_dir_all(&self.state.cache_dir);
-        *self.state.directory.write() = 0;
-        self.state.hot.lock().clear();
-    }
-
+    #[cfg(test)]
     fn scan_total_size(&self) -> u64 {
         scan_total_size(&self.state.cache_dir)
     }
@@ -242,8 +311,7 @@ fn prefetch_cache(state: &CacheState) {
         .filter_map(|entry| {
             let path = entry.path();
             (path.extension().and_then(|ext| ext.to_str()) == Some("bin")).then_some(path)
-        })
-        .collect::<Vec<_>>();
+        });
     for path in entries {
         let Some(hash) = path
             .file_stem()
@@ -252,8 +320,18 @@ fn prefetch_cache(state: &CacheState) {
         else {
             continue;
         };
-        if let Ok(data) = fs::read(path) {
-            state.hot.lock().insert(hash, Arc::new(data));
+        use std::io::Read;
+        if let Ok(file) = fs::File::open(path) {
+            let Ok(metadata) = file.metadata() else {
+                continue;
+            };
+            if !metadata.is_file() || metadata.len() > MAX_CACHE_SIZE {
+                continue;
+            }
+            let mut data = Vec::with_capacity(metadata.len() as usize);
+            if file.take(metadata.len()).read_to_end(&mut data).is_ok() && !data.is_empty() {
+                state.hot.lock().insert(hash, Arc::new(data));
+            }
         }
     }
 }
@@ -489,6 +567,124 @@ mod tests {
             (entries as u64 * ENTRY as u64 - resident) / 1024 / 1024,
         );
 
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn hot_data_and_blocked_writes_have_separate_byte_bounds() {
+        use std::sync::{Arc, atomic::Ordering, mpsc};
+        use std::time::Duration;
+
+        let root = temp_root("resident_and_pending_bounds");
+        let cache = create_code_cache(&root);
+        cache.flush_writes();
+        // A rendezvous flush is ahead of every write below. The writer cannot
+        // consume any of their payloads until the test receives this message.
+        let (blocked, release) = mpsc::sync_channel(0);
+        cache
+            .write_tx
+            .as_ref()
+            .unwrap()
+            .send(super::WriteJob::Flush(blocked))
+            .unwrap();
+        let payload = vec![0xC5; 2 * 1024 * 1024];
+        let count = MAX_CACHE_SIZE as usize / payload.len();
+        for hash in 0..count {
+            cache.set(hash as u64, &payload);
+        }
+        cache.set(count as u64, &payload);
+        let rejected = cache.get(count as u64).is_none();
+        let queued_bytes = cache.state.pending_write_bytes.load(Ordering::Acquire);
+        let retained: usize = cache
+            .state
+            .hot
+            .lock()
+            .entries
+            .iter()
+            .map(|(_, data)| data.capacity())
+            .sum();
+        // Unblock before assertions, including on a failing budget regression.
+        release.recv_timeout(Duration::from_secs(10)).unwrap();
+        cache.flush_writes();
+        assert!(
+            rejected,
+            "pending code-cache writes must reject excess bytes before copying"
+        );
+        assert_eq!(queued_bytes, MAX_CACHE_SIZE);
+        assert!(retained <= MAX_CACHE_SIZE as usize);
+        assert_eq!(cache.state.pending_write_bytes.load(Ordering::Acquire), 0);
+        cache.set(count as u64, &payload);
+        cache.flush_writes();
+        assert!(
+            cache.get(count as u64).is_some(),
+            "a drained writer must admit a retry"
+        );
+        assert!(
+            cache.get(0).is_none(),
+            "hot data must evict the oldest unused entry"
+        );
+        let hot = cache.state.hot.lock();
+        let actual: usize = hot.entries.iter().map(|(_, data)| data.capacity()).sum();
+        assert!(
+            actual <= MAX_CACHE_SIZE as usize,
+            "resident code-cache bytes must stay bounded"
+        );
+        drop(hot);
+        // Conditional rejection cleanup cannot delete a later producer's entry.
+        let older = Arc::new(vec![1]);
+        let newer = Arc::new(vec![2]);
+        let mut hot = super::HotCache::new();
+        hot.insert(7, Arc::clone(&newer));
+        hot.remove_if_current(7, &older);
+        assert_eq!(hot.entries.peek(&7).unwrap().as_slice(), &[2]);
+        drop(cache);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tiny_code_cache_entries_also_have_a_count_bound() {
+        use std::sync::Arc;
+        let mut hot = super::HotCache::new();
+        for hash in 0..super::HOT_ENTRY_CAPACITY + 32 {
+            hot.insert(hash as u64, Arc::new(vec![1]));
+        }
+        assert_eq!(hot.entries.len(), super::HOT_ENTRY_CAPACITY);
+        assert!(hot.entries.peek(&0).is_none());
+        assert!(
+            hot.entries
+                .peek(&((super::HOT_ENTRY_CAPACITY + 31) as u64))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn reopening_an_oversized_disk_cache_reconciles_before_prefetch() {
+        let root = temp_root("oversized_reopen");
+        let dir = root.join("migo_code_cache");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("v8_version.txt"), deno_core::v8::V8::get_version()).unwrap();
+        let payload = vec![0x5A; 2 * 1024 * 1024];
+        for hash in 0..18 {
+            fs::write(super::hash_path(&dir, hash), &payload).unwrap();
+        }
+        let cache = create_code_cache(&root);
+        cache.flush_writes();
+        let total = cache.scan_total_size();
+        assert!(
+            total <= MAX_CACHE_SIZE,
+            "cold code-cache prefetch must reconcile disk bytes first"
+        );
+        assert!(total > MAX_CACHE_SIZE / 2);
+        let actual: usize = cache
+            .state
+            .hot
+            .lock()
+            .entries
+            .iter()
+            .map(|(_, data)| data.capacity())
+            .sum();
+        assert!(actual <= MAX_CACHE_SIZE as usize);
+        drop(cache);
         let _ = fs::remove_dir_all(&root);
     }
 

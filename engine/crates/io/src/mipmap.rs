@@ -107,10 +107,7 @@ pub fn rgba_mip_chain(
         return levels;
     }
     levels.push((rgba.to_vec(), width, height));
-    loop {
-        let Some((current, w, h)) = levels.last().map(|(pixels, w, h)| (pixels, *w, *h)) else {
-            break;
-        };
+    while let Some((current, w, h)) = levels.last().map(|(pixels, w, h)| (pixels, *w, *h)) {
         let Some((next, nw, nh)) = downsample_rgba_half(current, w, h) else {
             break;
         };

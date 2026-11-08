@@ -145,12 +145,12 @@ impl HostJsRuntime {
         let t0 = Instant::now();
         // This crate's own unit tests boot from source, never from the snapshot.
         //
-        // V8's snapshot mode is decided process-wide on first init, so one test
-        // binary cannot hold both snapshot-booted and source-booted runtimes:
-        // mixing them aborts with SIGILL during teardown, after every test has
-        // already reported success. `tests/snapshot_roundtrip.rs` records the same
-        // constraint from the creation side and answers it the same way -- its own
-        // binary, its own process.
+        // Snapshot producers select process-wide V8 initialization flags and run
+        // separately. Runtime consumers can mix source and compatible snapshots;
+        // independently extended read-only heaps are unsafe in one isolate group.
+        // The dedicated roundtrip tests create images in producer processes and
+        // check threaded coexistence with a restored Host. Unit tests keep one
+        // source bootstrap policy instead of depending on ambient image files.
         //
         // Without this, `cargo test -p migo-runtime-v8` passes on CI and aborts on
         // a developer machine, purely because CI has no host V8 archive for

@@ -1,8 +1,8 @@
 //! WebGL's shading language on a driver that is not a browser's.
 //!
-//! A browser hands a driver what ANGLE's translator made of the content's shader; the renderer hands it the shader
-//! itself. Where the two languages differ in what a driver must be told, the source is amended before the driver
-//! sees it -- and only then: `getShaderSource` still answers what content set.
+//! An ANGLE WebGL-compatible context already validates and initializes the shader. Other GLES contexts need the
+//! missing initialization written into the source they compile. Only that driver source changes:
+//! `getShaderSource` still answers what content set.
 
 mod lexer;
 mod preprocess;
@@ -12,8 +12,13 @@ pub(crate) use preprocess::Environment;
 
 /// The source a driver should compile for the WebGL shader `source`: every variable it leaves without a value
 /// initialized to zero, as WebGL requires and a driver need not do (see `zero_init`). `None` when the driver can take
-/// `source` as it is -- nothing is missing, or the shader is one the driver will refuse, which it then reports itself.
+/// `source` as it is -- its WebGL translator owns initialization, nothing is missing, or the shader will be refused.
 pub(crate) fn for_driver(source: &str, env: &Environment) -> Option<String> {
+    // ANGLE's WebGL compiler supplies this transformation itself and rejects the
+    // implementation-reserved helper names our native-GLES workaround inserts.
+    if env.extensions.contains("GL_ANGLE_webgl_compatibility") {
+        return None;
+    }
     let preprocessed = preprocess::preprocess(source, env).ok()?;
     let edits = zero_init::edits(&preprocessed.tokens, preprocessed.version).ok()?;
     if edits.is_empty() {
@@ -257,5 +262,241 @@ mod tests {
             extensions: &extensions,
         };
         assert!(for_driver(source, &env).is_some_and(|out| out.contains("float a = 0.0;")));
+    }
+
+    #[test]
+    fn only_a_webgl_compatible_driver_owns_shader_initialization() {
+        let source =
+            "precision mediump float; void main() { float a[2]; gl_FragColor = vec4(a[0]); }";
+        for name in [
+            "GL_ANGLE_webgl_compatibility",
+            "GL_ANGLE_translated_shader_source",
+            "GL_ANGLE_robust_resource_initialization",
+            "GL_ANGLE_webgl_compatibility_extra",
+        ] {
+            let extensions = HashSet::from([name.to_owned()]);
+            let env = Environment {
+                fragment: true,
+                extensions: &extensions,
+            };
+            assert_eq!(
+                for_driver(source, &env).is_none(),
+                name == "GL_ANGLE_webgl_compatibility",
+                "{name}"
+            );
+        }
+    }
+
+    fn compile(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::NativeShader, String> {
+        use glow::HasContext;
+        unsafe {
+            let shader = gl.create_shader(kind)?;
+            gl.shader_source(shader, source);
+            gl.compile_shader(shader);
+            if gl.get_shader_compile_status(shader) {
+                Ok(shader)
+            } else {
+                let log = gl.get_shader_info_log(shader);
+                gl.delete_shader(shader);
+                Err(log)
+            }
+        }
+    }
+
+    fn draw_pixel(gl: &glow::Context, version: i32, fragment: &str) -> [u8; 4] {
+        use glow::HasContext;
+        let vertex = if version == 2 {
+            "attribute vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); }"
+        } else {
+            "#version 300 es\nin vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); }"
+        };
+        let vs = compile(gl, glow::VERTEX_SHADER, vertex).expect("vertex compiles");
+        let fs = compile(gl, glow::FRAGMENT_SHADER, fragment).expect("fragment compiles");
+        unsafe {
+            let program = gl.create_program().unwrap();
+            gl.attach_shader(program, vs);
+            gl.attach_shader(program, fs);
+            gl.bind_attrib_location(program, 0, "position");
+            gl.link_program(program);
+            assert!(
+                gl.get_program_link_status(program),
+                "{}",
+                gl.get_program_info_log(program)
+            );
+            gl.use_program(Some(program));
+            let vao = (version >= 3).then(|| gl.create_vertex_array().unwrap());
+            if let Some(vao) = vao {
+                gl.bind_vertex_array(Some(vao));
+            }
+            let buffer = gl.create_buffer().unwrap();
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
+            let triangle: [f32; 6] = [-1.0, -1.0, 3.0, -1.0, -1.0, 3.0];
+            gl.buffer_data_u8_slice(
+                glow::ARRAY_BUFFER,
+                bytemuck::cast_slice(&triangle),
+                glow::STATIC_DRAW,
+            );
+            gl.enable_vertex_attrib_array(0);
+            gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 0, 0);
+            gl.viewport(0, 0, 3, 2);
+            gl.clear_color(1.0, 0.0, 1.0, 1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT);
+            gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            let mut pixel = [0u8; 4];
+            gl.read_pixels(
+                0,
+                0,
+                1,
+                1,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelPackData::Slice(Some(&mut pixel)),
+            );
+            assert_eq!(gl.get_error(), glow::NO_ERROR);
+            gl.delete_buffer(buffer);
+            if let Some(vao) = vao {
+                gl.delete_vertex_array(vao);
+            }
+            gl.delete_shader(vs);
+            gl.delete_shader(fs);
+            gl.delete_program(program);
+            pixel
+        }
+    }
+
+    #[test]
+    #[ignore = "requires MIGO_TEST_ANGLE_EGL_LIBRARY and ANGLE/SwiftShader Vulkan"]
+    fn angle_webgl_shader_validation_native() {
+        use glow::HasContext;
+        for version in [2, 3] {
+            for webgl in [false, true] {
+                let (_scope, gl) =
+                    crate::backend::gl::readback_test_gl::native_angle_context(version, webgl);
+                let env = Environment {
+                    fragment: true,
+                    extensions: gl.supported_extensions(),
+                };
+                assert_eq!(
+                    env.extensions.contains("GL_ANGLE_webgl_compatibility"),
+                    webgl
+                );
+                eprintln!(
+                    "ES{version} webgl={webgl}: {} / {}",
+                    unsafe { gl.get_parameter_string(glow::VERSION) },
+                    unsafe { gl.get_parameter_string(glow::RENDERER) }
+                );
+                let (prefix, output) = if version == 2 {
+                    ("precision highp float;\n", "gl_FragColor")
+                } else {
+                    (
+                        "#version 300 es\nprecision highp float; out vec4 color;\n",
+                        "color",
+                    )
+                };
+                let valid = [
+                    ("local", "", "float u;", "vec4(u, 0.0, 0.5, 1.0)"),
+                    (
+                        "local-array",
+                        "",
+                        "float a[2];",
+                        "vec4(a[0], a[1], 0.5, 1.0)",
+                    ),
+                    (
+                        "global-array",
+                        "float a[2];\n",
+                        "",
+                        "vec4(a[0], a[1], 0.5, 1.0)",
+                    ),
+                    (
+                        "struct-array",
+                        "struct S { vec2 a[2]; };\n",
+                        "S s;",
+                        "vec4(s.a[0], 0.5, 1.0)",
+                    ),
+                    (
+                        "macro-declaration",
+                        "#define DECLARE(t,n) t n;\n",
+                        "DECLARE(vec2,u)",
+                        "vec4(u, 0.5, 1.0)",
+                    ),
+                    (
+                        "initialized",
+                        "",
+                        "vec2 u = vec2(0.0);",
+                        "vec4(u, 0.5, 1.0)",
+                    ),
+                ];
+                for (name, global, local, value) in valid {
+                    let source =
+                        format!("{prefix}{global}void main() {{ {local} {output} = {value}; }}");
+                    // First prove the mature WebGL path accepts and initializes the original.
+                    if webgl {
+                        assert_eq!(
+                            draw_pixel(&gl, version, &source),
+                            [0, 0, 128, 255],
+                            "original ES{version} {name}"
+                        );
+                    }
+                    let prepared = for_driver(&source, &env);
+                    let driver = prepared.as_deref().unwrap_or(&source);
+                    // Macro-created declarations are an existing native-path limitation.
+                    if webgl || name != "macro-declaration" {
+                        assert_eq!(
+                            draw_pixel(&gl, version, driver),
+                            [0, 0, 128, 255],
+                            "prepared ES{version} webgl={webgl} {name}"
+                        );
+                    } else {
+                        let shader = compile(&gl, glow::FRAGMENT_SHADER, driver).expect(
+                            "native macro declaration compiles; initialization is not claimed",
+                        );
+                        unsafe { gl.delete_shader(shader) };
+                    }
+                    eprintln!(
+                        "PASS ES{version} webgl={webgl} {name}{}",
+                        if !webgl && name == "macro-declaration" {
+                            " (compile only)"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+                let reserved = format!(
+                    "{prefix}void main() {{ float webgl_reserved = 1.0; {output} = vec4(webgl_reserved); }}"
+                );
+                let result = compile(&gl, glow::FRAGMENT_SHADER, &reserved);
+                eprintln!(
+                    "ES{version} webgl={webgl} reserved-prefix: {:?}",
+                    result.as_ref().err()
+                );
+                assert_eq!(
+                    result.is_err(),
+                    webgl,
+                    "reserved prefix ES{version}: {result:?}"
+                );
+                if let Ok(shader) = result {
+                    unsafe {
+                        gl.delete_shader(shader);
+                    }
+                }
+                if version == 2 {
+                    let dynamic_loop = "precision highp float; uniform int count; void main() { float sum = 0.0; for (int i = 0; i < count; ++i) { sum += 0.1; } gl_FragColor = vec4(sum); }";
+                    let result = compile(&gl, glow::FRAGMENT_SHADER, dynamic_loop);
+                    eprintln!(
+                        "ES{version} webgl={webgl} dynamic-loop: {:?}",
+                        result.as_ref().err()
+                    );
+                    assert_eq!(result.is_err(), webgl, "nonconstant loop: {result:?}");
+                    if let Ok(shader) = result {
+                        unsafe {
+                            gl.delete_shader(shader);
+                        }
+                    }
+                }
+                let invalid = format!("{prefix}void main() {{ {output} = unknown_identifier; }}");
+                assert!(compile(&gl, glow::FRAGMENT_SHADER, &invalid).is_err());
+                eprintln!("PASS ES{version} webgl={webgl} validation");
+            }
+        }
     }
 }

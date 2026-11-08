@@ -16,6 +16,7 @@ extension!(
         canvas::op_get_canvas_info,
         canvas::op_resize_canvas,
         canvas::op_destroy_canvas,
+        canvas::op_encode_canvas_image,
     ],
     esm = [
         dir "src/web",
