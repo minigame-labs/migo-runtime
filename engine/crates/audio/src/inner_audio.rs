@@ -686,31 +686,14 @@ impl InnerAudioPlayer {
         load: &InnerAudioLoadToken,
         audio: &mut DecodedAudio,
     ) -> EngineResult<()> {
-        self.try_complete_load_charged(load, audio, &mut None)
-    }
-
-    pub(crate) fn try_complete_load_charged(
-        &mut self,
-        load: &InnerAudioLoadToken,
-        audio: &mut DecodedAudio,
-        physical: &mut Option<AudioAggregatePermit>,
-    ) -> EngineResult<()> {
         if !self.shared.owns_load(load) || self.shared.is_loaded() {
             return Err(InnerAudioLoadToken::cancelled_error());
         }
         let converter =
             self.prepare_rate_converter(audio.channels as usize, audio.samples.is_empty())?;
-        let permit = match crate::limits::pcm_bytes(audio.samples.capacity()).and_then(|bytes| {
-            if let Some(credit) = physical
-                .as_mut()
-                .filter(|credit| credit.belongs_to(&self.aggregate))
-            {
-                credit.try_grow_to(bytes, "InnerAudio")?;
-                Ok(physical.take().unwrap())
-            } else {
-                self.aggregate.try_reserve(bytes, "InnerAudio")
-            }
-        }) {
+        let permit = match crate::limits::pcm_bytes(audio.samples.capacity())
+            .and_then(|bytes| self.aggregate.try_reserve(bytes, "InnerAudio"))
+        {
             Ok(permit) => permit,
             Err(error) => {
                 self.discard_loading_controls();

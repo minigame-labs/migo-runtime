@@ -968,12 +968,12 @@ fn decoded_pcm_frames(decoded: &DecodedAudio) -> EngineResult<u32> {
 
 fn decoded_pcm(decoded: DecodedAudio) -> EngineResult<DecodedPcm> {
     let frames = decoded_pcm_frames(&decoded)?;
-    Ok(DecodedPcm::new(
-        decoded.sample_rate,
-        decoded.channels,
+    Ok(DecodedPcm {
+        sample_rate: decoded.sample_rate,
+        channels: decoded.channels,
         frames,
-        decoded.samples,
-    ))
+        samples: decoded.samples,
+    })
 }
 
 pub struct AudioThread {

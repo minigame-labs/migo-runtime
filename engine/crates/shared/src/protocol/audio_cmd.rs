@@ -83,7 +83,17 @@ pub struct AudioBufferInfo {
     pub length: u32,
 }
 
-pub use crate::audio_decoded_pcm::DecodedPcm;
+/// A finished decode: interleaved samples at the context's rate.
+///
+/// `frames * channels == samples.len()`, which the decoder guarantees and the
+/// registry checks again when it adopts them.
+#[derive(Debug)]
+pub struct DecodedPcm {
+    pub sample_rate: u32,
+    pub channels: u32,
+    pub frames: u32,
+    pub samples: Vec<f32>,
+}
 
 /// Playback state of an AudioContext.
 ///

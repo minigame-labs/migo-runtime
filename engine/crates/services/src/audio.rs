@@ -525,17 +525,16 @@ impl Decoding {
             frames: pcm.frames,
             sample_rate: pcm.sample_rate,
         };
-        let (sample_rate, channels, frames) = (pcm.sample_rate, pcm.channels, pcm.frames);
         let lease = self
             .resources
-            .adopt_decoded(self.runtime_generation, format, pcm)
+            .adopt_frozen(self.runtime_generation, format, pcm.samples)
             .map_err(engine_error)?;
         Ok(AudioBufferInfo {
             id: lease.key().serial,
-            duration: f64::from(frames) / f64::from(sample_rate),
-            sample_rate,
-            channels,
-            length: frames,
+            duration: f64::from(pcm.frames) / f64::from(pcm.sample_rate),
+            sample_rate: pcm.sample_rate,
+            channels: pcm.channels,
+            length: pcm.frames,
         })
     }
 }
@@ -549,7 +548,7 @@ pub fn reserve_buffer(
 ) -> Result<AudioBufferId, ServiceError> {
     scope
         .resources()?
-        .reserve_initial_backing(
+        .reserve_backing(
             scope.runtime_generation,
             AudioBufferFormat {
                 channels,
@@ -569,38 +568,17 @@ pub fn release_buffer(scope: BufferScope<'_>, buffer_id: AudioBufferId) {
     }
 }
 
-/// One fixed channel-major allocation with physical credit until actual drop.
-/// Logical buffer release cannot detach the allocation from that credit.
+/// A frozen buffer's channels, as one exact channel-major allocation that
+/// becomes its writable backing.
 pub fn materialize_buffer(
     scope: BufferScope<'_>,
     buffer_id: AudioBufferId,
-) -> Result<shared::audio_resources::AudioPlanarBacking, ServiceError> {
+) -> Result<Vec<f32>, ServiceError> {
     scope
         .resources()?
-        .prepare_writable_backing(scope.key(buffer_id))
+        .prepare_materialize(scope.key(buffer_id))
         .map(|prepared| prepared.commit())
         .map_err(engine_error)
-}
-
-/// Prepare without committing the registry transition, so output admission
-/// can refuse an external response while preserving the original entry.
-pub fn prepare_buffer_backing(
-    scope: BufferScope<'_>,
-    buffer_id: AudioBufferId,
-) -> Result<shared::audio_resources::PreparedWritableAudioBacking, ServiceError> {
-    scope
-        .resources()?
-        .prepare_writable_backing(scope.key(buffer_id))
-        .map_err(engine_error)
-}
-
-/// Materialize an embedded native backing whose physical credit follows its
-/// actual allocation after logical release, detach, or runtime destruction.
-pub fn materialize_owned_buffer(
-    scope: BufferScope<'_>,
-    buffer_id: AudioBufferId,
-) -> Result<shared::audio_resources::AudioPlanarBacking, ServiceError> {
-    materialize_buffer(scope, buffer_id)
 }
 
 /// A writable buffer's planar PCM, wherever the caller holds it.

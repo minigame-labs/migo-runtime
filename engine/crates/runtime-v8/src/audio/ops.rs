@@ -399,31 +399,20 @@ pub fn op_audio_release_buffer(state: Rc<RefCell<OpState>>, #[smi] buffer_id: Au
     release_global_audio_buffer(&state, buffer_id);
 }
 
-pub struct MaterializedAudioBacking(shared::audio_resources::AudioPlanarBacking);
-impl<'a> deno_core::ToV8<'a> for MaterializedAudioBacking {
-    type Error = AudioError;
-    fn to_v8<'i>(
-        self,
-        scope: &mut v8::PinScope<'a, 'i>,
-    ) -> Result<v8::Local<'a, v8::Value>, Self::Error> {
-        let backing = v8::ArrayBuffer::new_backing_store_from_bytes(Box::new(self.0)).make_shared();
-        Ok(v8::ArrayBuffer::with_backing_store(scope, &backing).into())
-    }
-}
-
 #[op2]
+#[arraybuffer]
 pub fn op_audio_materialize_buffer(
     state: Rc<RefCell<OpState>>,
     #[smi] buffer_id: AudioBufferId,
-) -> Result<MaterializedAudioBacking, AudioError> {
+) -> Result<Vec<f32>, AudioError> {
     let (tx, runtime_generation) = audio_scope(&state);
-    Ok(MaterializedAudioBacking(service::materialize_owned_buffer(
+    Ok(service::materialize_buffer(
         BufferScope {
             tx: &tx,
             runtime_generation,
         },
         buffer_id,
-    )?))
+    )?)
 }
 
 #[op2(fast)]
@@ -1716,13 +1705,10 @@ mod tests {
         assert!(buffer.contains("internal.token !== DECODED_BUFFER_TOKEN"));
         assert!(!buffer.contains("static _fromDecoded"));
         let reserve = buffer.find("op_audio_reserve_buffer").unwrap();
-        let allocate = buffer.find("op_audio_materialize_buffer(id)").unwrap();
-        let initialize = buffer
-            .find("this.#initialize(id, numberOfChannels, length, sampleRate, backing)")
-            .unwrap();
+        let allocate = buffer.find("new ArrayBuffer").unwrap();
         let abort = buffer.find("op_audio_abort_buffer(id)").unwrap();
         assert!(
-            reserve < allocate && allocate < initialize && initialize < abort,
+            reserve < allocate && allocate < abort,
             "reserve/allocate/abort ordering"
         );
         assert!(
@@ -2151,7 +2137,3 @@ mod tests {
         assert!(admit < gate);
     }
 }
-
-#[cfg(test)]
-#[path = "materialized_tests.rs"]
-mod materialized_tests;

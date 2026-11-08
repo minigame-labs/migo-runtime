@@ -37,8 +37,6 @@ use shared::{
     surface::SurfaceRef,
 };
 
-pub use shared::sync_reply::SyncReplyBytes;
-
 use frame_wire::control::{ControlError, ControlRecord, read_control};
 use frame_wire::downlink::{DownlinkQueue, DownlinkRecord};
 use frame_wire::sync::{
@@ -387,7 +385,7 @@ struct SyncPath {
     /// into. Its capacity is whatever the last reply needed and is released
     /// when the next one replaces it, so a session that reads a full screen
     /// once does not carry that buffer for the rest of its life.
-    reply: Mutex<SyncReplyBytes>,
+    reply: Mutex<Vec<u8>>,
     dispatch: Arc<OnceLock<RenderDispatch>>,
     admission: Admission,
     /// The service stream, for `SYNC_OP_SERVICE`. Absent on a path built
@@ -405,7 +403,7 @@ impl SyncPath {
         Self {
             mailbox: Mutex::new(SyncMailbox::new(runtime_generation)),
             errors,
-            reply: Mutex::new(SyncReplyBytes::default()),
+            reply: Mutex::new(Vec::new()),
             dispatch,
             admission,
             services: None,
@@ -553,7 +551,7 @@ impl SyncPath {
                     request_id: id,
                     reply_bytes: 0,
                 },
-                reply: SyncReplyBytes::default(),
+                reply: Vec::new(),
             },
             // Failed, or settled under another verdict than the one this call
             // produced: the snapshot says which.
@@ -600,7 +598,7 @@ impl SyncPath {
         service_sequence: u64,
         deadline_nanos: u64,
         now_nanos: u64,
-    ) -> Result<SyncReplyBytes, SyncError> {
+    ) -> Result<Vec<u8>, SyncError> {
         match operation {
             frame_wire::sync::SYNC_OP_SERVICE => {
                 return self.service_call(
@@ -677,7 +675,6 @@ impl SyncPath {
             ),
             _ => Err(SyncError::UnsupportedOperation),
         }
-        .map(SyncReplyBytes::from)
     }
 
     /// `SYNC_OP_SERVICE`: a service op whose return value is the answer --
@@ -693,7 +690,7 @@ impl SyncPath {
         service_sequence: u64,
         deadline_nanos: u64,
         now_nanos: u64,
-    ) -> Result<SyncReplyBytes, SyncError> {
+    ) -> Result<Vec<u8>, SyncError> {
         let Some(services) = &self.services else {
             return Err(SyncError::UnsupportedOperation);
         };
@@ -703,7 +700,7 @@ impl SyncPath {
         }
         let until = std::time::Instant::now() + std::time::Duration::from_nanos(budget);
         services.wait_admitted(service_sequence, until)?;
-        let reply = services.call_sync(params, until, max_reply_bytes)?;
+        let reply = services.call_sync(params, until)?;
         if reply.len() > max_reply_bytes as usize {
             // Refused rather than cut: a truncated file is a wrong answer that
             // looks like a right one.
@@ -1650,14 +1647,14 @@ impl SyncPath {
 pub struct AnsweredCall {
     pub answer: SyncAnswer,
     /// Exactly `answer.reply_bytes` long. Empty, and unallocated, unless READY.
-    pub reply: SyncReplyBytes,
+    pub reply: Vec<u8>,
 }
 
 impl AnsweredCall {
     fn failed(request_id: u32, error: SyncError) -> Self {
         Self {
             answer: SyncAnswer::failed(request_id, error),
-            reply: SyncReplyBytes::default(),
+            reply: Vec::new(),
         }
     }
 }
@@ -1674,8 +1671,8 @@ impl AnsweredCall {
 fn settle(
     mailbox: &mut SyncMailbox,
     id: u32,
-    answered: Result<SyncReplyBytes, SyncError>,
-) -> Option<SyncReplyBytes> {
+    answered: Result<Vec<u8>, SyncError>,
+) -> Option<Vec<u8>> {
     if mailbox
         .request()
         .is_none_or(|request| request.request_id != id)
@@ -2132,7 +2129,7 @@ impl EndpointTarget for SessionTransport {
         let _ = self.services.submit(message);
     }
 
-    fn take_service_message(&self) -> Option<super::external_services::ServiceReplyBytes> {
+    fn take_service_message(&self) -> Option<Vec<u8>> {
         self.services.outbox.take_message()
     }
 
@@ -2526,16 +2523,12 @@ impl ExternalFrameSession {
     }
 
     /// One `MDS1` message of queued answers and events, or `None`.
-    pub fn take_service_message(&self) -> Option<super::external_services::ServiceReplyBytes> {
+    pub fn take_service_message(&self) -> Option<Vec<u8>> {
         self.services.outbox.take_message()
     }
 
     /// A parked answer, taken once.
-    pub fn take_parked_reply(
-        &self,
-        generation: u32,
-        request_id: u32,
-    ) -> Option<super::external_services::ServiceReplyBytes> {
+    pub fn take_parked_reply(&self, generation: u32, request_id: u32) -> Option<Vec<u8>> {
         self.services.outbox.take_parked(generation, request_id)
     }
 
@@ -6912,7 +6905,3 @@ mod await_window_tests {
         assert_eq!(snapshot.error, Some(SyncError::ReplyTooLarge));
     }
 }
-
-#[cfg(test)]
-#[path = "audio_wire_reply_tests.rs"]
-mod audio_wire_reply_tests;

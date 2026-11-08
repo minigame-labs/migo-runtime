@@ -162,14 +162,11 @@ pub use migo_services::content::ModuleError;
 #[cfg(feature = "external-frames")]
 pub use runtime::external::{
     AnsweredCall, ControlOutcome, DownlinkWaker, ExternalFrameClock, ExternalFrameSession,
-    FrameRequest, SpawnedExternalSession, SyncHandle, SyncReplyBytes, SyncSnapshot,
-    spawn_external_frame_session,
+    FrameRequest, SpawnedExternalSession, SyncHandle, SyncSnapshot, spawn_external_frame_session,
 };
 /// The service stream's admission outcomes, for the C boundary to report.
 #[cfg(feature = "external-frames")]
-pub use runtime::external_services::{
-    ServiceAdmission, ServiceHandle, ServiceReplyBytes, ServiceSubmitError,
-};
+pub use runtime::external_services::{ServiceAdmission, ServiceHandle, ServiceSubmitError};
 /// The engine's own frame transport, for the C boundary to start and report.
 #[cfg(feature = "external-frames")]
 pub use runtime::frame_endpoint::{FrameEndpointError, FrameTransportStatistics};

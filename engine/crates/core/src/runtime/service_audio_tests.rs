@@ -230,8 +230,13 @@ fn a_decode_is_answered_as_its_info_and_its_pcm_stays_here() {
         panic!("a decode");
     };
     assert_eq!(data.as_slice(), &[1, 2, 3, 4]);
-    resp.send(Ok(DecodedPcm::new(44_100, 1, 3, vec![0.0, 0.5, 1.0])))
-        .unwrap();
+    resp.send(Ok(DecodedPcm {
+        sample_rate: 44_100,
+        channels: 1,
+        frames: 3,
+        samples: vec![0.0, 0.5, 1.0],
+    }))
+    .unwrap();
     let OwnedValue::Array(info) = rt.block_on(future).unwrap() else {
         panic!("an array");
     };
@@ -301,25 +306,6 @@ fn a_written_buffer_starts_from_the_bytes_content_sent() {
     .unwrap() else {
         panic!("a buffer id");
     };
-    let initialized = call_sync(
-        &audio,
-        id::op_audio_materialize_buffer,
-        vec![OwnedValue::U32(buffer_id)],
-    )
-    .unwrap();
-    assert!(
-        matches!(initialized,OwnedValue::Bytes(ref bytes) if bytes==&vec![0;8]),
-        "external initial backing changed wire shape or zero PCM"
-    );
-    assert!(
-        call_sync(
-            &audio,
-            id::op_audio_materialize_buffer,
-            vec![OwnedValue::U32(buffer_id)]
-        )
-        .is_err(),
-        "external initial backing initialized twice"
-    );
     let backing: Vec<u8> = [0.25f32, -0.25]
         .iter()
         .flat_map(|v| v.to_le_bytes())

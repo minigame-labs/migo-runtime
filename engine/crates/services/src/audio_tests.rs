@@ -478,8 +478,13 @@ fn a_decoded_buffer_plays_from_the_samples_the_decode_produced() {
     assert_eq!((ctx_id, data.as_slice()), (1, &[1u8, 2, 3][..]));
     let samples = vec![0.25f32, -0.25, 0.5, -0.5];
     let samples_at = samples.as_ptr();
-    resp.send(Ok(DecodedPcm::new(48_000, 2, 2, samples)))
-        .unwrap();
+    resp.send(Ok(DecodedPcm {
+        sample_rate: 48_000,
+        channels: 2,
+        frames: 2,
+        samples,
+    }))
+    .unwrap();
     let info = rt.block_on(decoding.answer()).unwrap();
     assert_eq!(
         (info.channels, info.length, info.sample_rate),
@@ -513,8 +518,8 @@ fn a_decoded_buffer_plays_from_the_samples_the_decode_produced() {
 
     // Reading it is what copies: a planar allocation for JavaScript.
     assert_eq!(
-        materialize_buffer(scope, info.id).unwrap().samples(),
-        &[0.25, 0.5, -0.25, -0.5]
+        materialize_buffer(scope, info.id).unwrap(),
+        vec![0.25, 0.5, -0.25, -0.5]
     );
     release_buffer(scope, info.id);
 }
@@ -540,16 +545,6 @@ fn a_writable_buffer_sent_as_bytes_freezes_when_started() {
         runtime_generation: 8,
     };
     let id = reserve_buffer(scope, 2, 2, 48_000).unwrap();
-    let initialized = materialize_buffer(scope, id).expect("external constructor initial backing");
-    assert_eq!(
-        initialized.samples(),
-        &[0.0; 4],
-        "external initial backing must be zero filled"
-    );
-    assert!(
-        materialize_buffer(scope, id).is_err(),
-        "external initial backing cannot be initialized twice"
-    );
     let planar: Vec<u8> = [1.0f32, 2.0, 10.0, 20.0]
         .iter()
         .flat_map(|v| v.to_le_bytes())
