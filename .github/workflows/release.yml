@@ -289,6 +289,11 @@ jobs:
       # nothing compared it until now. This holds the merged manifests to the same
       # table -- exactly, in both directions -- and states the set each profile
       # requests at API 26, 28 and 31.
+      # Gradle configures :c-host-example, which pins android.ndkVersion to the
+      # native build lock; pin all four NDK variables from that single source.
+      - name: Pin the Android NDK for Gradle configuration
+        run: bash scripts/ci/setup-android-ndk.sh
+
       - name: Android merged manifest permission contract
         run: bash scripts/test-android-merged-manifest-permissions.sh
 
