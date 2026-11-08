@@ -41,6 +41,19 @@ fn js_err_from_engine(e: EngineError) -> JsErrorBox {
     }
 }
 
+#[op2]
+#[buffer]
+pub fn op_encode_canvas_image(
+    #[buffer] rgba: &[u8],
+    width: u32,
+    height: u32,
+    jpeg: bool,
+    quality: u32,
+) -> Result<Vec<u8>, JsErrorBox> {
+    migo_io::image_ops::encode_canvas_image(rgba, width, height, jpeg, quality)
+        .map_err(js_err_from_engine)
+}
+
 #[inline]
 fn from_crossbeam_recv_err(e: RecvTimeoutError, timeout_msg: &'static str) -> EngineError {
     match e {

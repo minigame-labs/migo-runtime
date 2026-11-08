@@ -239,15 +239,15 @@ fn resolve_local_src(
                     // pool performs the package read instead of the host thread.
                     let relative = effective_src.strip_prefix("/code/").unwrap_or("");
                     let max_len = shared::protocol::io_cmd::MAX_READ_LENGTH;
-                    if let Some(size) = mt.entry_size(relative) {
-                        if size > max_len {
-                            return Err(EngineError::new(ErrorCode::IoError)
-                                .with_msg("pack image too large")
-                                .with_detail(format!(
-                                    "src={}, size={}, limit={}",
-                                    src, size, max_len
-                                )));
-                        }
+                    if let Some(size) = mt.entry_size(relative)
+                        && size > max_len
+                    {
+                        return Err(EngineError::new(ErrorCode::IoError)
+                            .with_msg("pack image too large")
+                            .with_detail(format!(
+                                "src={}, size={}, limit={}",
+                                src, size, max_len
+                            )));
                     }
                     return Ok(ResolvedSrc {
                         path: effective_src.to_string(),
@@ -297,25 +297,23 @@ fn resolve_local_src(
         || effective_src == "/tmp"
         || effective_src.starts_with("/tmp/");
 
-    if is_other_virtual {
-        if let Some(vfs) = vfs {
-            return vfs
-                .resolve(effective_src, FileOp::Read)
-                .map(|p| {
-                    let path_str = p.to_string_lossy().into_owned();
-                    let ver = variant_source_version_token(&path_str, None, mount_table);
-                    ResolvedSrc {
-                        path: path_str,
-                        source_version: ver,
-                        source: migo_io::image_ops::ImageSource::Filesystem,
-                    }
-                })
-                .map_err(|e| {
-                    EngineError::new(ErrorCode::PermissionDenied)
-                        .with_msg("image path resolve failed")
-                        .with_detail(format!("src={}, err={}", src, e))
-                });
-        }
+    if is_other_virtual && let Some(vfs) = vfs {
+        return vfs
+            .resolve(effective_src, FileOp::Read)
+            .map(|p| {
+                let path_str = p.to_string_lossy().into_owned();
+                let ver = variant_source_version_token(&path_str, None, mount_table);
+                ResolvedSrc {
+                    path: path_str,
+                    source_version: ver,
+                    source: migo_io::image_ops::ImageSource::Filesystem,
+                }
+            })
+            .map_err(|e| {
+                EngineError::new(ErrorCode::PermissionDenied)
+                    .with_msg("image path resolve failed")
+                    .with_detail(format!("src={}, err={}", src, e))
+            });
     }
 
     // Non-virtual absolute path: BLOCKED.
@@ -412,10 +410,11 @@ where
     let cache_key =
         super::cache::make_cache_key(&src, target_width, target_height, mount_generation);
 
-    match {
+    let begin_result = {
         let mut c = image_cache.lock();
         c.begin_load(image_id, &cache_key)
-    } {
+    };
+    match begin_result {
         super::cache::BeginLoadResult::AlreadyLoaded((shared_id, dims)) => {
             info!(
                 "op_load_image cache hit: image_id={}, shared_id={}, src={}, dims={}x{}",
@@ -527,10 +526,11 @@ where
             // `read_image_rgba8` keyed differently from
             // `actual_cache_key`.  Pin bookkeeping for both paths
             // happens in `finish_load` below.
-            if target_width.is_some() && target_height.is_some() {
-                if let shared::protocol::io_cmd::DecodedImage::Rgba(ref rgba) = img {
-                    migo_io::global_cache().insert(actual_cache_key.clone(), rgba.clone(), session);
-                }
+            if target_width.is_some()
+                && target_height.is_some()
+                && let shared::protocol::io_cmd::DecodedImage::Rgba(ref rgba) = img
+            {
+                migo_io::global_cache().insert(actual_cache_key.clone(), rgba.clone(), session);
             }
 
             // For *inline* RGBA decodes served by the local
@@ -540,10 +540,11 @@ where
             // covers resized variants; without this additional
             // insert, non-resized loads would never populate the
             // LRU slot keyed on the full-res key.
-            if target_width.is_none() && target_height.is_none() {
-                if let shared::protocol::io_cmd::DecodedImage::Rgba(ref rgba) = img {
-                    migo_io::global_cache().insert(actual_cache_key.clone(), rgba.clone(), session);
-                }
+            if target_width.is_none()
+                && target_height.is_none()
+                && let shared::protocol::io_cmd::DecodedImage::Rgba(ref rgba) = img
+            {
+                migo_io::global_cache().insert(actual_cache_key.clone(), rgba.clone(), session);
             }
 
             // Upload texture under shared_id (not caller image_id).
@@ -559,7 +560,7 @@ where
 
             let maybe_destroy = {
                 let mut c = image_cache.lock();
-                let destroy = match &res {
+                match &res {
                     Ok((w, h)) => c.finish_load(
                         image_id,
                         shared_id,
@@ -574,8 +575,7 @@ where
                         &actual_cache_key,
                         Err(engine_err_to_text(e)),
                     ),
-                };
-                destroy
+                }
             };
             // The pre-pin goes back once this arm is done with it. `finish_load`
             // has by then taken the real alias pin, on `actual_cache_key` if the
@@ -614,7 +614,10 @@ where
 /// Identical in shape to the local-file flow (begin_load → shared_id →
 /// LoadImage → finish_load). Parsing and decode have already run through the
 /// shared bounded image worker path before this upload stage.
-
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep cache ownership and the render response explicit at the existing upload boundary."
+)]
 async fn upload_inline_image(
     canvas_ctx: CanvasOpState,
     image_cache: super::cache::SharedImageCache,
@@ -667,7 +670,7 @@ async fn upload_inline_image(
 
     let maybe_destroy = {
         let mut c = image_cache.lock();
-        let destroy = match &res {
+        match &res {
             Ok((actual_w, actual_h)) => c.finish_load(
                 image_id,
                 shared_id,
@@ -682,8 +685,7 @@ async fn upload_inline_image(
                 &cache_key,
                 Err(engine_err_to_text(e)),
             ),
-        };
-        destroy
+        }
     };
     drop(pre_pin);
 
@@ -713,6 +715,10 @@ async fn upload_inline_image(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Use the existing loader state and source dimensions without a second context owner."
+)]
 async fn load_image_from_inline_bytes(
     scheduler: std::sync::Arc<migo_io::scheduler::IoScheduler>,
     gpu_caps: std::sync::Arc<shared::device::gpu_caps::GpuCaps>,
@@ -747,10 +753,11 @@ async fn load_image_from_inline_bytes(
         dispatch_destroy_image(&canvas_ctx.tx, to_destroy, "image cache eviction");
     }
 
-    match {
+    let begin_result = {
         let mut c = image_cache.lock();
         c.begin_load(image_id, &cache_key)
-    } {
+    };
+    match begin_result {
         super::cache::BeginLoadResult::AlreadyLoaded((shared_id, dims)) => Ok((shared_id, dims)),
         super::cache::BeginLoadResult::Join(rx) => match rx.await {
             Ok(Ok((actual_key, shared_id, dims))) => {
@@ -835,6 +842,10 @@ async fn load_image_from_inline_bytes(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Match the other image loaders while carrying the typed fetch callback."
+)]
 async fn load_image_from_http<F, Fut>(
     fetch_http: F,
     scheduler: std::sync::Arc<migo_io::scheduler::IoScheduler>,
@@ -867,10 +878,11 @@ where
         dispatch_destroy_image(&canvas_ctx.tx, to_destroy, "image cache eviction");
     }
 
-    match {
+    let begin_result = {
         let mut c = image_cache.lock();
         c.begin_load(image_id, &cache_key)
-    } {
+    };
+    match begin_result {
         super::cache::BeginLoadResult::AlreadyLoaded((shared_id, dims)) => {
             return Ok((shared_id, dims));
         }
@@ -1023,10 +1035,11 @@ pub async fn load_image_subrect(
     // the previously uploaded texture's shared id.  In-flight path
     // awaits the first caller's finish_load so N simultaneous
     // identical subrect requests do the decode+upload once.
-    match {
+    let begin_result = {
         let mut c = image_cache.lock();
         c.begin_load(image_id, &cache_key)
-    } {
+    };
+    match begin_result {
         super::cache::BeginLoadResult::AlreadyLoaded((shared_id, dims)) => {
             return Ok((shared_id, dims));
         }
@@ -1146,7 +1159,6 @@ pub async fn load_image_subrect(
 /// site in the warn log. All `DestroyImage` producers in this module must route
 /// through this helper (or the batch `dispatch_destroy_images`) rather than the
 /// bare `send()` that silently drops on backpressure.
-
 pub(crate) fn dispatch_destroy_image(
     tx: &shared::render_command_sender::CommandSender,
     image_id: u32,

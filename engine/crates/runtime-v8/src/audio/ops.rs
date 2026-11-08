@@ -1525,13 +1525,24 @@ pub fn op_inner_audio_load_url(
         let host = st.borrow::<HostOpState>();
         (
             host.audio_tx.clone(),
-            (host.code_dir.clone(), host.vfs.clone()),
+            (
+                host.code_dir.clone(),
+                host.vfs.clone(),
+                host.game_paths.as_ref().map(|paths| {
+                    service::LocalAudioFile::session(
+                        st.borrow::<crate::io_state::IoSchedulerState>().0.clone(),
+                        paths,
+                    )
+                    .with_mounts(host.mount_table.clone())
+                }),
+            ),
         )
     };
-    let (code_dir, vfs) = sources;
+    let (code_dir, vfs, local_file) = sources;
     let sources = InnerAudioSources {
         code_dir,
         vfs,
+        local_file,
         admit_remote: move |url: &migo_services::network::url::Url| {
             let st = state.borrow();
             crate::network::gate::enforce_from_state(

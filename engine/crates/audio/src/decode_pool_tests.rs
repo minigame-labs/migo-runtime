@@ -284,6 +284,8 @@ fn scheduled_formats_preserve_every_pcm_sample_while_refill_and_async_work_progr
         wav(8000, 32000),
         include_bytes!("decoder/ogg-fixtures/cross.ogg").to_vec(),
         crate::mp3_fixture::stream(256),
+        include_bytes!("decoder/aac-fixtures/adts-1.aac").to_vec(),
+        include_bytes!("decoder/aac-fixtures/2-tail-reverse.m4a").to_vec(),
     ] {
         let native = crate::decoder::decode(&bytes).unwrap();
         let expected = crate::resampler::resample_if_needed(native, 48000).unwrap();
@@ -319,6 +321,104 @@ fn scheduled_formats_preserve_every_pcm_sample_while_refill_and_async_work_progr
         );
         assert_eq!(Arc::strong_count(&data), 1);
         assert_eq!(pool.in_flight.bytes.load(Ordering::Acquire), 0);
+    }
+}
+
+#[test]
+fn aac_cancel_retains_original_allocation_and_credit_until_the_original_cpu_returns() {
+    for bytes in [
+        include_bytes!("decoder/aac-fixtures/adts-1.aac").to_vec(),
+        include_bytes!("decoder/aac-fixtures/2-tail-reverse.m4a").to_vec(),
+    ] {
+        let host = migo_io::scheduler::IoScheduler::new(0);
+        let (mut pool, results) = pool(&host, 1);
+        let (started, release, observation) = hold_first_step(&mut pool);
+        let capacity = bytes.capacity();
+        let watch = migo_alloc_probe::DeallocationWatch::new(bytes.as_ptr()).unwrap();
+        let (job, reply) = audio_buffer_decode_job(1, Arc::new(bytes));
+        pool.submit(job);
+        started.recv_timeout(WAIT).unwrap();
+        drop(reply);
+        until(|| {
+            observation
+                .flag
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|f| f.load(Ordering::Acquire))
+        });
+        assert_eq!(
+            watch.freed_bytes(),
+            None,
+            "AAC cancelled input freed before the original CPU returned"
+        );
+        assert_eq!(
+            pool.in_flight.bytes.load(Ordering::Acquire),
+            1,
+            "AAC cancelled input refunded its credit early"
+        );
+        assert_eq!(pool.slots.available_permits(), 0);
+        drop(release);
+        until(|| {
+            pool.in_flight.bytes.load(Ordering::Acquire) == 0 && watch.freed_bytes().is_some()
+        });
+        assert_eq!(
+            watch.freed_bytes(),
+            Some(capacity),
+            "AAC original allocation did not actually retire"
+        );
+        assert_ne!(
+            observation.name.lock().unwrap().as_deref(),
+            Some("audio-stream")
+        );
+        assert!(observation.cancelled.load(Ordering::Acquire));
+        assert!(results.try_recv().is_err());
+    }
+}
+
+#[test]
+fn aac_inner_load_uses_the_submitted_target_and_preserves_source_identity() {
+    for bytes in [
+        include_bytes!("decoder/aac-fixtures/adts-1.aac").to_vec(),
+        include_bytes!("decoder/aac-fixtures/2-tail-reverse.m4a").to_vec(),
+    ] {
+        let expected = crate::decoder::decode_for_rate(&bytes, 16000).unwrap();
+        let host = migo_io::scheduler::IoScheduler::new(0);
+        let (mut pool, results) = pool(&host, 1);
+        let shared = Arc::new(crate::inner_audio::InnerAudioSharedState::new());
+        let load = shared.begin_source(37).unwrap();
+        let (resp, _reply) = tokio::sync::oneshot::channel();
+        pool.submit(DecodeJob::InnerAudio {
+            id: 91,
+            load,
+            target_rate: 16000,
+            data: bytes,
+            resp,
+        });
+        let DecodeResult::InnerAudio {
+            id, load, result, ..
+        } = results.recv_timeout(WAIT).unwrap()
+        else {
+            panic!("AAC InnerAudio result lost its source kind");
+        };
+        assert_eq!(id, 91);
+        let actual = result.unwrap();
+        assert_eq!(
+            (actual.sample_rate, actual.channels),
+            (16000, expected.channels),
+            "AAC InnerAudio submitted target changed"
+        );
+        assert_eq!(
+            actual.samples, expected.samples,
+            "AAC InnerAudio complete PCM changed"
+        );
+        assert_eq!(pool.in_flight.bytes.load(Ordering::Acquire), 0);
+        assert!(shared.owns_load(&load));
+        shared.begin_source(38).unwrap();
+        assert!(
+            !shared.owns_load(&load),
+            "AAC result lost the submitted source generation"
+        );
     }
 }
 
@@ -471,4 +571,190 @@ fn pre_cancelled_turn_never_constructs_the_codec() {
     assert_eq!(code, ErrorCode::Cancelled);
     assert!(input_kept, "cancelled turn constructed a codec");
     assert_eq!(steps, 0);
+}
+
+#[test]
+fn sandbox_file_service_reaches_the_actual_decode_pool_with_complete_pcm_and_identity() {
+    local_file_product(false);
+}
+
+#[test]
+fn package_file_service_reaches_the_actual_decode_pool_with_complete_pcm_and_identity() {
+    local_file_product(true);
+}
+
+fn local_file_product(packaged: bool) {
+    let root = std::env::temp_dir().join(format!(
+        "migo-local-file-product-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let paths =
+        shared::vfs::GamePaths::new(root.join("files"), root.join("cache"), "audio", 1).unwrap();
+    paths.ensure_directories().unwrap();
+    std::fs::create_dir_all(paths.code_dir()).unwrap();
+    let vfs = Arc::new(shared::vfs::VirtualFS::try_from_game_paths(&paths).unwrap());
+    let source = paths.user_data_dir().join("deliberately-wrong.mp3");
+    let media = [
+        ("wave", wav(8000, 32000)),
+        (
+            "vorbis",
+            include_bytes!("decoder/ogg-fixtures/cross.ogg").to_vec(),
+        ),
+        ("mp3", crate::mp3_fixture::stream(32)),
+        (
+            "adts",
+            include_bytes!("decoder/aac-fixtures/adts-1.aac").to_vec(),
+        ),
+        (
+            "m4a-front",
+            include_bytes!("decoder/aac-fixtures/1-front.m4a").to_vec(),
+        ),
+        (
+            "m4a-reverse",
+            include_bytes!("decoder/aac-fixtures/2-tail-reverse.m4a").to_vec(),
+        ),
+    ];
+    for (name, bytes) in media {
+        for target in [16000, 48000] {
+            std::fs::write(&source, &bytes).unwrap();
+            let mounts = if packaged {
+                let path = root.join("clip.mpkg");
+                let mut writer =
+                    shared::vfs::PackageWriter::new(std::fs::File::create(&path).unwrap()).unwrap();
+                writer.add_entry("deliberately-wrong.mp3", &bytes).unwrap();
+                writer.finish("audio", "1").unwrap();
+                let mounts = Arc::new(shared::vfs::MountTable::new(paths.code_dir().to_path_buf()));
+                mounts.swap_base(Arc::new(
+                    shared::vfs::PackSource::open(&path, "audio", "1").unwrap(),
+                ));
+                Some(mounts)
+            } else {
+                None
+            };
+            let expected = crate::decoder::decode_for_rate(&bytes, target).unwrap();
+            let host = Arc::new(migo_io::scheduler::IoScheduler::new(997));
+            let (mut pool, results) = pool(&host, 1);
+            let (tx, rx) = shared::audio_channel::channel();
+            let tx = shared::op_state::AudioSender::new(tx, ThreadWakeup::new());
+            let work=migo_services::audio::inner_audio_load_url(tx,migo_services::audio::InnerAudioSources{
+                code_dir:None,vfs:Some(vfs.clone()),
+                local_file:Some(migo_services::audio::LocalAudioFile::session(host.clone(),&paths).with_mounts(mounts.clone())),
+                admit_remote:|_:&migo_services::network::url::Url|->Result<(),migo_services::ServiceError>{panic!("local source entered remote admission")},
+            },91,3701,if packaged { "deliberately-wrong.mp3" } else { "/user/deliberately-wrong.mp3" }.into()).unwrap();
+            let AudioCmd::InnerAudioBeginLoad {
+                id,
+                source_id,
+                resp,
+            } = rx.try_recv().unwrap()
+            else {
+                panic!("local source lost synchronous begin")
+            };
+            let mut player = crate::inner_audio::InnerAudioPlayer::new(91, expected.channels);
+            resp.send(player.begin_load_for(source_id)).unwrap();
+            assert_eq!((id, source_id), (91, 3701));
+            let (done, answer) = mpsc::channel();
+            crate::streaming::get_stream_runtime().spawn(async move {
+                done.send(work.await).unwrap();
+            });
+            let mut delivery = None;
+            until(|| {
+                delivery = rx.try_recv_owned().ok();
+                delivery.is_some()
+            });
+            let delivery = delivery.unwrap();
+            assert!(
+                delivery
+                    .finish_decode_submission(|command| {
+                        let AudioCmd::InnerAudioCompleteLoad {
+                            id,
+                            load,
+                            data,
+                            resp,
+                        } = command
+                        else {
+                            panic!("local source did not preserve whole-file M4A/decode dispatch")
+                        };
+                        assert_eq!(data, bytes, "local service changed complete encoded bytes");
+                        assert_eq!(
+                            load.source_id(),
+                            3701,
+                            "local service changed source identity"
+                        );
+                        // Later host/source writes cannot retarget the accepted input.
+                        std::fs::write(&source, b"replacement after source publication").unwrap();
+                        pool.submit(DecodeJob::InnerAudio {
+                            id,
+                            load,
+                            target_rate: target,
+                            data,
+                            resp,
+                        });
+                        None
+                    })
+                    .is_none()
+            );
+            let DecodeResult::InnerAudio {
+                id,
+                load,
+                result,
+                resp,
+            } = results.recv_timeout(WAIT).unwrap()
+            else {
+                panic!("local source lost its actual DecodePool result")
+            };
+            let actual = result.expect("actual pool refused sandboxed local source");
+            assert_eq!(
+                (id, actual.sample_rate, actual.channels),
+                (91, target, expected.channels),
+                "local submitted format changed"
+            );
+            assert!(
+                actual
+                    .samples
+                    .iter()
+                    .map(|s| s.to_bits())
+                    .eq(expected.samples.iter().map(|s| s.to_bits())),
+                "local actual DecodePool complete PCM changed"
+            );
+            if std::env::var_os(if packaged {
+                "MIGO_DUMP_PACKAGE_FILE_PCM"
+            } else {
+                "MIGO_DUMP_LOCAL_FILE_PCM"
+            })
+            .is_some()
+            {
+                println!(
+                    "{} {name}/{target} {:?}",
+                    if packaged {
+                        "MIGO_PACKAGE_FILE_PCM"
+                    } else {
+                        "MIGO_LOCAL_FILE_PCM"
+                    },
+                    actual
+                        .samples
+                        .iter()
+                        .map(|s| s.to_bits())
+                        .collect::<Vec<_>>()
+                );
+            }
+            let info = InnerAudioInfo {
+                duration: actual.duration(),
+                sample_rate: actual.sample_rate,
+                channels: actual.channels,
+            };
+            player.complete_load(load, actual).unwrap();
+            resp.send(Ok(info)).unwrap();
+            answer.recv_timeout(WAIT).unwrap().unwrap();
+            assert_eq!(pool.in_flight.bytes.load(Ordering::Acquire), 0);
+            assert!(
+                host.metrics().delegated_runs > 0,
+                "actual local product did not enter session Fs scheduling"
+            );
+        }
+    }
+    std::fs::remove_dir_all(root).unwrap();
 }

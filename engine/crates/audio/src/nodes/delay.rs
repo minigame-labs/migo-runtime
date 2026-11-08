@@ -27,6 +27,8 @@ pub struct DelayNode {
     write_frame: usize,
     /// Frames in the circular buffer.
     frames: usize,
+    normal_frames: usize,
+    feedback: bool,
     /// Maximum delay in seconds (set at creation time)
     max_delay: f32,
     channels: usize,
@@ -72,7 +74,21 @@ impl DelayNode {
         // One frame of headroom so the interpolator's second tap at the maximum
         // delay is still inside the buffer rather than wrapping onto the sample
         // just written.
-        let frames = (max_delay as f64 * sample_rate as f64) as usize + 2;
+        let frame_bytes = ch.checked_mul(std::mem::size_of::<f32>()).ok_or_else(|| {
+            EngineError::from_detail(ErrorCode::InvalidArgument, "delay buffer size overflow")
+        })?;
+        let capacity_frames = MAX_DELAY_BYTES / frame_bytes;
+        let minimum_frames = crate::audio_thread::RENDER_QUANTUM_FRAMES + 2;
+        if capacity_frames < minimum_frames {
+            return Err(EngineError::from_detail(
+                ErrorCode::InvalidArgument,
+                "delay quantum exceeds buffer budget",
+            ));
+        }
+        let normal_frames =
+            ((max_delay as f64 * sample_rate as f64) as usize + 2).min(capacity_frames);
+        let frames = normal_frames.max(minimum_frames);
+        let max_delay = max_delay.min((frames - 2) as f32 / sample_rate.max(1) as f32);
         let buffer_samples = frames.checked_mul(ch).ok_or_else(|| {
             EngineError::from_detail(ErrorCode::InvalidArgument, "delay buffer size overflow")
         })?;
@@ -89,6 +105,8 @@ impl DelayNode {
             _delay_permit: delay_permit,
             write_frame: 0,
             frames,
+            normal_frames,
+            feedback: false,
             max_delay,
             channels: ch,
         })
@@ -97,16 +115,59 @@ impl DelayNode {
     /// Read channel `ch` a fractional number of frames behind the write cursor.
     #[inline]
     fn read_interpolated(&self, delay_frames: f32, ch: usize) -> f32 {
+        self.read_at(self.write_frame, delay_frames, ch)
+    }
+
+    #[inline]
+    fn read_at(&self, write_frame: usize, delay_frames: f32, ch: usize) -> f32 {
         let whole = delay_frames.floor();
         let frac = delay_frames - whole;
         let back = whole as usize;
         // `write_frame` still holds the sample written this iteration, so a delay
         // of zero reads it straight back.
-        let tap0 = (self.write_frame + self.frames - back % self.frames) % self.frames;
+        let tap0 = (write_frame + self.frames - back % self.frames) % self.frames;
         let tap1 = (tap0 + self.frames - 1) % self.frames;
         let a = self.buffer[tap0 * self.channels + ch];
         let b = self.buffer[tap1 * self.channels + ch];
         a + (b - a) * frac
+    }
+    pub(crate) fn set_feedback(&mut self, feedback: bool) {
+        self.feedback = feedback;
+    }
+
+    /// A cyclic delay's reader runs before any writer for this quantum.
+    pub(crate) fn read_feedback(&self, output: &mut [f32], sample_rate: u32, current_time: f64) {
+        let frames = output.len() / self.channels;
+        debug_assert!(frames <= crate::audio_thread::RENDER_QUANTUM_FRAMES);
+        let mut automation = [0.0; crate::audio_thread::RENDER_QUANTUM_FRAMES];
+        let mut block = self.delay_time.values_block(current_time, sample_rate);
+        self.delay_time
+            .compute_values_from(&mut block, 0, &mut automation[..frames]);
+        let minimum = crate::audio_thread::RENDER_QUANTUM_FRAMES as f32;
+        for frame in 0..frames {
+            let delay = (automation[frame].clamp(0.0, self.max_delay) * sample_rate.max(1) as f32)
+                .max(minimum)
+                .min((self.frames - 2) as f32);
+            let cursor = (self.write_frame + frame) % self.frames;
+            for channel in 0..self.channels {
+                let sample = self.read_at(cursor, delay, channel);
+                output[frame * self.channels + channel] =
+                    if sample.is_subnormal() { 0.0 } else { sample };
+            }
+        }
+    }
+
+    /// Consume this quantum's summed input after all its dependencies ran.
+    pub(crate) fn write_feedback(&mut self, input: &[f32], frames: usize) {
+        for frame in 0..frames {
+            for channel in 0..self.channels {
+                self.buffer[self.write_frame * self.channels + channel] = input
+                    .get(frame * self.channels + channel)
+                    .copied()
+                    .unwrap_or(0.0);
+            }
+            self.write_frame = (self.write_frame + 1) % self.frames;
+        }
     }
 }
 
@@ -177,7 +238,46 @@ impl AudioNodeProcessor for DelayNode {
     }
 
     fn has_tail_audio(&self) -> bool {
-        self.buffer.iter().any(|sample| sample.abs() > 1e-10)
+        let history = if self.feedback {
+            self.frames - 2
+        } else {
+            self.normal_frames
+        };
+        let threshold = if self.feedback {
+            f32::MIN_POSITIVE
+        } else {
+            1e-10
+        };
+        // A short early-exit prefix keeps the common audible case cheap. The
+        // bounded remainder uses a full reduction, allowing ordinary portable
+        // vectorization without unsafe SIMD or scanning past the valid history.
+        fn contains(samples: &[f32], test: impl Fn(f32) -> bool) -> bool {
+            let prefix = samples.len().min(32);
+            samples[..prefix].iter().any(|sample| test(*sample))
+                || samples[prefix..].chunks(64).any(|chunk| {
+                    chunk
+                        .iter()
+                        .map(|sample| u32::from(test(*sample)))
+                        .sum::<u32>()
+                        != 0
+                })
+        }
+        if !self.feedback && history == self.frames {
+            return contains(&self.buffer, |sample| sample.abs() > threshold);
+        }
+        let start = (self.write_frame + self.frames - history) % self.frames;
+        let first = history.min(self.frames - start);
+        let audible = |sample: f32| {
+            if self.feedback {
+                sample.abs() >= threshold
+            } else {
+                sample.abs() > threshold
+            }
+        };
+        contains(
+            &self.buffer[start * self.channels..(start + first) * self.channels],
+            audible,
+        ) || contains(&self.buffer[..(history - first) * self.channels], audible)
     }
 
     fn prepare_params(

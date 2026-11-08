@@ -13,15 +13,21 @@
 
 use std::ffi::{c_int, c_void};
 use std::ptr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use ringbuf::traits::{Observer, Producer, Split};
-use ringbuf::{HeapProd, HeapRb};
+use ringbuf::traits::{Observer, Producer};
 use shared::error::{EngineError, EngineResult, ErrorCode};
 use tracing::{error, info};
 
 use super::{AudioSync, OutputCallback, RING_BUFFER_FRAMES};
+
+#[path = "output_ohaudio_error_storage.rs"]
+mod error_storage;
+type StreamErrorRef = error_storage::Reference;
+
+fn shared_stream_error(host: &crate::node_retirement::Host) -> EngineResult<StreamErrorRef> {
+    error_storage::Reference::new(Some(host), || AtomicBool::new(false))
+}
 
 /// What this stream asks the device for.
 ///
@@ -95,7 +101,7 @@ struct OhAudioRendererCallbacks {
     >,
 }
 
-#[link(name = "ohaudio")]
+#[cfg_attr(not(test), link(name = "ohaudio"))]
 unsafe extern "C" {
     fn OH_AudioStreamBuilder_Create(
         builder: *mut *mut OhAudioStreamBuilder,
@@ -147,7 +153,7 @@ unsafe extern "C" {
 /// back — which is why the box is released *after* `OH_AudioRenderer_Release`, not before.
 struct CallbackState {
     render: OutputCallback,
-    stream_error: Arc<AtomicBool>,
+    stream_error: StreamErrorRef,
 }
 
 /// Fills the device buffer from the ring.
@@ -212,11 +218,11 @@ pub struct AudioOutput {
     renderer: *mut OhAudioRenderer,
     /// Owns the callback state for as long as the renderer can reach it.
     state: *mut CallbackState,
-    producer: HeapProd<f32>,
+    producer: super::ring::Producer,
     sample_rate: u32,
     channels: u32,
     sync: AudioSync,
-    stream_error: Arc<AtomicBool>,
+    stream_error: StreamErrorRef,
 }
 
 // SAFETY: the two raw pointers are owned by this handle and only ever dereferenced by the
@@ -225,11 +231,11 @@ unsafe impl Send for AudioOutput {}
 
 impl AudioOutput {
     /// Create a new audio output
-    pub fn new() -> EngineResult<Self> {
+    pub fn new(host: &crate::node_retirement::Host) -> EngineResult<Self> {
         let ring_size = RING_BUFFER_FRAMES * OHOS_CHANNELS as usize;
-        let (producer, consumer) = HeapRb::<f32>::new(ring_size).split();
-        let sync = AudioSync::new();
-        let stream_error = Arc::new(AtomicBool::new(false));
+        let stream_error = shared_stream_error(host)?;
+        let sync = AudioSync::with_host(Some(host))?;
+        let (producer, consumer) = super::ring::new(ring_size, Some(host))?;
 
         let state = Box::into_raw(Box::new(CallbackState {
             render: OutputCallback::new(consumer, sync.clone(), 0),
@@ -262,6 +268,9 @@ impl AudioOutput {
 
     /// Get the sample rate
     #[inline]
+    pub(super) fn storage_host(&self) -> Option<crate::node_retirement::Host> {
+        super::ring::host(&self.producer)
+    }
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
@@ -483,3 +492,21 @@ unsafe fn configure_and_generate(
     info!("OHAudio output: sample_rate={OHOS_SAMPLE_RATE}, channels={OHOS_CHANNELS}, format=F32LE");
     Ok(renderer)
 }
+
+// Host tests compile the real Rust backend without opening a native renderer.
+#[cfg(test)]
+const _: () = {
+    let _ = AudioOutput::new;
+    let _ = AudioOutput::sample_rate;
+    let _ = AudioOutput::channels;
+    let _ = AudioOutput::write;
+    let _ = AudioOutput::available;
+    let _ = AudioOutput::buffered;
+    let _ = AudioOutput::high_watermark;
+    let _ = AudioOutput::needs_data;
+    let _ = AudioOutput::sync;
+    let _ = AudioOutput::is_alive;
+    let _ = AudioOutput::pause_stream;
+    let _ = AudioOutput::resume_stream;
+    let _ = AudioOutput::storage_host;
+};

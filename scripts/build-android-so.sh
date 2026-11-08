@@ -504,6 +504,15 @@ build_platform() {
         export RUSTFLAGS="$orig_rustflags"
         return 1
     fi
+    local readelf_bin=""
+    readelf_bin="$(android_ndk_readelf "$PROJECT_ROOT/contracts/artifact-manifest/android-v8.lock.json")" || {
+        export RUSTFLAGS="$orig_rustflags"
+        return 1
+    }
+    if ! android_jni_verify_exports "$readelf_bin" "$src_so"; then
+        export RUSTFLAGS="$orig_rustflags"
+        return 1
+    fi
     if ! cp "$src_so" "$dst_so"; then
         print_error "Unable to copy $src_so to $dst_so"
         export RUSTFLAGS="$orig_rustflags"
@@ -534,19 +543,6 @@ build_platform() {
     # does. Removed by hand it would come back the first time someone
     # "restored" the copy. test-android-native-deps-contract.sh is the gate.
     # --------------------------------------------------------
-    local readelf_bin=""
-    if [[ -x "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$(get_host_platform 2>/dev/null)/bin/llvm-readelf" ]]; then
-        readelf_bin="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$(get_host_platform)/bin/llvm-readelf"
-    elif command -v llvm-readelf &>/dev/null; then
-        readelf_bin="$(command -v llvm-readelf)"
-    elif command -v readelf &>/dev/null; then
-        readelf_bin="$(command -v readelf)"
-    fi
-    if [[ -z "$readelf_bin" ]]; then
-        print_error "no readelf available to read $dst_so's shared-library dependencies"
-        export RUSTFLAGS="$orig_rustflags"
-        return 1
-    fi
     if ! "$readelf_bin" --dynamic "$dst_so" 2>/dev/null | grep -q 'NEEDED.*libc++_shared\.so'; then
         print_info "libc++_shared.so not needed by $(basename "$dst_so"); not shipping it"
         rm -f "$dst_dir/libc++_shared.so"

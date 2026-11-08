@@ -87,19 +87,11 @@ khronos-egl = { version = "6", features = ["dynamic"] }
 #   Features:
 #     gl + egl        OpenGL ES + EGL context (required on Android)
 #     textlayout      SkParagraph / SkShaper / HarfBuzz / ICU (browser-grade text)
-#     binary-cache    would download prebuilt skia instead of compiling it, but
-#                     never does for this feature set: rust-skia publishes no
-#                     binary built with `embed-freetype`. Of the 13 prebuilt
-#                     x86_64-unknown-linux-gnu archives in skia-binaries 0.93.1,
-#                     zero carry the `ftembed` tag this combination asks for, so
-#                     the lookup 404s and skia-bindings falls back to building
-#                     from source -- every clean build, on CI and on a laptop.
-#                     That is where host-engine-tests spends most of its ~50
-#                     minutes, and it is why that job now caches its workspace.
-#                     Kept enabled so the day a matching binary is published it
-#                     starts being used; dropping `embed-freetype` to reach an
-#                     existing archive would change what ships, not just how it
-#                     is built.
+#     binary-cache    accepts only an exact upstream feature key. The minimal
+#                     gl/textlayout/embedded-FreeType profile has no published
+#                     archive in 0.157.0 and builds from source. Keep the small
+#                     product feature set rather than enabling PDF/JPEG to reach
+#                     a prebuilt archive.
 #     embed-icudtl    bundle icudtl.dat (~10 MiB) into the binary
 #     embed-freetype  bundle FreeType inside libmigo.so
 #
@@ -125,7 +117,7 @@ khronos-egl = { version = "6", features = ["dynamic"] }
 # must not link an EGL of its own. Keeping it would also make Skia's
 # GL-interface selection skip the Windows branch, leaving skia-bindings'
 # unconditional MakeWin wrapper unresolvable there.
-skia-safe = { version = "0.93", default-features = false, features = ["gl", "textlayout", "binary-cache", "embed-freetype"] }
+skia-safe = { version = "=0.157.0", default-features = false, features = ["gl", "textlayout", "binary-cache", "embed-freetype"] }
 
 # Image decoding - only enable formats actually needed
 # Removing unused formats can save 500KB-1MB
@@ -340,12 +332,14 @@ symphonia-core = { path = "third_party/symphonia-core-0.6.1" }
 symphonia-metadata = { path = "third_party/symphonia-metadata-0.6.1" }
 symphonia-format-ogg = { path = "third_party/symphonia-format-ogg-0.6.1" }
 symphonia-codec-vorbis = { path = "third_party/symphonia-codec-vorbis-0.6.1" }
+symphonia-codec-aac = { path = "third_party/symphonia-codec-aac-0.6.1" }
+symphonia-format-isomp4 = { path = "third_party/symphonia-format-isomp4-0.6.1" }
 # Exclude unused macOS process-tap capture from the mini-game output product.
 cpal = { path = "third_party/cpal-0.18.2" }
 tungstenite = { path = "third_party/tungstenite-0.30.0" }
 # Keep Ada C++ on the embedding product CRT rather than forcing /MT.
 ada-url = { path = "third_party/ada-url-4.0.0" }
-skia-bindings = { path = "third_party/skia-bindings-0.93.1" }
+skia-bindings = { path = "third_party/skia-bindings-0.157.0" }
 # Preserve HTML zero-delay tasks using core's scheduler, without copying its heap.
 deno_core = { path = "third_party/deno_core-0.413.0" }
 # The native Windows DLL and its actual Rust consumer share callback registration.

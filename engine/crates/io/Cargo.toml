@@ -29,7 +29,7 @@ cpu-image-resize = ["dep:image"]
 # needs API 30 against a floor of 26. Mini-game packages ship WebP to save size, and
 # every WebP or GIF asset failed to load there. The Java SDK's Android build leaves
 # this feature off and decodes both through BitmapFactory.
-rust-image-decode = ["cpu-image-resize", "dep:zune-image", "dep:zune-core", "image/webp", "image/gif"]
+rust-image-decode = ["cpu-image-resize", "dep:zune-image", "dep:zune-core", "dep:moxcms", "image/webp", "image/gif"]
 compress-brotli = ["dep:brotli"]
 
 [dependencies]
@@ -52,6 +52,16 @@ tempfile = { version = "3", default-features = false }
 image = { workspace = true, optional = true }
 zune-image = { workspace = true, optional = true }
 zune-core = { workspace = true, optional = true }
+# Already locked through image; native platform decoders target sRGB directly.
+moxcms = { version = "=0.7.11", optional = true }
+
+# Canvas export is available even with platform image decoding. Reuse the
+# already-locked encoders without enabling a second JPEG decoder in `image`.
+png = "=0.18.0"
+jpeg-encoder = "=0.7.0"
+# Read the same EXIF orientation on Rust and platform decode paths, including
+# PNG/WebP containers. Avoid a second hand-written TIFF/container parser.
+kamadak-exif = "=0.6.2"
 
 # LRU cache for decoded images
 lru = { workspace = true }
@@ -86,7 +96,8 @@ flate2 = { version = "1.1", optional = true, default-features = false, features 
 # the amalgamation — we only need the core KV surface (blob/TEXT + prepared
 # statements). Further size trimming happens via the `LIBSQLITE3_FLAGS` env
 # variable set by `scripts/build-android-so.sh`.
-rusqlite = { version = "0.32", default-features = false, features = ["bundled", "blob"] }
+# Prepared-statement caching is opt-in since 0.41; keep the existing batch path.
+rusqlite = { version = "0.41", default-features = false, features = ["bundled", "blob", "cache"] }
 
 # `O_NOFOLLOW` when creating a zip entry's output file, so the one path
 # component a malicious archive controls cannot be redirected through a

@@ -21,6 +21,8 @@ fn inputs() -> Vec<Vec<u8>> {
         wave.into_inner(),
         include_bytes!("ogg-fixtures/1.ogg").to_vec(),
         crate::mp3_fixture::stream(4),
+        include_bytes!("aac-fixtures/adts-1.aac").to_vec(),
+        include_bytes!("aac-fixtures/2-tail-reverse.m4a").to_vec(),
     ]
 }
 fn drain<B: AsRef<[u8]>>(mut job: WholeDecodeJob<B>) -> DecodedAudio {
@@ -69,9 +71,9 @@ fn cancellation_and_incomplete_finish_release_each_product_owner() {
             for _ in 0..stop {
                 assert!(!job.step(&AtomicBool::new(false)).unwrap());
             }
-            assert_eq!(
-                job.step(&AtomicBool::new(true)).unwrap_err().code,
-                ErrorCode::Cancelled
+            assert!(
+                matches!(job.step(&AtomicBool::new(true)), Err(e) if e.code == ErrorCode::Cancelled),
+                "product AAC cancellation was not forwarded"
             );
             assert!(weak.upgrade().is_none());
             assert_eq!(
@@ -138,4 +140,28 @@ fn actual_product_jobs_preserve_state_on_background_cpu_handoffs() {
             assert_eq!(output.unwrap().samples, expected.samples);
         });
     }
+}
+
+#[test]
+fn aac_adts_reaches_the_product_dispatcher() {
+    let input = include_bytes!("aac-fixtures/adts-1.aac");
+    let audio = crate::decoder::decode_for_rate(input, 44100)
+        .unwrap_or_else(|_| panic!("product dispatcher rejected AAC-LC ADTS"));
+    assert_eq!(
+        (audio.sample_rate, audio.channels, audio.frame_count()),
+        (44100, 2, 11264)
+    );
+    assert!(audio.samples.iter().any(|s| s.abs() > 0.01));
+}
+
+#[test]
+fn m4a_reaches_the_product_dispatcher() {
+    let input = include_bytes!("aac-fixtures/1-tail.m4a");
+    let audio = crate::decoder::decode_for_rate(input, 44100)
+        .unwrap_or_else(|_| panic!("product dispatcher rejected AAC-LC M4A"));
+    assert_eq!(
+        (audio.sample_rate, audio.channels, audio.frame_count()),
+        (44100, 2, 9737)
+    );
+    assert!(audio.samples.iter().any(|s| s.abs() > 0.01));
 }

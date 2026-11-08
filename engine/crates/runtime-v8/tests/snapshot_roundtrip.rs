@@ -27,6 +27,8 @@
 /// that build a runtime via `HostJsRuntime::new`.
 #[test]
 fn snapshot_roundtrip_restores_deno_core() {
+    runtime_v8::install_icu_data();
+    runtime_v8::snapshot::prepare_snapshot_creation();
     // ---- CREATION SIDE (mirror snapshot-gen/src/main.rs) ----
     let output = deno_core::snapshot::create_snapshot(
         deno_core::snapshot::CreateSnapshotOptions {

@@ -1,9 +1,7 @@
 // Encoding pixels as an image: what `canvas.toDataURL()` answers with.
 //
-// RGBA8 in, a PNG or a baseline JPEG out, in JavaScript, so that one implementation serves every lane (the embedded
-// runtime and the Performance+ producer run this same file) and no native encoder has to be linked into a build that
-// does not otherwise need one. Both are small and neither is fast: a megapixel takes a few hundred milliseconds,
-// which is what a call that happens when a player takes a screenshot can afford.
+// RGBA8 in, a PNG or a baseline JPEG out. MIME and quality normalization are shared by V8 and external producers.
+// V8 supplies a native encoder; producers without one return null and use the JavaScript codecs below.
 //
 // PNG: filters chosen per row by the usual sum-of-absolute-differences heuristic, then DEFLATE with LZ77 matching
 // (hash chains over the 32 KiB window) and the fixed Huffman code. An opaque image is written as RGB, not RGBA.
@@ -586,16 +584,24 @@ function imageQuality(quality) {
 }
 
 // `rgba`: width * height * 4 bytes, not premultiplied, rows top to bottom. `{ mime, bytes }`.
-function encodeImage(rgba, width, height, type, quality) {
+function encodeImage(rgba, width, height, type, quality, nativeEncoder) {
     const mime = imageMime(type);
-    const bytes = mime === "image/jpeg"
-        ? encodeJpeg(rgba, width, height, imageQuality(quality))
-        : encodePng(rgba, width, height);
+    const jpeg = mime === "image/jpeg";
+    const normalizedQuality = imageQuality(quality);
+    // V8 encodes borrowed pixels natively. External producers have no native
+    // encoder and explicitly return null; only that absence uses the JS codec.
+    // An encoding failure must reach the caller rather than silently retrying.
+    let bytes = nativeEncoder
+        ? nativeEncoder(rgba, width, height, jpeg, Math.max(1, Math.round(normalizedQuality * 100)))
+        : null;
+    if (bytes === null) {
+        bytes = jpeg ? encodeJpeg(rgba, width, height, normalizedQuality) : encodePng(rgba, width, height);
+    }
     return { mime, bytes };
 }
 
-function encodeDataUrl(rgba, width, height, type, quality) {
-    const { mime, bytes } = encodeImage(rgba, width, height, type, quality);
+function encodeDataUrl(rgba, width, height, type, quality, nativeEncoder) {
+    const { mime, bytes } = encodeImage(rgba, width, height, type, quality, nativeEncoder);
     return "data:" + mime + ";base64," + base64(bytes);
 }
 

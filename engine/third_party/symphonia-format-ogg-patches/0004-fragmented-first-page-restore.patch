@@ -1,0 +1,18 @@
+--- symphonia-format-ogg-0.6.1/src/streaming/vorbis_control.rs
++++ symphonia-format-ogg-0.6.1/src/streaming/vorbis_control.rs
+@@ -140,6 +140,15 @@
+             ReadState::Pending(_, _) => return Ok(PacketStep::NeedMore),
+             ReadState::Tail => self.probe_tail(input, eof)?,
+             ReadState::Packet => {
++                // Restoring the first audio page may arrive in smaller chunks
++                // than the page originally parsed before the tail probe.
++                if input.len() < self.pending_page {
++                    return if eof {
++                        decode_error("ogg: truncated restored Vorbis page")
++                    } else {
++                        Ok(PacketStep::NeedMore)
++                    };
++                }
+                 self.read_state = ReadState::Media;
+                 self.ready_packet()
+             }

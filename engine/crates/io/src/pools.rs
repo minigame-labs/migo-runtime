@@ -388,10 +388,10 @@ impl<T> QueueState<T> {
             && self.has_priority_work(PriorityClass::Background)
             && (self.has_priority_work(PriorityClass::ForegroundBlocking)
                 || self.has_priority_work(PriorityClass::ForegroundAsync));
-        if aging_due {
-            if let Some(job) = self.pop_priority(PriorityClass::Background, config, fairness) {
-                return Some(job);
-            }
+        if aging_due
+            && let Some(job) = self.pop_priority(PriorityClass::Background, config, fairness)
+        {
+            return Some(job);
         }
 
         for priority in [

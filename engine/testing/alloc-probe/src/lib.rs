@@ -36,6 +36,9 @@ mod native_thread;
 #[cfg(any(unix, windows))]
 pub use native_thread::on_native_thread;
 
+mod deallocation_watch;
+pub use deallocation_watch::DeallocationWatch;
+
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -207,8 +210,10 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        let watched = deallocation_watch::claim(ptr);
         record_deallocation(layout.size());
-        unsafe { self.inner.dealloc(ptr, layout) }
+        unsafe { self.inner.dealloc(ptr, layout) };
+        deallocation_watch::complete(watched, layout.size());
     }
 }
 

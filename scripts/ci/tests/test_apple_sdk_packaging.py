@@ -15,6 +15,7 @@ import hashlib
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from unittest import mock
 
@@ -173,6 +174,8 @@ class SDKPackaging(unittest.TestCase):
             (skia_release/asset).write_bytes(body)
             skia_targets[triple] = {"asset": asset, "size_bytes": len(body), "sha256": hashlib.sha256(body).hexdigest()}
         (self.root/"contracts/artifact-manifest/apple-skia.lock.json").write_text(json.dumps({
+            "source": {"crate_version": next(p["version"] for p in tomllib.loads(
+                (self.root/"engine/Cargo.lock").read_text())["package"] if p["name"] == "skia-bindings")},
             "url_template": f"file://{skia_release}/skia-binaries-{{key}}.tar.gz",
             "targets": skia_targets,
         }, indent=2) + "\n")
@@ -261,6 +264,24 @@ class SDKPackaging(unittest.TestCase):
         result = subprocess.run(["bash", str(helper), "--frameworks-dir", str(self.framework.parent), "--destination", str(self.root/"Host.app/Contents/Frameworks"), "--architectures", "arm64 x86_64"], text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.root/"Host.app/Contents/Frameworks/libGLESv2.dylib").is_file())
+
+    def test_skia_upgrade_builds_selected_source_and_discards_an_old_archive_url(self):
+        lock_path = self.root/"contracts/artifact-manifest/apple-skia.lock.json"
+        lock = json.loads(lock_path.read_text())
+        lock["source"]["crate_version"] = "0.0.0"
+        lock_path.write_text(json.dumps(lock))
+        result = subprocess.run([
+            "bash", "-c", 'set -e; . scripts/apple-skia-gl-env.sh aarch64-apple-darwin; '
+            "python3 -c 'import json,os; print(json.dumps({k:os.environ[k] for k in "
+            '("FORCE_SKIA_BUILD","SKIA_BINARIES_URL","SKIA_GN_ARGS") if k in os.environ}))\'',
+        ], cwd=self.root, env=dict(self.env, SKIA_BINARIES_URL="file:///obsolete-skia.tar.gz"),
+           text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        configured = json.loads(result.stdout)
+        self.assertEqual(configured["FORCE_SKIA_BUILD"], "1")
+        self.assertNotIn("SKIA_BINARIES_URL", configured)
+        self.assertIn('skia_gl_standard=""', configured["SKIA_GN_ARGS"])
+        self.assertFalse((self.root/"engine/target/apple-skia-archives").exists())
 
     def test_each_platform_keeps_the_module_map_its_own_archive_needs(self):
         # The C ABI is one; the link lines are per platform. Each slice of an

@@ -45,3 +45,12 @@ speaker positions. AIFF constructors keep their existing zero shift. Two
 library regressions and independent product numeric/legacy comparisons cover
 these decisions. Float64, companding and ADPCM remain outside the product
 profile. All features (including the unselected AIFF code) must still compile.
+
+`0004` adds a bounded PCM byte-offset seek/resume port to the same incremental
+packetizer. It retains the original known data extent and uses PacketInfo's
+existing packet alignment; exact pending-read validation fences resume. Unknown
+extents remain unseekable, invalid targets preserve the old cursor and pending
+request, and returned parser/resume failures remain terminal. The product reuses
+its existing codec reset, bounded encoded history, global SRC windows, sealed
+File capability, original CPU, and revision/consumer ACK handshake. This port
+does not add a second RIFF parser, decoder or resource budget.

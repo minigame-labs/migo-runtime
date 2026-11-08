@@ -27,10 +27,24 @@ use std::{
     },
 };
 
+mod package;
+pub use package::snapshot_package_until;
+
 // One scratch block becomes the first sealed-reader slot. Credit includes the
 // possible second slot and stays in ChunkPool until its final owner drops.
 const MEMORY_BYTES: u64 = 2 * FILE_CHUNK_BYTES as u64;
 const STEP_CHUNKS: usize = 16;
+
+/// The source was refused before spool allocation or copying. Callers may
+/// preserve their input-limit error without matching an OS error message.
+#[derive(Debug)]
+pub struct SnapshotTooLarge;
+impl std::fmt::Display for SnapshotTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("snapshot exceeds limit")
+    }
+}
+impl std::error::Error for SnapshotTooLarge {}
 
 struct CancelOnDrop(Arc<AtomicBool>);
 impl Drop for CancelOnDrop {
@@ -122,7 +136,7 @@ impl SnapshotCopy {
         if stamp.len > max_bytes {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "snapshot exceeds limit",
+                SnapshotTooLarge,
             ));
         }
         let lease = pools

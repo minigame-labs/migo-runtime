@@ -1,30 +1,24 @@
 use std::collections::HashMap;
 
-use jni::objects::{GlobalRef, JClass, JStaticMethodID};
+use jni::objects::{Global, JClass, JStaticMethodID};
 
 pub struct JavaMethodCache {
-    class: GlobalRef,
+    class: Global<JClass<'static>>,
     methods: HashMap<String, JStaticMethodID>,
 }
 
 impl JavaMethodCache {
-    pub(crate) fn new(class: GlobalRef) -> Self {
+    pub(crate) fn new(class: Global<JClass<'static>>) -> Self {
         Self {
             class,
             methods: HashMap::new(),
         }
     }
 
-    /// Returns the cached Java class as a `JClass<'static>`.
-    ///
-    /// The raw handle is valid as long as `self.class` is alive. No Drop is
-    /// triggered through `JClass` because it carries no ownership of its own.
+    /// Borrow the class through its owning global reference.
     #[inline]
-    pub(crate) fn class(&self) -> JClass<'static> {
-        // SAFETY: `self.class` is a JNI global reference; its raw handle is
-        // always valid for the lifetime of `self`. `JClass` has no Drop, so
-        // handing it out as `'static` cannot cause a double-free.
-        unsafe { JClass::from_raw(self.class.as_obj().as_raw()) }
+    pub(crate) fn class(&self) -> &JClass<'static> {
+        &self.class
     }
 
     #[inline]

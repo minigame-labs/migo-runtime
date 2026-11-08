@@ -37,3 +37,16 @@ platform/device and equal-PCM performance remain separate acceptance.
 
 The upstream MIT/CC0 notices stay in the extracted source. This additive patch
 follows the repository's licensing; it does not replace those notices.
+
+The third patch adds a progressive metadata entry point over the same internal
+initializer. The existing whole-file entry point retains the native 64 MiB PCM
+ceiling, including callers requesting a larger limit. The progressive entry
+point retains no full PCM allocation and uses the existing bounded input/output
+windows; its declared presentation is not restricted by that whole-file ceiling.
+The Rust progressive driver separates native owner allocation and metadata into
+individual CPU steps and validates the declared presentation before success.
+
+The native build script explicitly watches the C translation unit, private
+adapter header and both upstream headers. Cargo must rebuild after a source or
+header edit even when cc emits environment watch rules. A cached native artifact
+is never accepted as an executed source fault.

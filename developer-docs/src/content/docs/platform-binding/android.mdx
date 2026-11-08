@@ -43,14 +43,7 @@ typedef struct MigoAndroidNativeWindowDescriptor {
 MigoResult migo_android_init_context(void *vm, void *activity);
 ```
 
-仅在同时满足以下两个条件时调用：
-
-1. 宿主是**纯 C / NDK 宿主**（无 Java 层，不通过 `com.migo.runtime` AAR）；
-2. Session 会**播放音频**。
-
-`vm` 和 `activity` 对应 `ANativeActivity` 的 `vm` 和 `clazz` 字段。首次之后重复调用是空操作，Activity 重建后可以再次调用，无需检查。`vm` 为 NULL 返回 `MIGO_ERROR_INVALID_ARGUMENT`。
-
-漏调不会 attach 失败，但首次音频播放会直接终止进程而不是返回错误——必须在**创建任何会播放音频的 Session 之前**调用。
+当前原生 Oboe 音频后端无需 JavaVM，纯 C / NDK 宿主无需调用此函数。此符号仅为旧宿主保留，既不保留也不解引用这两个指针；重复调用无副作用。`vm` 非 NULL 返回 `MIGO_OK`，为 NULL 时仍返回 `MIGO_ERROR_INVALID_ARGUMENT`，保持原参数契约。
 
 ## generation 计数器（Android 特有陷阱）
 

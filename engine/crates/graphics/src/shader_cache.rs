@@ -46,9 +46,9 @@ fn entry_fits(len: u64) -> bool {
 pub struct ShaderCache {
     /// Base directory for cached binaries (e.g. `<app_cache>/migo_shader_cache/`).
     cache_dir: PathBuf,
-    /// Fingerprint of the current GL driver (GL_RENDERER + GL_VERSION).
+    /// Fingerprint of the GL driver and its WebGL validation mode.
     /// It participates in every key as well as the directory marker so a
-    /// stale file can never be accepted after a driver/version change.
+    /// stale file cannot be accepted after a driver/version or mode change.
     driver_key: String,
     /// `true` if `GL_NUM_PROGRAM_BINARY_FORMATS > 0`.
     supported: bool,
@@ -63,7 +63,12 @@ impl ShaderCache {
     pub fn new(gl: &glow::Context, cache_root: &Path) -> Self {
         let renderer = unsafe { gl.get_parameter_string(glow::RENDERER) };
         let version = unsafe { gl.get_parameter_string(glow::VERSION) };
-        let driver_key = format!("{renderer}||{version}");
+        let driver_key = driver_key(
+            &renderer,
+            &version,
+            gl.supported_extensions()
+                .contains("GL_ANGLE_webgl_compatibility"),
+        );
         let num_formats = unsafe { gl.get_parameter_i32(glow::NUM_PROGRAM_BINARY_FORMATS) };
         let supported = num_formats > 0;
         let cache_dir = cache_root.join("migo_shader_cache");
@@ -75,7 +80,7 @@ impl ShaderCache {
                 .map(|s| s != driver_key)
                 .unwrap_or(true);
             if stale {
-                debug!("Shader cache: driver changed, clearing cache");
+                debug!("Shader cache: driver or validation mode changed, clearing cache");
                 clear_dir(&cache_dir);
                 std::fs::write(&key_path, &driver_key).ok();
             }
@@ -172,6 +177,10 @@ impl ShaderCache {
             }
         }
     }
+}
+
+fn driver_key(renderer: &str, version: &str, webgl: bool) -> String {
+    format!("{renderer}||{version}||webgl={webgl}")
 }
 
 pub(crate) fn make_cache_key(descriptor: &LinkDescriptor<'_>, driver_key: &str) -> String {
@@ -691,5 +700,262 @@ mod tests {
         let worker = &SOURCE[start..end];
         assert!(worker.contains("with_extension(\"tmp\")"));
         assert!(worker.contains("std::fs::rename"));
+    }
+
+    #[test]
+    fn ordinary_and_webgl_modes_do_not_share_cached_binaries() {
+        let dir = make_test_dir("validation_mode");
+        let descriptor = LinkDescriptor {
+            vertex_src: "v",
+            fragment_src: "f",
+            attrib_key: "",
+            tf_varyings: &[],
+            tf_buffer_mode: None,
+        };
+        // The renderer/version can be identical in two contexts. The mode is
+        // still a compilation input, including when an old worker writes late.
+        let ordinary = ShaderCache::new_for_test(
+            dir.clone(),
+            driver_key("same GPU", "same GLES", false),
+            true,
+        );
+        let webgl =
+            ShaderCache::new_for_test(dir.clone(), driver_key("same GPU", "same GLES", true), true);
+        let ordinary_path = dir.join(make_cache_key(&descriptor, &ordinary.driver_key));
+        let webgl_path = dir.join(make_cache_key(&descriptor, &webgl.driver_key));
+        let ordinary_bytes = [7u32.to_le_bytes().as_slice(), b"ordinary binary"].concat();
+        let webgl_bytes = [9u32.to_le_bytes().as_slice(), b"WebGL binary"].concat();
+        std::fs::write(&ordinary_path, &ordinary_bytes).unwrap();
+        assert_eq!(
+            ordinary.load(&descriptor),
+            Some((7, b"ordinary binary".to_vec()))
+        );
+        assert!(
+            webgl.load(&descriptor).is_none(),
+            "ordinary binary must not bypass WebGL validation"
+        );
+        std::fs::write(&webgl_path, &webgl_bytes).unwrap();
+        assert_eq!(webgl.load(&descriptor), Some((9, b"WebGL binary".to_vec())));
+        std::fs::write(&ordinary_path, ordinary_bytes).unwrap(); // A late ordinary writer.
+        assert_eq!(webgl.load(&descriptor), Some((9, b"WebGL binary".to_vec())));
+        assert_eq!(
+            ordinary.load(&descriptor),
+            Some((7, b"ordinary binary".to_vec()))
+        );
+        drop((ordinary, webgl));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires MIGO_TEST_ANGLE_EGL_LIBRARY and ANGLE/SwiftShader Vulkan"]
+    fn angle_program_binary_cache_native() {
+        fn pixel(gl: &glow::Context, program: glow::NativeProgram) -> [u8; 4] {
+            unsafe {
+                gl.use_program(Some(program));
+                let tint = gl
+                    .get_uniform_location(program, "tint")
+                    .expect("active tint");
+                gl.uniform_4_f32(Some(&tint), 0.0, 0.5, 0.0, 1.0);
+                let vao = gl.create_vertex_array().unwrap();
+                gl.bind_vertex_array(Some(vao));
+                gl.viewport(0, 0, 3, 2);
+                gl.clear_color(1.0, 0.0, 1.0, 1.0);
+                gl.clear(glow::COLOR_BUFFER_BIT);
+                gl.draw_arrays(glow::TRIANGLES, 0, 3);
+                let mut rgba = [0u8; 4];
+                gl.read_pixels(
+                    0,
+                    0,
+                    1,
+                    1,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelPackData::Slice(Some(&mut rgba)),
+                );
+                assert_eq!(gl.get_error(), glow::NO_ERROR);
+                gl.delete_vertex_array(vao);
+                rgba
+            }
+        }
+        for webgl in [false, true] {
+            let (scope, gl) = crate::backend::gl::readback_test_gl::native_angle_context(3, webgl);
+            assert_eq!(
+                gl.supported_extensions()
+                    .contains("GL_ANGLE_webgl_compatibility"),
+                webgl
+            );
+            let dir = make_test_dir(if webgl {
+                "native_webgl"
+            } else {
+                "native_ordinary"
+            });
+            let cache = ShaderCache::new(&gl, &dir);
+            assert!(cache.is_supported(), "driver provides program binaries");
+            let vs = "#version 300 es\nconst vec2 p[3] = vec2[3](vec2(-1.0,-1.0),vec2(3.0,-1.0),vec2(-1.0,3.0)); void main() { gl_Position = vec4(p[gl_VertexID],0.0,1.0); }";
+            let fs = "#version 300 es\nprecision highp float; uniform vec4 tint; out vec4 color; void main() { color = tint; }";
+            let descriptor = LinkDescriptor {
+                vertex_src: vs,
+                fragment_src: fs,
+                attrib_key: "",
+                tf_varyings: &[],
+                tf_buffer_mode: None,
+            };
+            let compile = |kind, source: &str| unsafe {
+                let shader = gl.create_shader(kind).unwrap();
+                gl.shader_source(shader, source);
+                gl.compile_shader(shader);
+                assert!(
+                    gl.get_shader_compile_status(shader),
+                    "{}",
+                    gl.get_shader_info_log(shader)
+                );
+                shader
+            };
+            let vertex = compile(glow::VERTEX_SHADER, vs);
+            let fragment = compile(glow::FRAGMENT_SHADER, fs);
+            let source_program = unsafe { gl.create_program().unwrap() };
+            unsafe {
+                gl.attach_shader(source_program, vertex);
+                gl.attach_shader(source_program, fragment);
+                type Hint = unsafe extern "system" fn(u32, u32, i32);
+                let hint: Hint = std::mem::transmute(
+                    scope
+                        .api
+                        .get_proc_address("glProgramParameteri")
+                        .expect("binary hint"),
+                );
+                hint(source_program.0.get(), 0x8257, 1);
+                gl.link_program(source_program);
+                assert!(
+                    gl.get_program_link_status(source_program),
+                    "{}",
+                    gl.get_program_info_log(source_program)
+                );
+            }
+            assert_eq!(pixel(&gl, source_program), [0, 128, 0, 255]);
+            let (format, binary) =
+                get_program_binary(&gl, source_program).expect("retrievable bounded binary");
+            let renderer = unsafe { gl.get_parameter_string(glow::RENDERER) };
+            let version = unsafe { gl.get_parameter_string(glow::VERSION) };
+            let legacy_key = format!("{renderer}||{version}");
+            let legacy_path = cache
+                .cache_dir
+                .join(make_cache_key(&descriptor, &legacy_key));
+            let legacy_data = [format.to_le_bytes().as_slice(), binary.as_slice()].concat();
+            std::fs::write(&legacy_path, legacy_data).unwrap();
+            assert!(
+                cache.load(&descriptor).is_none(),
+                "unqualified legacy binary must not be restored"
+            );
+            let opposite_path = cache.cache_dir.join(make_cache_key(
+                &descriptor,
+                &driver_key(&renderer, &version, !webgl),
+            ));
+            std::fs::write(
+                &opposite_path,
+                [format.to_le_bytes().as_slice(), binary.as_slice()].concat(),
+            )
+            .unwrap();
+            assert!(
+                cache.load(&descriptor).is_none(),
+                "binary for the opposite validation mode must miss"
+            );
+            // The existing startup marker migrates old unqualified caches too.
+            std::fs::write(cache.cache_dir.join(".driver_key"), &legacy_key).unwrap();
+            drop(cache);
+            let cache = ShaderCache::new(&gl, &dir);
+            assert!(!legacy_path.exists(), "legacy marker clears stale entries");
+
+            cache.save(&gl, source_program, &descriptor);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let (loaded_format, loaded_binary) = loop {
+                if let Some(entry) = cache.load(&descriptor) {
+                    break entry;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "async binary persistence timed out"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            };
+            assert_eq!(loaded_format, format);
+            assert_eq!(loaded_binary, binary);
+            let restored = unsafe { gl.create_program().unwrap() };
+            unsafe {
+                // Production keeps the source shaders attached for binary refusal fallback.
+                gl.attach_shader(restored, vertex);
+                gl.attach_shader(restored, fragment);
+                gl.program_binary(
+                    restored,
+                    &glow::ProgramBinary {
+                        format: loaded_format,
+                        buffer: loaded_binary,
+                    },
+                );
+                assert!(
+                    gl.get_program_link_status(restored),
+                    "{}",
+                    gl.get_program_info_log(restored)
+                );
+                let tint = gl.get_uniform_location(restored, "tint").unwrap();
+                let mut value = [1.0; 4];
+                gl.get_uniform_f32(restored, &tint, &mut value);
+                assert_eq!(value, [0.0; 4], "binary load resets uniforms");
+            }
+            assert_eq!(pixel(&gl, restored), [0, 128, 0, 255]);
+            // A cached blob can be unreadable even under the right identity.
+            std::fs::write(
+                cache
+                    .cache_dir
+                    .join(make_cache_key(&descriptor, &cache.driver_key)),
+                [format.to_le_bytes().as_slice(), &binary[..8]].concat(),
+            )
+            .unwrap();
+            let (bad_format, bad_binary) =
+                cache.load(&descriptor).expect("read truncated cache entry");
+            unsafe {
+                gl.program_binary(
+                    restored,
+                    &glow::ProgramBinary {
+                        format: bad_format,
+                        buffer: bad_binary,
+                    },
+                );
+                assert!(
+                    !gl.get_program_link_status(restored),
+                    "truncated binary must fail link"
+                );
+                eprintln!(
+                    "webgl={webgl} truncated binary error=0x{:x}",
+                    gl.get_error()
+                );
+            }
+            cache.refused(&descriptor);
+            assert!(
+                cache.load(&descriptor).is_none(),
+                "refused binary removed before source fallback"
+            );
+            unsafe {
+                gl.link_program(restored);
+                assert!(
+                    gl.get_program_link_status(restored),
+                    "{}",
+                    gl.get_program_info_log(restored)
+                );
+            }
+            assert_eq!(pixel(&gl, restored), [0, 128, 0, 255]);
+            eprintln!(
+                "PASS webgl={webgl}: source / persisted binary / refusal fallback; {} bytes",
+                binary.len()
+            );
+            unsafe {
+                gl.delete_program(source_program);
+                gl.delete_program(restored);
+                gl.delete_shader(vertex);
+                gl.delete_shader(fragment);
+            }
+            drop(cache);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 }

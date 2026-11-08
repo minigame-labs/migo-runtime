@@ -176,6 +176,19 @@ check(!reports.some((r) => r.type === "console"), "content's console is not a pa
 
 const canvas = migo.createCanvas();
 check(canvas.width === 64 && canvas.height === 48, "the main canvas has the surface's size");
+{
+  const read = canvas._readAllPixels;
+  canvas._readAllPixels = () => new Uint8Array(64 * 48 * 4).fill(255);
+  const png = canvas._encode('image/png');
+  const jpeg = canvas._encode('image/jpeg', 0.92);
+  check(png.mime === 'image/png' && png.bytes[0] === 137 && png.bytes[1] === 80,
+    'the producer canvas exports PNG through its local codec');
+  check(jpeg.mime === 'image/jpeg' && jpeg.bytes[0] === 255 && jpeg.bytes[1] === 216,
+    'the producer canvas exports JPEG through its local codec');
+  check(canvas.toDataURL('image/unknown').startsWith('data:image/png;base64,'),
+    'the producer data URL keeps unsupported-type PNG fallback');
+  canvas._readAllPixels = read;
+}
 const gl = canvas.getContext("webgl");
 check(gl && typeof gl.clear === "function", "the engine's own WebGL context was created");
 const attributes = gl.getContextAttributes();

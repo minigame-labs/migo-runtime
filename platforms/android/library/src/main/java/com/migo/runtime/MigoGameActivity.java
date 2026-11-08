@@ -522,11 +522,13 @@ public class MigoGameActivity extends Activity implements SurfaceHolder.Callback
         Log.i(TAG, "initializeGame: gameId=" + gameId + ", entry=" + entryPoint);
 
         if (session == null || !session.isValid()) {
-            // No warm session: either the warm start failed above, or a
-            // subclass tore this one down. Create it the original way, with the
-            // Surface in hand.
+            // Defer V8 construction to the existing Host thread. A session
+            // created with a Surface waits for V8 readiness on this main
+            // thread, which can ANR when source bootstrap takes seconds.
+            // The warm path publishes its command queue immediately; attach
+            // this Surface before queueing the game's start below.
             MigoRuntime.Result<GameSession> result = MigoRuntime.getInstance()
-                    .createSessionSafe(this, holder.getSurface(), config, gameId);
+                    .createSessionWarmSafe(this, config, gameId);
             if (result.isFailure()) {
                 Log.e(TAG, "initializeGame failed: code=" + result.getErrorCode()
                         + ", msg=" + result.getErrorMessage());
@@ -537,15 +539,12 @@ public class MigoGameActivity extends Activity implements SurfaceHolder.Callback
             if (!publishSession()) {
                 return;
             }
-        } else {
-            // Warm session: it has been building its GPU stack since onCreate
-            // and is waiting for exactly this. `updateSurface` installs a first
-            // Surface by the same path it installs a replacement -- the engine
-            // distinguishes them by whether a live one is already bound, not by
-            // which call delivered it.
-            Rect frame = holder.getSurfaceFrame();
-            session.updateSurface(holder.getSurface(), frame.width(), frame.height());
         }
+
+        // Both a session started here and an optional onCreate warm session
+        // receive their first Surface through the ordinary attachment path.
+        Rect frame = holder.getSurfaceFrame();
+        session.updateSurface(holder.getSurface(), frame.width(), frame.height());
 
         // Start the game
         gameStarted = true;
@@ -561,17 +560,14 @@ public class MigoGameActivity extends Activity implements SurfaceHolder.Callback
      * surface callback.
      * <p>
      * {@code surfaceCreated} is delivered from the middle of a
-     * {@code ViewRootImpl} traversal, and creating a session is not cheap: it
-     * spawns the host thread and blocks until that thread has built the V8
-     * isolate and the graphics stack. Measured on a Mate 30 Pro that is ~114 ms
-     * of the launch, and every millisecond of it is a millisecond the window
-     * cannot finish its first draw -- the activity transition stalls and the
-     * system reports the activity displayed that much later.
+     * {@code ViewRootImpl} traversal. Posting startup lets that traversal finish
+     * and draw before the Host and render threads begin their work. Startup
+     * uses the nonblocking warm path even when the Surface is already known;
+     * it attaches the Surface before sending the game's start command.
      * <p>
      * Nothing about the session needs to happen inside the traversal. Posting it
-     * lets the traversal finish and draw, then does the same work one message
-     * later. The game itself starts at most one frame later than before; the
-     * window appears far sooner and the main thread is never held.
+     * keeps both native initialization and the game's module evaluation off
+     * the UI thread without moving startup into the earlier onCreate layout.
      */
     private void scheduleInitializeGame(SurfaceHolder holder) {
         cancelPendingInit();

@@ -162,12 +162,9 @@ fn ingest_archive_to_package<R: Read + Seek>(
     // inflate CPU.
     let mut advertised_total: u64 = 0;
     for i in 0..entry_count {
-        let entry = archive.by_index_raw(i).map_err(|e| {
-            PackageError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            ))
-        })?;
+        let entry = archive
+            .by_index_raw(i)
+            .map_err(|e| PackageError::Io(std::io::Error::other(e.to_string())))?;
         let sz = entry.size();
         if sz > budget.max_entry_uncompressed {
             return Err(PackageError::Io(std::io::Error::new(
@@ -199,12 +196,9 @@ fn ingest_archive_to_package<R: Read + Seek>(
         let mut writer = PackageWriter::new(std::io::BufWriter::new(file))?;
         let mut ingested_total: u64 = 0;
         for i in 0..entry_count {
-            let mut entry = archive.by_index(i).map_err(|e| {
-                PackageError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                ))
-            })?;
+            let mut entry = archive
+                .by_index(i)
+                .map_err(|e| PackageError::Io(std::io::Error::other(e.to_string())))?;
 
             if entry.is_dir() {
                 continue;
@@ -237,17 +231,16 @@ fn ingest_archive_to_package<R: Read + Seek>(
             if budget.max_compression_ratio > 0 {
                 let compressed = entry.compressed_size();
                 let uncompressed_hdr = entry.size();
-                if compressed > 0 {
-                    let ratio = uncompressed_hdr / compressed;
-                    if ratio > budget.max_compression_ratio {
-                        return Err(PackageError::Io(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!(
-                                "zip entry '{}' compression ratio {} exceeds budget {}",
-                                name, ratio, budget.max_compression_ratio
-                            ),
-                        )));
-                    }
+                if let Some(ratio) = uncompressed_hdr.checked_div(compressed)
+                    && ratio > budget.max_compression_ratio
+                {
+                    return Err(PackageError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "zip entry '{}' compression ratio {} exceeds budget {}",
+                            name, ratio, budget.max_compression_ratio
+                        ),
+                    )));
                 }
             }
 
@@ -300,21 +293,21 @@ fn ingest_archive_to_package<R: Read + Seek>(
             // decode or a non-4-aligned image yields no sidecar (the original
             // still carries the asset), so this never fails ingest. The sidecar
             // counts against the archive budget like any other entry.
-            if let Some(bytes) = image_bytes {
-                if let Some(sidecar) = transcode_image(&name, &bytes, gpu_caps) {
-                    let sidecar_len = sidecar.bytes.len() as u64;
-                    if ingested_total.saturating_add(sidecar_len) > budget.max_total_uncompressed {
-                        return Err(PackageError::Io(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!(
-                                "transcoded sidecar '{}' ({} bytes) would exceed budget {}",
-                                sidecar.name, sidecar_len, budget.max_total_uncompressed
-                            ),
-                        )));
-                    }
-                    writer.add_entry(&sidecar.name, &sidecar.bytes)?;
-                    ingested_total = ingested_total.saturating_add(sidecar_len);
+            if let Some(bytes) = image_bytes
+                && let Some(sidecar) = transcode_image(&name, &bytes, gpu_caps)
+            {
+                let sidecar_len = sidecar.bytes.len() as u64;
+                if ingested_total.saturating_add(sidecar_len) > budget.max_total_uncompressed {
+                    return Err(PackageError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "transcoded sidecar '{}' ({} bytes) would exceed budget {}",
+                            sidecar.name, sidecar_len, budget.max_total_uncompressed
+                        ),
+                    )));
                 }
+                writer.add_entry(&sidecar.name, &sidecar.bytes)?;
+                ingested_total = ingested_total.saturating_add(sidecar_len);
             }
         }
 

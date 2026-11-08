@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use graphics::image_decode_ahb::decode_image_to_ahb;
 use shared::{
     error::ErrorCode,
@@ -6,6 +7,54 @@ use shared::{
         io_cmd::MAX_IMAGE_PIXELS,
     },
 };
+
+#[test]
+fn rgb_icc_pngs_are_srgb_in_cpu_and_padded_ahb_rows() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../io/tests/fixtures/images/icc-cases.json"
+    ))
+    .unwrap();
+    for case in fixture["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|case| case["format"] == "PNG")
+    {
+        let encoded = base64::engine::general_purpose::STANDARD
+            .decode(case["encoded"].as_str().unwrap())
+            .unwrap();
+        let cpu = graphics::image_decode_ahb::decode_image_rgba(&encoded).unwrap();
+        let ahb = decode_image_to_ahb(&encoded).unwrap();
+        assert_eq!(
+            (cpu.width, cpu.height),
+            (
+                case["stored_width"].as_u64().unwrap() as u32,
+                case["stored_height"].as_u64().unwrap() as u32
+            )
+        );
+        assert_eq!((ahb.width, ahb.height), (cpu.width, cpu.height));
+        let hardware_pixels = read_rgba_from_ahb(&ahb.ahb).unwrap();
+        for pixels in [&*cpu.rgba, &hardware_pixels] {
+            let expected = case["stored_rgba"].as_array().unwrap();
+            assert_eq!(pixels.len(), expected.len());
+            for (i, (actual, expected)) in pixels.iter().zip(expected).enumerate() {
+                let tolerance = if i % 4 == 3
+                    || case["profile"] == "untagged"
+                    || case["profile"] == "invalid"
+                {
+                    0
+                } else {
+                    2
+                };
+                assert!(
+                    (i64::from(*actual) - expected.as_i64().unwrap()).abs() <= tolerance,
+                    "{} byte {i}: {actual} vs {expected}",
+                    case["profile"]
+                );
+            }
+        }
+    }
+}
 
 fn encode_rgba_png(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
     let mut encoded = Vec::new();

@@ -379,7 +379,14 @@ impl<W: Write + Seek> PackageWriter<W> {
         Self::with_chunk_size(writer, DEFAULT_CHUNK_SIZE)
     }
 
+    /// Set a chunk size supported by the reader, without touching output on error.
     pub fn with_chunk_size(mut writer: W, chunk_size: u32) -> io::Result<Self> {
+        if !(1..=MAX_CHUNK_RAW_SIZE).contains(&chunk_size) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("package chunk size must be in 1..={MAX_CHUNK_RAW_SIZE}"),
+            ));
+        }
         let placeholder = Header {
             entry_count: 0,
             chunk_count: 0,
@@ -1401,6 +1408,66 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn writer_rejects_chunk_sizes_its_reader_cannot_use_before_writing() {
+        for size in [0, MAX_CHUNK_RAW_SIZE + 1, u32::MAX] {
+            let original = b"existing destination".to_vec();
+            let mut output = io::Cursor::new(original.clone());
+            output.set_position(3);
+            let error = match PackageWriter::with_chunk_size(&mut output, size) {
+                Err(error) => error,
+                Ok(_) => panic!("unreadable chunk size {size} must be rejected"),
+            };
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(output.position(), 3, "rejection must not seek output");
+            assert_eq!(
+                output.into_inner(),
+                original,
+                "rejection must not write output"
+            );
+        }
+    }
+
+    #[test]
+    fn writer_boundary_chunk_sizes_roundtrip_both_entry_apis() {
+        let dir = make_test_dir("writer_chunk_boundaries");
+        for size in [1, DEFAULT_CHUNK_SIZE, MAX_CHUNK_RAW_SIZE] {
+            let data: Vec<u8> = (0..size as usize + 1)
+                .map(|i| i.wrapping_mul(31) as u8)
+                .collect();
+            let path = dir.join(format!("{size}.mpkg"));
+            let mut writer = PackageWriter::with_chunk_size(
+                io::BufWriter::new(std::fs::File::create(&path).unwrap()),
+                size,
+            )
+            .unwrap();
+            writer.add_entry("buffer.bin", &data).unwrap();
+            writer
+                .add_entry_streaming("stream.bin", io::Cursor::new(&data), data.len() as u64)
+                .unwrap();
+            writer.add_entry("empty.bin", &[]).unwrap();
+            writer
+                .add_entry_streaming("empty-stream.bin", io::empty(), 0)
+                .unwrap();
+            let identity = writer.finish("boundaries", "1").unwrap();
+            let reader = PackageReader::open(&path, "boundaries", "1").unwrap();
+            assert_eq!(reader.identity(), &identity);
+            for entry in ["buffer.bin", "stream.bin"] {
+                assert_eq!(reader.read_entry(entry).unwrap(), data);
+                let mut ranges = reader
+                    .entry_reader(entry, PackageReadLimits::default())
+                    .unwrap();
+                let start = (size as usize).saturating_sub(1);
+                let mut tail = vec![0; data.len() - start];
+                ranges.read_exact_at(start as u64, &mut tail).unwrap();
+                assert_eq!(tail, data[start..]);
+            }
+            assert!(reader.read_entry("empty.bin").unwrap().is_empty());
+            assert!(reader.read_entry("empty-stream.bin").unwrap().is_empty());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     // -- Path validation --

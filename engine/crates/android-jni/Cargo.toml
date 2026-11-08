@@ -40,4 +40,4 @@ platform = { package = "migo-platform", path = "../platform", default-features =
 # The JNI entry point is the only thing this crate contains, so `jni` is only
 # needed where it is compiled.
 [target.'cfg(target_os = "android")'.dependencies]
-jni = "0.21"
+jni = "=0.22.4"

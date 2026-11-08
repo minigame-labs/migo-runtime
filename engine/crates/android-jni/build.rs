@@ -14,4 +14,8 @@ fn main() {
         "cargo:rustc-cdylib-link-arg=-Wl,--version-script={}",
         script.display()
     );
+    // Exact local callback overrides cover Full/Slim and all Android ABIs;
+    // some names are absent from a particular build. The linked-ELF gate in
+    // build-android-so.sh requires JNI_OnLoad and rejects every private export.
+    println!("cargo:rustc-cdylib-link-arg=-Wl,--undefined-version");
 }

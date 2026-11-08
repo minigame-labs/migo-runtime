@@ -142,6 +142,10 @@ impl AudioParamTimeline {
         self.current_value
     }
 
+    pub(crate) fn has_events(&self) -> bool {
+        !self.events.is_empty()
+    }
+
     /// Set the current value directly (equivalent to setting .value property)
     #[inline]
     pub fn set_value(&mut self, value: f32) {

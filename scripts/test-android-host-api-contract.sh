@@ -25,7 +25,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASELINE="$ROOT_DIR/platforms/android/host-api-v0.txt"
-CLASSES="$ROOT_DIR/platforms/android/library/build/intermediates/javac/fullDebug/classes"
+CLASSES="$ROOT_DIR/platforms/android/library/build/intermediates/javac/fullDebug/compileFullDebugJavaWithJavac/classes"
 UPDATE=false
 
 [[ "${1:-}" == "--update" ]] && UPDATE=true

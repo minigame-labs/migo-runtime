@@ -203,6 +203,11 @@ impl IoDomain {
         self.closed.load(Ordering::Acquire)
     }
 
+    /// Low-level capability users register before checking is_closed().
+    pub fn closed_signal(&self) -> &tokio::sync::Notify {
+        &self.closed_notify
+    }
+
     /// Registers before checking the level so concurrent close cannot lose a wake.
     pub async fn closed(&self) {
         let notified = self.closed_notify.notified();

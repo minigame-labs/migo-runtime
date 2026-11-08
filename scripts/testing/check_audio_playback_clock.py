@@ -105,7 +105,14 @@ def prepare(output: Path, target: Path, extra_inputs=()):
     package = output / 'probe'
     package.mkdir()
     shutil.copytree(audio / 'src', package / 'src')
+    shutil.copytree(audio / 'native', package / 'native')
     shutil.copy2(audio / 'build.rs', package / 'build.rs')
+    rate_source = ROOT / 'engine/third_party/libsamplerate-0.2.2'
+    shutil.copytree(rate_source, output / 'native/libsamplerate-0.2.2')
+    build = package / 'build.rs'
+    text = build.read_text()
+    assert text.count('../../third_party/libsamplerate-0.2.2') == 1
+    build.write_text(text.replace('../../third_party/libsamplerate-0.2.2', '../native/libsamplerate-0.2.2'))
     workspace = (ROOT / 'engine/Cargo.toml').read_text()
     manifest = common.rebase((audio / 'Cargo.toml').read_text(), audio)
     manifest += '\n[workspace]\n[workspace.package]\n' + common.section(workspace, 'workspace.package')
@@ -132,6 +139,9 @@ def prepare(output: Path, target: Path, extra_inputs=()):
         inputs.add(crate / 'Cargo.toml')
     # Product codec forks and embedded binary test fixtures are real compile inputs.
     inputs.update(p for p in (audio / 'src').rglob('*') if p.is_file())
+    inputs.update(p for p in (audio / 'native').rglob('*') if p.is_file())
+    inputs.update(p for p in rate_source.rglob('*') if p.is_file())
+    inputs.add(ROOT / 'engine/third_party/libsamplerate-source.json')
     for folder in (ROOT / 'engine/third_party').glob('symphonia-*-0.6.1'):
         inputs.update(p for p in folder.rglob('*') if p.is_file())
     dsp_ledger = ROOT / 'engine/third_party/rubato-sources.json'

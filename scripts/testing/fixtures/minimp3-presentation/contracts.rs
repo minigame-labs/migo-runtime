@@ -440,3 +440,62 @@ fn arbitrary_non_frame_progress_does_not_retire_the_cursor_presentation() {
         "valid framing can resume after skipped bytes"
     );
 }
+
+unsafe extern "C" {
+    fn migo_mp3_presentation_begin_stream(
+        p: *mut std::ffi::c_void,
+        frame: *const u8,
+        size: c_int,
+        free_bytes: c_int,
+        info: *const ffi::mp3dec_frame_info_t,
+        expected: *mut u64,
+    ) -> c_int;
+}
+
+#[test]
+fn progressive_metadata_uses_the_shared_kernel_without_a_contiguous_pcm_ceiling() {
+    let (offset, end, metadata, free) = first(MUSIC);
+    let mut frame = MUSIC[offset..end].to_vec();
+    let tag = frame
+        .windows(4)
+        .position(|s| s == b"Info" || s == b"Xing")
+        .unwrap();
+    frame[tag + 8..tag + 12].copy_from_slice(&u32::MAX.to_be_bytes());
+    let owner = Owner::new();
+    let before = heap();
+    let mut expected = 0;
+    let status = unsafe {
+        migo_mp3_presentation_begin_stream(
+            owner.0.as_ptr(),
+            frame.as_ptr(),
+            frame.len() as c_int,
+            free,
+            &metadata,
+            &mut expected,
+        )
+    };
+    assert_eq!(
+        before,
+        heap(),
+        "progressive metadata allocated a whole PCM result"
+    );
+    assert_eq!(
+        status, 1,
+        "progressive metadata inherited the contiguous PCM ceiling"
+    );
+    assert!(expected > 16_777_216);
+    let repeated = unsafe {
+        migo_mp3_presentation_begin_stream(
+            owner.0.as_ptr(),
+            frame.as_ptr(),
+            frame.len() as c_int,
+            free,
+            &metadata,
+            &mut expected,
+        )
+    };
+    assert!(
+        repeated < 0,
+        "progressive metadata accepted reinitialization"
+    );
+}

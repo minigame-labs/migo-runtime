@@ -1,0 +1,143 @@
+{
+  "symphonia-codec-aac": {
+    "crate": "symphonia-codec-aac",
+    "version": "0.6.1",
+    "archive_sha256": "f5bf8e39552d34a3c4c98333370e62f48c92456d2e814f273b5c3ad7c4a5f45c",
+    "patches": [
+      {
+        "file": "engine/third_party/symphonia-codec-aac-patches/0001-audio-presentation-trimming.patch",
+        "sha256": "571937b8a6ebf24a0dafb2b42133c0a85ce4223db2d6713aec4446b11b7ae894"
+      },
+      {
+        "file": "engine/third_party/symphonia-codec-aac-patches/0002-borrowed-incremental-adts-framing.patch",
+        "sha256": "4a0584a4c28db83e61889596c2d4b4212d4014005b9bf1a69550ad6fa75a0d68"
+      }
+    ],
+    "source_files": {
+      ".cargo_vcs_info.json": "a22c1ccb56f3fb9cd1ee7d1f00e87c83a42ee93b9d541fa5917c0237eab03779",
+      "Cargo.lock": "98273b7110f37137755b73a890dbe76725ead328e19ad1d51e5a921bccb67793",
+      "Cargo.toml": "968fb93af9992c22524203fbee9e3e44502a31838fe331965832d0e7aabcbd59",
+      "Cargo.toml.orig": "e0da4811c3e63c3b855cd63b2c126c59ef1ce4d6e634c95d58518081169a96b3",
+      "LICENSE": "c76f740d1521b9bed9ca7a04ad526c310493c62621b1341d623b431736533b30",
+      "README.md": "fab901d364aed1c92619c86775791ee8e8062839cc080ddb175d4b0dbc88ff95",
+      "src/aac/codebooks.rs": "296f5ec35528e50a8bfe0ae860448f8fab0a9fa64f96f07915e263b0093f27af",
+      "src/aac/common.rs": "3d6c8a3f323a106a3abc30aa0534916877dcebf5a934e0a5f58e82ac24e7e071",
+      "src/aac/cpe.rs": "834a630a57a2e4022d5322c18384195a6231f52ff6437a0c5eb3b3135f5c4fe2",
+      "src/aac/dsp.rs": "3a2e8a80b397a7392d018dc7a02e02b824017f5fb1d3c149ad8c8b198fd68700",
+      "src/aac/ics/gain.rs": "6e76149f750b56d645c6da78aecbfaef1816f58d78dd011b5a348e87d85f992a",
+      "src/aac/ics/ltp.rs": "1d0429e1944db1951acea746d730747eba8274f007f674549f0d48ab1b5377cc",
+      "src/aac/ics/mod.rs": "818bc4cd70cb33a3bd0f42c209ca0336e570c31e5676ba47db1fdf6b909025bd",
+      "src/aac/ics/pulse.rs": "1ff19cbc4cdc1a77742db4a7ba67b81bd73f7637124c72ae318efc2eb346500d",
+      "src/aac/ics/tns.rs": "e60adeaaddb0390cb8c5454dadc4846827d89ec6b7591a1722687fddeeb4c2e2",
+      "src/aac/mod.rs": "2a8cd13442527788726f0427ea82593b7f238704fffb0b5b7cbfdbfa24afc9b0",
+      "src/aac/window.rs": "2321835087a212800ba7ff04a63b42b6ca70dd4dc4a0c945c09e18f0394291f0",
+      "src/adts.rs": "c36ca157d02559dd2f41b6886cd55ea9bd24fa57841ef5adfb459d0806e29c9a",
+      "src/lib.rs": "7681d430e55a0b94544ce3330d09999460f1bbc9774237a84907bf17a7244034",
+      "src/streaming.rs": "b988d779683201701dea0a29d109f7f01d092582f0fdf4dee8458c1a2f65b019",
+      "tests/tests.rs": "dbfca40ef48f7bcf0f081801634691b498c155289c3f048afdec11ef043a69e5"
+    }
+  },
+  "symphonia-format-isomp4": {
+    "crate": "symphonia-format-isomp4",
+    "version": "0.6.1",
+    "archive_sha256": "0e681a70e1870d34e02abf1dbc51e4267c3f1827801474e8870be8c689fc4dc3",
+    "patches": [
+      {
+        "file": "engine/third_party/symphonia-format-isomp4-patches/0001-audio-presentation-trimming.patch",
+        "sha256": "0c70251a751fd4955b19e5f8886d8b24e4e07a8e64a60fe66718e1d82e71d3e4"
+      },
+      {
+        "file": "engine/third_party/symphonia-format-isomp4-patches/0002-skip-unused-metadata.patch",
+        "sha256": "1772fbd4d65093885b64069da1fac2d84cb72f9e8d2f3a1684a66e615e6815ec"
+      },
+      {
+        "file": "engine/third_party/symphonia-format-isomp4-patches/0003-correct-sample-table-boundaries.patch",
+        "sha256": "7f94b36c2770e7980d4e35676908c3bfc00003b2a30b2ca1eee55f6fff6171e1"
+      },
+      {
+        "file": "engine/third_party/symphonia-format-isomp4-patches/0004-borrowed-aac-streaming-index.patch",
+        "sha256": "9cfe28c34c662a701ac7d02d3b382b65754fba6043d21ed60dc4e1a40f524da4"
+      },
+      {
+        "file": "engine/third_party/symphonia-format-isomp4-patches/0005-borrowed-sequential-aac-packets.patch",
+        "sha256": "455c8e602acbde5f64558b6c19dcb8e49d0a5041aacd897f2490d16a5e9a9d65"
+      },
+      {
+        "file": "engine/third_party/symphonia-format-isomp4-patches/0006-bind-pinned-stream-length.patch",
+        "sha256": "cfd87f241179da62ffb86761fc621aec3cd2d5bc753ec664c1fe04137432575a"
+      },
+      {
+        "file": "engine/third_party/symphonia-format-isomp4-patches/0007-resolve-buffered-streaming-sources.patch",
+        "sha256": "2f995c80725aedf83778ca1cb3515d6da522c1b9052a217056d32ab6fe2a241f"
+      },
+      {
+        "file": "engine/third_party/symphonia-format-isomp4-patches/0008-shared-presentation-seek.patch",
+        "sha256": "c03fcf9eb39e7a367830553b473bd63425b05893389a1fd7222f89184954d710"
+      },
+      {
+        "file": "engine/third_party/symphonia-format-isomp4-patches/0009-streaming-seek-source-handoff.patch",
+        "sha256": "cb73848134ac3a1b5696648ff76d22e87fa954db1e4d128ecec8a634f3f00a94"
+      }
+    ],
+    "source_files": {
+      ".cargo_vcs_info.json": "0b6ed76901b8a344cb49e0ef1e65b8bd3099e50e5f68153407297067f2d4961c",
+      "Cargo.lock": "8f021d13c0b67ed461e7a5241c1ee0c593175ec2c73b3358b0c331b343be78e0",
+      "Cargo.toml": "21a43603b75a89c501671a2dce00c50ff737b1282bd3d2c458c180ee801a8564",
+      "Cargo.toml.orig": "88f61459dd9cfbad42a52893af5bb118fa20e828aef6299845e73104c8f1e142",
+      "LICENSE": "c76f740d1521b9bed9ca7a04ad526c310493c62621b1341d623b431736533b30",
+      "README.md": "5b431a411f81a0c6163ead274500f0582d8cdb6e9cc7c8bf4f83f57e506faf91",
+      "src/atoms/alac.rs": "6ee8508593b96578cfa0ae4ef6b9faae26ba7275d92e92f00929b232985a49c2",
+      "src/atoms/avcc.rs": "c868adc9b4c408e1f2010dc7a57322d921a81585162f04b7bd68c1d7de460ba6",
+      "src/atoms/co64.rs": "2a37e8d10cdb20353ff1d59250a5316aa26a51842e13a4d31de8cff68bd40da8",
+      "src/atoms/ctts.rs": "270fbd0c58202cb1d38fef76242c2b2437c21a7f00d2b74c8a452517d3f31381",
+      "src/atoms/dac3.rs": "22ca28ff6ff046ba210b884dcd636b5f544a6564f6f1077d947c3e3545aab685",
+      "src/atoms/dec3.rs": "72f061dd727697096bea9bfb4377fca7211b493a52d692599d4a861cdbbed5b8",
+      "src/atoms/dovi.rs": "21752078a2be874ffb6e8c1d207fea5255e0eefb1710d49e04e42453eeb507ca",
+      "src/atoms/edts.rs": "6fd3381921b3535bf085816b536355df1aded88aa3c2e0984772e6621de81d40",
+      "src/atoms/elst.rs": "16b37641dc00c74edfc3f011ed4603f91e7a3669207806214b10c160d69015ee",
+      "src/atoms/esds.rs": "9248647c74729ad5abfe996662c7451854261a0f228cf79f1fd1aa5592a959e1",
+      "src/atoms/flac.rs": "2e258faa7feb3be89c3ded2278e2b2564304a35a4de2403e06fdb02473985e5b",
+      "src/atoms/ftyp.rs": "f95aeec0157ec8b80bbc7b60ab947c0fcbc3297057f9b4479057db98da61dd7c",
+      "src/atoms/hdlr.rs": "ab65f851383057246707be632a03dd622b88bce51c879a7b5e489a7e64ec2ab3",
+      "src/atoms/hvcc.rs": "f8842ecc64f115fecfc5535d6a5784e1ffb2d4ee013178411b379313920817dd",
+      "src/atoms/ilst.rs": "55d3dc1849712e3a57d4290a85174ac669a15355e5ca34423d007335bfc26700",
+      "src/atoms/mdhd.rs": "296ba3b06975bc6a7dfcf187c97a6eb4397d3d2e95a63b5a6745ac1a9f5d660f",
+      "src/atoms/mdia.rs": "17f1b5e16ea8426b0275789f09304321b5644e28ab70b3bda0a5e029eb46cd76",
+      "src/atoms/mehd.rs": "83a53ead9b1f072f62750ccd028b8ce6e36307694847f3010a035bb5eaa916c9",
+      "src/atoms/meta.rs": "fb29492584350e86cc0f379cb9de82bbcd59d6b1283c9cf449eb6a5354490a96",
+      "src/atoms/mfhd.rs": "6f76da71855393edf8d064effaa20dda3f56f9afb9818d6f59b30c0d96e52247",
+      "src/atoms/minf.rs": "d630f9b1c6b936a0b7534de3d27ff4dba0481fcde9c3e06558dcca03f4dec9d1",
+      "src/atoms/mod.rs": "4bf6d4c80f4de30d3f14ca7d599f416f28b5ed2a50500a0026fbd424fb42882d",
+      "src/atoms/moof.rs": "6f99da20873a54ea11781abac4419c26798a640b2e0aad5038b0c93cfa79b7a9",
+      "src/atoms/moov.rs": "525383f860e2e3cd461d08887c114206afa2d6956d6272f027d0bd3bf4221b94",
+      "src/atoms/mvex.rs": "85b360f1ea9e4895e526192b9eb6070f01dc125a652c1f03082f55cd6c70d748",
+      "src/atoms/mvhd.rs": "089dd958d5a1d1fafb26258dddd0464e0fb8b0b3708952c6e9087ac632f92d95",
+      "src/atoms/opus.rs": "b5e3e9f1adcdbf8beabb2e85245d1b55c2fb9430e0e70f54f4f1be2e7b9bbd65",
+      "src/atoms/sidx.rs": "850f8a47136eb0535177bc2c4c05439543d897acd54e61a86b486f31042bcf38",
+      "src/atoms/smhd.rs": "1652ffa99790d85122834f63e738f0fb6f9f0716e25fed0e7de5add3f97a9a59",
+      "src/atoms/stbl.rs": "66f1279fb5381490f109aa157b94212d13ca75715eb50d30fd8603008ecbb89e",
+      "src/atoms/stco.rs": "08850615087af14aadcb4bda0605242a4748d2ca7166dac3fdb30c3daf6d5ba5",
+      "src/atoms/stsc.rs": "897ca936b004971e82f73d61d852a9fc418a44afb07086bf27bae0c8cf1cdc91",
+      "src/atoms/stsd.rs": "bd5999a705cc8209641865d6abc3098d37f2febace78a17d98e323401b99295f",
+      "src/atoms/stss.rs": "ae6510c95da8b739784629ee9a2ffcff05aac41246dd04f3dd5ae46be0e67f84",
+      "src/atoms/stsz.rs": "31c909fb78a5aded491cd322fda6996e384dbfad22c19e3e65e0aeb6c0562bb5",
+      "src/atoms/stts.rs": "d3903ec8a527193d137d6c00cdc3102566b07b87b3eb28d355c2d524d432fc00",
+      "src/atoms/tfhd.rs": "e4b67fc75c064e498f3025750717c5d7ad1f99559ef57b140d18762e6ded5817",
+      "src/atoms/tkhd.rs": "89506a86aa2d83feb86423a01d5ae61e0ac328977e8d396b05650315942abb3c",
+      "src/atoms/traf.rs": "e5d1772af8a7ebe8a94cb63145cbe728de8797a25b4c09d3f3aa03a96a6a415e",
+      "src/atoms/trak.rs": "8c32a8411957c0576b9033c007e85d2cd2fb7649fa19f07e9b36ae8aee992956",
+      "src/atoms/trex.rs": "6a447e764f04700e06e81b72392cacb8fdf6834777f9d675557448526708029a",
+      "src/atoms/trun.rs": "a6d9f479afa01f5085545c8877af42eeb8e4c2708fe8435e732ed939223e9666",
+      "src/atoms/udta.rs": "c8115f9f3e4e70cf0a2f3269bff756f37141943e4626dbc8cca4b85b62402a3c",
+      "src/atoms/wave.rs": "c86dc7db3cf529f0cc809accd617d9a90a1cebd2f9fc9857dad0e36b8a80b329",
+      "src/audio_timeline.rs": "f1e174290cceb58b3dd7836cdc490dd2e5a0e9187e228c2b8028707c8a802a6a",
+      "src/demuxer.rs": "06dd17c8a4ebabf67f4de48f9e87399e9e17bbae33aa13eb0da54ca61f906114",
+      "src/fp.rs": "ebb2a26f8fca2ab08bec89c6ca59d3e4b32aa242cc21ba73247039549711d452",
+      "src/lib.rs": "8497c04e420a6ca2ba53936c82bf5061d121df13e2fbc0e483a9a53b8793361f",
+      "src/stream.rs": "509eeca9895e42b081990e51eeac8e4cc1856a77519d5a758c6a327a9df5bd19",
+      "src/streaming/sequential/buffered.rs": "fe06b6dae435f3df6a7cda09d47ae69d0f55c34ec1c5f7c6f1765f317ef50f7d",
+      "src/streaming/sequential.rs": "0c1516ac97d498a96ea93211b204faa1b3531cee2bb16266ccd92d997d3b9710",
+      "src/streaming.rs": "d892c92c59a033d0b980f352da5ce5a6ea7d9e314ea69921a15541eab2dd0bf4"
+    }
+  }
+}

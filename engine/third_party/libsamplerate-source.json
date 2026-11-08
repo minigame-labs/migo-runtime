@@ -1,0 +1,29 @@
+{
+  "version": "0.2.2",
+  "source_url": "https://github.com/libsndfile/libsamplerate/releases/download/0.2.2/libsamplerate-0.2.2.tar.xz",
+  "archive_sha256": "3258da280511d24b49d6b08615bbe824d0cacc9842b0e4caf11c52cf2b043893",
+  "original_files": {
+    "COPYING": "2c1f76ce2effdddb425018405d5690c0b1ab4e6976e35296b0a6db65c5e1a55d",
+    "AUTHORS": "1407129d9cf9ee8444e0a397577fa384c945646d74beb3c66aab626024418230",
+    "include/samplerate.h": "dfe5f4107782bcf6e9b8421a9e7c4772e19446a4c18727c73b22286d3fbb6626",
+    "src/common.h": "0826d52807152f5577ecb519c3df46f4453a9b7e55ad9b2880ff82a95977c3ca",
+    "src/samplerate.c": "ecc11b6bec5bd8131a3dd510a7017a5b7b503573d9b49b7e02ee5c3c86568717",
+    "src/src_sinc.c": "8e59137d758dae5027410af7f81010e7a9c33892070091866510f0f8b638237e",
+    "src/src_linear.c": "f04a3e79b7150f2f6e6ad2b05979d874e03bf567a682bbb6507c797d4ea8a972",
+    "src/src_zoh.c": "c089678c9e6463896507a8d476fc4a33641c46fbe94aa8243acf725d4c203adb",
+    "src/high_qual_coeffs.h": "35d4bc6ed93cbd5a89510d7d7efda00116b5c28a25369c07288bc7d25a937df6"
+  },
+  "files": {
+    "COPYING": "2c1f76ce2effdddb425018405d5690c0b1ab4e6976e35296b0a6db65c5e1a55d",
+    "AUTHORS": "1407129d9cf9ee8444e0a397577fa384c945646d74beb3c66aab626024418230",
+    "include/samplerate.h": "dfe5f4107782bcf6e9b8421a9e7c4772e19446a4c18727c73b22286d3fbb6626",
+    "src/common.h": "0826d52807152f5577ecb519c3df46f4453a9b7e55ad9b2880ff82a95977c3ca",
+    "src/samplerate.c": "ecc11b6bec5bd8131a3dd510a7017a5b7b503573d9b49b7e02ee5c3c86568717",
+    "src/src_sinc.c": "df1e772676ac161c1c3fc612d007cd39ee376deb7d0cf7ff13399561aa87f66f",
+    "src/src_linear.c": "f04a3e79b7150f2f6e6ad2b05979d874e03bf567a682bbb6507c797d4ea8a972",
+    "src/src_zoh.c": "c089678c9e6463896507a8d476fc4a33641c46fbe94aa8243acf725d4c203adb",
+    "src/high_qual_coeffs.h": "35d4bc6ed93cbd5a89510d7d7efda00116b5c28a25369c07288bc7d25a937df6"
+  },
+  "patch": "../../scripts/testing/fixtures/libsamplerate-0.2.2-retain-history.patch",
+  "scope": "Minimal native build subset; only best sinc enabled; original linear/zoh units satisfy the pinned public dispatcher. Private SDK linkage."
+}

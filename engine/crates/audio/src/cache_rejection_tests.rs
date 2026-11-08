@@ -25,11 +25,7 @@ fn snapshot(cache: &GlobalAudioCache) -> Snapshot {
         bits: old
             .map(|v| v.audio.samples.iter().map(|v| v.to_bits()).collect())
             .unwrap_or_default(),
-        order: inner
-            .order_index
-            .iter()
-            .map(|(k, v)| (*k, v.clone()))
-            .collect(),
+        order: inner.lru_iter().map(|(k, v)| (*k, v.to_string())).collect(),
     }
 }
 fn setup(

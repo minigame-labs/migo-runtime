@@ -3,11 +3,13 @@
 
 use std::{ffi::c_void, ptr::NonNull};
 
-use ringbuf::traits::{Observer, Producer, Split};
-use ringbuf::{HeapProd, HeapRb};
+use ringbuf::traits::{Observer, Producer};
 use shared::error::{EngineError, EngineResult, ErrorCode};
 
-use super::{AudioSync, OutputCallback, RING_BUFFER_FRAMES};
+use super::{AudioSync, OutputCallback, RING_BUFFER_FRAMES, ring};
+
+#[path = "output_oboe_callback_storage.rs"]
+mod callback_storage;
 
 #[repr(C)]
 struct Callbacks {
@@ -53,7 +55,7 @@ unsafe extern "C" fn render(context: *mut c_void, samples: *mut f32, sample_coun
     // SAFETY: the bridge only starts after verifying float/stereo. Oboe supplies
     // an exclusive initialized output buffer and serializes this stream's data
     // callbacks. No control/error callback accesses OutputCallback.
-    let callback = unsafe { &mut *context.cast::<OutputCallback>() };
+    let callback = unsafe { &mut (*context.cast::<callback_storage::Data>()).callback };
     let samples = unsafe { std::slice::from_raw_parts_mut(samples, sample_count) };
     callback.render_native(samples);
 }
@@ -61,28 +63,26 @@ unsafe extern "C" fn render(context: *mut c_void, samples: *mut f32, sample_coun
 unsafe extern "C" fn release(context: *mut c_void) {
     // SAFETY: open consumes this Box on every outcome. The C++ context guard is
     // move-only; only its final owner destroys this exact pointer.
-    drop(unsafe { Box::from_raw(context.cast::<OutputCallback>()) });
+    unsafe { callback_storage::release(context.cast()) };
 }
 
 pub struct AudioOutput {
     stream: Stream,
-    producer: HeapProd<f32>,
+    producer: ring::Producer,
     sync: AudioSync,
     sample_rate: u32,
     failed: bool,
 }
 
 impl AudioOutput {
-    pub fn new() -> EngineResult<Self> {
+    pub fn new(host: &crate::node_retirement::Host) -> EngineResult<Self> {
         const CHANNELS: usize = 2;
-        let (producer, consumer) = HeapRb::<f32>::new(RING_BUFFER_FRAMES * CHANNELS).split();
-        let sync = AudioSync::new();
-        let callback = Box::new(OutputCallback::new(consumer, sync.clone(), 0));
-        let callbacks = Callbacks {
-            context: Box::into_raw(callback).cast(),
-            render,
-            release,
-        };
+        let Prepared {
+            producer,
+            sync,
+            callback,
+        } = prepare(host)?;
+        let callbacks = into_callbacks(callback);
         let mut config = Config::default();
         let mut pointer = std::ptr::null_mut();
         // SAFETY: valid out pointers and a uniquely transferred callback Box.
@@ -120,6 +120,9 @@ impl AudioOutput {
         })
     }
 
+    pub(super) fn storage_host(&self) -> Option<crate::node_retirement::Host> {
+        ring::host(&self.producer)
+    }
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
@@ -173,3 +176,52 @@ fn device_error(operation: &str, result: i32) -> EngineError {
         format!("Oboe {operation} failed ({result})"),
     )
 }
+
+struct Prepared {
+    producer: ring::Producer,
+    sync: AudioSync,
+    callback: callback_storage::Callback,
+}
+fn prepare(host: &crate::node_retirement::Host) -> EngineResult<Prepared> {
+    const CHANNELS: usize = 2;
+    let admission = callback_storage::Admission::new(host)?;
+    let sync = AudioSync::with_host(Some(host))?;
+    let (producer, consumer) = ring::new(RING_BUFFER_FRAMES * CHANNELS, Some(host))?;
+    let callback = admission.finish(OutputCallback::new(consumer, sync.clone(), 0));
+    Ok(Prepared {
+        producer,
+        sync,
+        callback,
+    })
+}
+fn into_callbacks(callback: callback_storage::Callback) -> Callbacks {
+    Callbacks {
+        context: callback.into_raw().cast(),
+        render,
+        release,
+    }
+}
+#[cfg(test)]
+fn observe_callback(
+    callback: &mut callback_storage::Callback,
+    before: std::sync::Arc<dyn Fn() + Send + Sync>,
+    after: std::sync::Arc<dyn Fn() + Send + Sync>,
+) {
+    callback.observe(before, after);
+}
+#[cfg(test)]
+const _: () = {
+    let _ = AudioOutput::new;
+    let _ = AudioOutput::sample_rate;
+    let _ = AudioOutput::channels;
+    let _ = AudioOutput::write;
+    let _ = AudioOutput::available;
+    let _ = AudioOutput::buffered;
+    let _ = AudioOutput::high_watermark;
+    let _ = AudioOutput::needs_data;
+    let _ = AudioOutput::sync;
+    let _ = AudioOutput::is_alive;
+    let _ = AudioOutput::pause_stream;
+    let _ = AudioOutput::resume_stream;
+    let _ = AudioOutput::storage_host;
+};

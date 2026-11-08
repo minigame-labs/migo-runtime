@@ -2,15 +2,15 @@
 //!
 //! This replaces the old `file-per-key` layout. Why SQLite:
 //!
-//! * **Batched writes** are one transaction instead of N rename+fsync
-//!   pairs — measured >10× on the `setStorageBatch` fast path.
+//! * **Batched writes** share one transaction and WAL sync instead of
+//!   committing each key separately.
 //! * **Quota** is O(1): the running charged-footprint total is cached in
 //!   `_meta` under key `total_bytes` and updated inside every write
 //!   transaction, so `set` / `set_batch` / `info` never scan the `kv` table.
-//! * **Crash-safety** comes from WAL + `synchronous=NORMAL`, which
-//!   is the combination SQLite itself recommends for KV workloads.
-//!   Process crashes preserve committed WAL transactions; with NORMAL a
-//!   power loss can roll back commits since the last durable checkpoint.
+//! * **User-data durability** uses WAL + `synchronous=FULL`: a successful
+//!   write includes a WAL sync, subject to the platform VFS/filesystem and
+//!   device honoring that sync. NORMAL can lose acknowledged commits on
+//!   power loss or an OS crash. This store is not a rebuildable cache.
 //! * **Schema migrations** are a pragma bump, not a home-grown
 //!   header format.
 //!
@@ -18,12 +18,11 @@
 //!
 //! `KvStore` is cheaply `Clone` (it wraps an `Arc<Mutex<...>>`) and
 //! safe to share across threads. Internally every operation takes a
-//! short mutex around a single `rusqlite::Connection`. SQLite's own
-//! WAL allows concurrent readers with one writer, but using a single
-//! Rust `Connection` is simpler, avoids pool bookkeeping, and matches
-//! the expected traffic (sub-ms transactions, hundreds of ops/s at
-//! peak).  The mutex is released around any blocking fsync via
-//! `synchronous=NORMAL`, which only fsyncs at checkpoint time.
+//! mutex around a single `rusqlite::Connection`, including SQL execution,
+//! commit sync, busy waits and automatic checkpoints. SQLite does not release
+//! this Rust mutex. Async storage runs on the existing IO scheduler; synchronous
+//! APIs block their caller. Batch writes amortize commit sync without weakening
+//! durability. Separate read connections can still delay WAL checkpointing.
 //!
 //! # Schema
 //!
@@ -72,8 +71,9 @@ const MAX_KEY_BYTES: usize = 16 * 1024;
 /// `kv_updated` index's duplicate key bytes are explicitly excluded because
 /// index layout is an SQLite/configuration detail; the key-length guard still
 /// bounds that uncharged index cost. WAL frames and SQLite's page cache are
-/// also excluded: WAL is transient and bounded by `wal_autocheckpoint`, while
-/// page-cache pages are memory-only and bounded by SQLite's configured cache.
+/// also excluded: `wal_autocheckpoint` is a checkpoint trigger, not a WAL size
+/// limit; an active reader can prevent WAL reuse. Page-cache pages are memory-only
+/// and managed separately by SQLite.
 const PER_ENTRY_OVERHEAD_BYTES: u64 = 64;
 
 #[inline]
@@ -171,16 +171,12 @@ impl KvStore {
         )
         .map_err(sql_err("kv: open"))?;
 
-        // WAL + NORMAL sync is SQLite's recommended KV config:
-        //   - WAL gives concurrent reads during writes and is faster
-        //     than rollback journal for small transactions.
-        //   - synchronous=NORMAL fsyncs at checkpoint boundaries only;
-        //     committed writes survive app crashes, and only a power
-        //     failure between commit and checkpoint can lose (at most)
-        //     the last un-checkpointed frames. Acceptable for KV.
-        //   - temp_store=MEMORY keeps transient B-tree pages in RAM.
-        //   - wal_autocheckpoint=1000 (pages) is the default; keep it
-        //     explicit so future sqlite upgrades can't silently change.
+        // User storage requires the WAL sync before acknowledging a commit.
+        // Keep the existing transaction, schema and quota accounting. FULL does
+        // not imply that the OS/device honors sync, nor that checkpointing can
+        // finish while another connection holds a read snapshot.
+        // temp_store=MEMORY keeps transient B-tree pages in RAM;
+        // wal_autocheckpoint=1000 is an explicit trigger, not a hard size cap.
         // Wait rather than fail instantly when another connection holds a lock.
         // SQLite's default is a zero timeout, so any contention -- a checkpoint,
         // or a second process opening the same file -- surfaces as an immediate
@@ -191,7 +187,7 @@ impl KvStore {
 
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(sql_err("kv: pragma journal_mode"))?;
-        conn.pragma_update(None, "synchronous", "NORMAL")
+        conn.pragma_update(None, "synchronous", "FULL")
             .map_err(sql_err("kv: pragma synchronous"))?;
         conn.pragma_update(None, "temp_store", "MEMORY")
             .map_err(sql_err("kv: pragma temp_store"))?;
@@ -518,10 +514,9 @@ impl KvStore {
         })
     }
 
-    /// Test-only: force a WAL checkpoint. Production never needs
-    /// this; SQLite's autocheckpoint handles it. `wal_checkpoint`
-    /// returns a 3-integer row (busy, log_pages, ckpt_pages) so we
-    /// must use a `query_row`, not `execute`.
+    /// Test-only: request a truncating checkpoint. Tests requiring completion
+    /// must release readers first. The returned row can report busy without an
+    /// SQL error; automatic checkpointing is not a guarantee of WAL truncation.
     #[cfg(test)]
     fn checkpoint(&self) -> Result<(), EngineError> {
         let g = self.inner.lock();
@@ -652,10 +647,10 @@ fn load_or_reconcile_total(conn: &Connection) -> Result<u64, EngineError> {
         .optional()
         .map_err(sql_err("kv: meta: get total"))?;
 
-    if let Some(s) = cached {
-        if let Ok(n) = s.parse::<u64>() {
-            return Ok(n);
-        }
+    if let Some(s) = cached
+        && let Ok(n) = s.parse::<u64>()
+    {
+        return Ok(n);
     }
 
     // Missing or corrupt — reconcile once. The key length is measured as
@@ -692,10 +687,10 @@ fn load_or_reconcile_entries(conn: &Connection) -> Result<u64, EngineError> {
         .optional()
         .map_err(sql_err("kv: meta: get entries"))?;
 
-    if let Some(s) = cached {
-        if let Ok(n) = s.parse::<u64>() {
-            return Ok(n);
-        }
+    if let Some(s) = cached
+        && let Ok(n) = s.parse::<u64>()
+    {
+        return Ok(n);
     }
 
     let reconciled: i64 = conn
@@ -718,12 +713,278 @@ fn load_or_reconcile_entries(conn: &Connection) -> Result<u64, EngineError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::ffi;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tempfile::tempdir;
 
     const QUOTA: u64 = 1024; // 1 KiB quota for exhaustion tests
 
     fn open(dir: &Path) -> KvStore {
         KvStore::open(dir.join("storage.db"), QUOTA).expect("open")
+    }
+
+    // Observe this connection's real WAL xSync; no global VFS or production
+    // hook. The Arc keeps the connection alive until its methods are restored.
+    #[repr(C)]
+    struct WalSyncProbe {
+        methods: ffi::sqlite3_io_methods,
+        original: *const ffi::sqlite3_io_methods,
+        inner: Arc<Mutex<Inner>>,
+        calls: AtomicUsize,
+        all_under_lock: AtomicBool,
+        fail_next: AtomicBool,
+    }
+
+    impl WalSyncProbe {
+        fn install(kv: &KvStore) -> Box<Self> {
+            let g = kv.inner.lock();
+            let mut file: *mut ffi::sqlite3_file = std::ptr::null_mut();
+            // SAFETY: the connection is locked and the output points to a live
+            // pointer slot. The warm-up write has opened its WAL file.
+            let rc = unsafe {
+                ffi::sqlite3_file_control(
+                    g.conn.handle(),
+                    c"main".as_ptr(),
+                    ffi::SQLITE_FCNTL_JOURNAL_POINTER,
+                    (&mut file as *mut *mut ffi::sqlite3_file).cast(),
+                )
+            };
+            assert_eq!(rc, ffi::SQLITE_OK);
+            assert!(!file.is_null());
+            // SAFETY: SQLite returned a live WAL handle while locked. Its
+            // original method table belongs to the VFS and outlives the probe.
+            let original = unsafe { (*file).pMethods };
+            assert!(!original.is_null());
+            let mut probe = Box::new(Self {
+                methods: unsafe { *original },
+                original,
+                inner: kv.inner.clone(),
+                calls: AtomicUsize::new(0),
+                all_under_lock: AtomicBool::new(true),
+                fail_next: AtomicBool::new(false),
+            });
+            assert!(probe.methods.xSync.is_some());
+            probe.methods.xSync = Some(Self::sync);
+            // SAFETY: the boxed table is stable. Only xSync is replaced; all
+            // other methods still receive SQLite's original file allocation.
+            unsafe { (*file).pMethods = &probe.methods };
+            probe
+        }
+
+        unsafe extern "C" fn sync(file: *mut ffi::sqlite3_file, flags: i32) -> i32 {
+            // SAFETY: repr(C) places methods first; only an installed probe
+            // points this WAL handle at Self::sync, and its Box remains alive.
+            let probe = unsafe { &*((*file).pMethods.cast::<Self>()) };
+            probe.calls.fetch_add(1, Ordering::Relaxed);
+            if probe.inner.try_lock().is_some() {
+                probe.all_under_lock.store(false, Ordering::Relaxed);
+            }
+            if probe.fail_next.swap(false, Ordering::Relaxed) {
+                return ffi::SQLITE_IOERR_FSYNC;
+            }
+            // Never unwind across SQLite's C callback boundary.
+            match unsafe { (*probe.original).xSync } {
+                Some(sync) => unsafe { sync(file, flags) },
+                None => ffi::SQLITE_IOERR_FSYNC,
+            }
+        }
+    }
+
+    impl Drop for WalSyncProbe {
+        fn drop(&mut self) {
+            let g = self.inner.lock();
+            let mut file: *mut ffi::sqlite3_file = std::ptr::null_mut();
+            // SAFETY: the retained connection is locked. Requery the current
+            // handle, since an IO error may have closed the original WAL.
+            unsafe {
+                let rc = ffi::sqlite3_file_control(
+                    g.conn.handle(),
+                    c"main".as_ptr(),
+                    ffi::SQLITE_FCNTL_JOURNAL_POINTER,
+                    (&mut file as *mut *mut ffi::sqlite3_file).cast(),
+                );
+                if rc == ffi::SQLITE_OK
+                    && !file.is_null()
+                    && std::ptr::eq((*file).pMethods, &self.methods)
+                {
+                    (*file).pMethods = self.original;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn durable_writes_sync_wal_before_returning_success() {
+        let dir = tempdir().unwrap();
+        let kv = KvStore::open(dir.path().join("storage.db"), 1024 * 1024).unwrap();
+        kv.set("seed", "stable").unwrap();
+        kv.inner
+            .lock()
+            .conn
+            .pragma_update(None, "wal_autocheckpoint", 0)
+            .unwrap();
+        let probe = WalSyncProbe::install(&kv);
+        kv.set("one", "value").unwrap();
+        assert_eq!(
+            probe.calls.load(Ordering::Relaxed),
+            1,
+            "commit must sync WAL"
+        );
+        let items: Vec<_> = (0..32).map(|i| (format!("batch-{i}"), "v")).collect();
+        let refs: Vec<_> = items.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        kv.set_batch(&refs).unwrap();
+        assert_eq!(probe.calls.load(Ordering::Relaxed), 2, "one sync per batch");
+        kv.remove("one").unwrap();
+        assert_eq!(probe.calls.load(Ordering::Relaxed), 3);
+        kv.clear().unwrap();
+        assert_eq!(probe.calls.load(Ordering::Relaxed), 4);
+        assert_eq!(kv.get("one").unwrap(), None);
+        assert!(kv.info().unwrap().keys.is_empty());
+        assert_eq!(probe.calls.load(Ordering::Relaxed), 4, "reads do not sync");
+        assert!(probe.all_under_lock.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn wal_sync_failure_is_returned_to_the_storage_caller() {
+        let dir = tempdir().unwrap();
+        let kv = open(dir.path());
+        kv.set("seed", "stable").unwrap();
+        kv.inner
+            .lock()
+            .conn
+            .pragma_update(None, "wal_autocheckpoint", 0)
+            .unwrap();
+        let probe = WalSyncProbe::install(&kv);
+        probe.fail_next.store(true, Ordering::Relaxed);
+        assert!(
+            kv.set("new", "value").is_err(),
+            "failed WAL sync must not be acknowledged"
+        );
+        assert_eq!(probe.calls.load(Ordering::Relaxed), 1);
+        drop(probe);
+        drop(kv);
+        assert_eq!(
+            open(dir.path()).get("seed").unwrap().as_deref(),
+            Some("stable")
+        );
+        // An IO error is not a promise that an unacknowledged write is absent.
+    }
+
+    #[test]
+    fn busy_write_failure_preserves_quota_and_allows_a_later_retry() {
+        let dir = tempdir().unwrap();
+        let kv = open(dir.path());
+        kv.set("seed", "stable").unwrap();
+        let before = kv.info().unwrap();
+        let timeout: i64 = kv
+            .inner
+            .lock()
+            .conn
+            .pragma_query_value(None, "busy_timeout", |row| row.get(0))
+            .unwrap();
+        assert_eq!(timeout, 5000);
+        // Exercise the same SQLite busy path without spending five seconds in
+        // every test run. Production's configured timeout is checked above.
+        kv.inner
+            .lock()
+            .conn
+            .busy_timeout(std::time::Duration::from_millis(25))
+            .unwrap();
+        let blocker = Connection::open(dir.path().join("storage.db")).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let started = std::time::Instant::now();
+        let error = kv.set("new", "value").unwrap_err();
+        eprintln!(
+            "write rejected by SQLite busy handler: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(error.code, ErrorCode::IoError);
+        assert_eq!(kv.info().unwrap(), before);
+        assert_eq!(kv.get("new").unwrap(), None);
+        blocker.execute_batch("ROLLBACK").unwrap();
+        kv.set("new", "value").unwrap();
+        assert_eq!(kv.get("seed").unwrap().as_deref(), Some("stable"));
+        assert_eq!(kv.get("new").unwrap().as_deref(), Some("value"));
+    }
+
+    #[test]
+    fn a_reader_can_keep_wal_above_the_automatic_checkpoint_threshold() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("storage.db");
+        let kv = KvStore::open(&path, 8 * 1024 * 1024).unwrap();
+        kv.set("seed", "stable").unwrap();
+        let reader = Connection::open(&path).unwrap();
+        reader.execute_batch("BEGIN").unwrap();
+        let _: String = reader
+            .query_row("SELECT v FROM kv WHERE k='seed'", [], |r| r.get(0))
+            .unwrap();
+        let page_size: i64 = kv
+            .inner
+            .lock()
+            .conn
+            .pragma_query_value(None, "page_size", |r| r.get(0))
+            .unwrap();
+        let threshold: i64 = kv
+            .inner
+            .lock()
+            .conn
+            .pragma_query_value(None, "wal_autocheckpoint", |r| r.get(0))
+            .unwrap();
+        assert_eq!(threshold, 1000);
+        kv.set("large", &"x".repeat(2 * 1024 * 1024)).unwrap();
+        kv.set("large", &"y".repeat(2 * 1024 * 1024)).unwrap();
+        let wal = dir.path().join("storage.db-wal");
+        assert!(
+            std::fs::metadata(&wal).unwrap().len() > (32 + threshold * (page_size + 24)) as u64
+        );
+        let (_, log, checkpointed): (i64, i64, i64) = kv
+            .inner
+            .lock()
+            .conn
+            .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert!(
+            log > checkpointed,
+            "reader must prevent a complete checkpoint"
+        );
+        reader.execute_batch("ROLLBACK").unwrap();
+        kv.checkpoint().unwrap();
+        assert_eq!(std::fs::metadata(wal).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn sqlite346_v2_database_and_committed_wal_remain_compatible() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("storage.db");
+        std::fs::write(
+            &path,
+            include_bytes!("../tests/fixtures/storage-v2-sqlite346.db"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("storage.db-wal"),
+            include_bytes!("../tests/fixtures/storage-v2-sqlite346.wal"),
+        )
+        .unwrap();
+        let kv = open(dir.path());
+        assert_eq!(
+            kv.get("saved").unwrap().as_deref(),
+            Some("committed-only-in-wal")
+        );
+        assert_eq!(kv.info().unwrap().current_bytes, charged_bytes("saved", 21));
+        kv.set("saved", "updated").unwrap();
+        drop(kv);
+        assert_eq!(
+            open(dir.path()).get("saved").unwrap().as_deref(),
+            Some("updated")
+        );
+        assert!(
+            rusqlite::version_number() >= 3_051_003,
+            "bundled SQLite must include the WAL-reset fix"
+        );
+        eprintln!("bundled SQLite: {}", rusqlite::version());
     }
 
     #[test]

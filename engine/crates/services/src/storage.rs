@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Weak};
 
-use futures::channel::oneshot;
+use futures::FutureExt;
 use migo_io::scheduler::IoScheduler;
 use migo_io::storage_ops::{self, StorageInfo};
 use migo_io::task::{IoRequest, PriorityClass, RequestKind};
@@ -303,24 +303,11 @@ pub fn info_sync(
 /// calls, not of which worker was quicker, so each mutation waits for the one
 /// asked for before it.
 ///
-/// A mutation is the link after the previous: it holds the receiver of the one
-/// before it, and hands the next a sender that fires when its job has finished
-/// (or was dropped without running). No lock is held across a wait, and a link
-/// that is cancelled does not stop the line.
-#[derive(Default)]
-struct MutationChain {
-    tail: Mutex<Option<oneshot::Receiver<()>>>,
-}
-
-impl MutationChain {
-    /// Take the next place in line: the receiver of the mutation before this one
-    /// (none if the line is empty), and the sender that lets the next one go.
-    fn enqueue(&self) -> (Option<oneshot::Receiver<()>>, oneshot::Sender<()>) {
-        let (finished, follows) = oneshot::channel();
-        let predecessor = self.tail.lock().replace(follows);
-        (predecessor, finished)
-    }
-}
+/// Tokio's FIFO mutex keeps later mutations behind the active one even when a
+/// middle waiter is dropped. Waiting uses no filesystem worker. Once dispatched,
+/// the blocking closure owns the guard until it finishes, including when its
+/// caller stops awaiting the result.
+type MutationChain = tokio::sync::Mutex<()>;
 
 /// One chain per storage directory, kept only while something is in line.
 static MUTATION_CHAINS: LazyLock<Mutex<HashMap<PathBuf, Weak<MutationChain>>>> =
@@ -349,26 +336,51 @@ fn mutation_chain(dir: &Path) -> Arc<MutationChain> {
 fn run_mutate<F>(
     scheduler: Arc<IoScheduler>,
     game_paths: Option<&GamePaths>,
+    retained_bytes: u64,
     f: F,
 ) -> impl Future<Output = Result<(), ServiceError>> + Send + use<F>
 where
     F: FnOnce(&Path) -> Result<(), EngineError> + Send + 'static,
 {
     let place = storage_paths(game_paths)
-        .map(|paths| {
+        .map_err(async_error)
+        .and_then(|paths| {
+            scheduler
+                .ensure_open()
+                .map_err(|error| storage_error(error.to_string()))?;
+            // Waiting for this directory's turn retains the inputs too. Use
+            // the existing process budget before taking a place in line, and
+            // keep its ticket through the accepted blocking job. Rejection
+            // drops `f` here, even if the returned future is never polled.
+            let bytes = scheduler
+                .pools()
+                .reserve_bytes(retained_bytes)
+                .map_err(|error| storage_error(error.to_string()))?;
             let dir = paths.clone();
-            let chain = mutation_chain(dir.directory());
-            let (predecessor, finished) = chain.enqueue();
-            (dir, chain, predecessor, finished)
-        })
-        .map_err(async_error);
+            let mut wait = Box::pin(mutation_chain(dir.directory()).lock_owned());
+            // Register in call order before returning the future. Bypass the
+            // cooperative budget for this one lock poll so an exhausted caller
+            // cannot defer registration until after a later mutation. The
+            // pinned waiter is retained when pending; normal awaits remain
+            // cooperative and can remove cancelled waiters from Tokio's queue.
+            let ready = tokio::task::unconstrained(wait.as_mut()).now_or_never();
+            Ok((dir, wait, ready, bytes, f))
+        });
     async move {
-        let (dir, _chain, predecessor, finished) = place?;
-        if let Some(predecessor) = predecessor {
-            // An error is a predecessor that was dropped without running: it is
-            // finished either way.
-            let _ = predecessor.await;
-        }
+        let (dir, wait, ready, bytes, f) = place?;
+        let turn = match ready {
+            Some(turn) => turn,
+            None => {
+                let domain = scheduler.domain();
+                tokio::select! {
+                    biased;
+                    _ = domain.closed() => {
+                        return Err(storage_error("IO worker pool closed"));
+                    }
+                    turn = wait => turn,
+                }
+            }
+        };
         scheduler
             .run_async(
                 IoRequest::StorageMutate {
@@ -376,14 +388,13 @@ where
                     priority: PriorityClass::from(RequestKind::Async),
                 },
                 move || {
-                    let result = migo_io::storage_migration::prepare(&dir)
+                    // This owned guard also keeps the weak registry entry alive
+                    // while an accepted job is queued or running.
+                    let _turn = turn;
+                    let _bytes = bytes;
+                    migo_io::storage_migration::prepare(&dir)
                         .and_then(|()| f(dir.directory()))
-                        .map_err(async_error);
-                    // Released when the job is done, not when the caller stops
-                    // waiting: a caller that gave up must not let the next write
-                    // start while this one is still running.
-                    drop(finished);
-                    result
+                        .map_err(async_error)
                 },
             )
             .await
@@ -421,7 +432,8 @@ pub fn set(
     let pending = check_value_and_key(&key, &value)
         .map_err(storage_error)
         .map(|()| {
-            run_mutate(scheduler, game_paths, move |dir| {
+            let retained_bytes = key.capacity() as u64 + value.capacity() as u64;
+            run_mutate(scheduler, game_paths, retained_bytes, move |dir| {
                 storage_ops::storage_set(dir, &key, &value, MAX_TOTAL_BYTES)
             })
         });
@@ -433,7 +445,8 @@ pub fn remove(
     game_paths: Option<&GamePaths>,
     key: String,
 ) -> impl Future<Output = Result<(), ServiceError>> + Send + use<> {
-    run_mutate(scheduler, game_paths, move |dir| {
+    let retained_bytes = key.capacity() as u64;
+    run_mutate(scheduler, game_paths, retained_bytes, move |dir| {
         storage_ops::storage_remove(dir, &key, MAX_TOTAL_BYTES)
     })
 }
@@ -442,7 +455,7 @@ pub fn clear(
     scheduler: Arc<IoScheduler>,
     game_paths: Option<&GamePaths>,
 ) -> impl Future<Output = Result<(), ServiceError>> + Send + use<> {
-    run_mutate(scheduler, game_paths, move |dir| {
+    run_mutate(scheduler, game_paths, 0, move |dir| {
         storage_ops::storage_clear(dir, MAX_TOTAL_BYTES)
     })
 }
@@ -552,6 +565,7 @@ mod private_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::FutureExt;
 
     #[test]
     fn info_json_is_bounded_for_large_key_lists() {
@@ -623,8 +637,35 @@ mod tests {
         assert_eq!(awaited.class, CLASS_STORAGE_ERROR);
     }
 
-    fn paths(game: &str) -> GamePaths {
-        GamePaths::new("/data/files", "/data/cache", game, 1).expect("paths")
+    struct TestPaths {
+        root: PathBuf,
+        paths: GamePaths,
+    }
+
+    impl std::ops::Deref for TestPaths {
+        type Target = GamePaths;
+
+        fn deref(&self) -> &GamePaths {
+            &self.paths
+        }
+    }
+
+    impl Drop for TestPaths {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn paths(game: &str) -> TestPaths {
+        static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "migo-storage-order-tests-{}-{}",
+            std::process::id(),
+            NEXT_PATH.fetch_add(1, Ordering::Relaxed)
+        ));
+        let paths = GamePaths::new(root.join("files"), root.join("cache"), game, 1).expect("paths");
+        paths.ensure_directories().expect("test directories");
+        TestPaths { root, paths }
     }
 
     fn runtime() -> tokio::runtime::Runtime {
@@ -649,7 +690,7 @@ mod tests {
         let writes: Vec<_> = (0..N)
             .map(|i| {
                 let applied = Arc::clone(&applied);
-                run_mutate(Arc::clone(&scheduler), Some(&paths), move |_| {
+                run_mutate(Arc::clone(&scheduler), Some(&paths), 0, move |_| {
                     std::thread::sleep(std::time::Duration::from_millis(((N - i) * 2) as u64));
                     applied.lock().push(i);
                     Ok(())
@@ -675,7 +716,7 @@ mod tests {
         let applied = Arc::new(Mutex::new(Vec::new()));
         let write = |i: usize| {
             let applied = Arc::clone(&applied);
-            run_mutate(Arc::clone(&scheduler), Some(&paths), move |_| {
+            run_mutate(Arc::clone(&scheduler), Some(&paths), 0, move |_| {
                 applied.lock().push(i);
                 Ok(())
             })
@@ -692,13 +733,285 @@ mod tests {
         assert_eq!(*applied.lock(), vec![0, 2]);
     }
 
+    #[test]
+    fn dropping_a_middle_waiter_does_not_dispatch_a_later_write_first() {
+        let scheduler = Arc::new(IoScheduler::new(1));
+        let paths = paths("storage-cancelled-middle");
+        let first = set(
+            Arc::clone(&scheduler),
+            Some(&paths),
+            "k".into(),
+            "first".into(),
+        );
+        let middle = set(
+            Arc::clone(&scheduler),
+            Some(&paths),
+            "k".into(),
+            "middle".into(),
+        );
+        let mut last = Box::pin(set(
+            Arc::clone(&scheduler),
+            Some(&paths),
+            "k".into(),
+            "last".into(),
+        ));
+        drop(middle);
+        assert!(last.as_mut().now_or_never().is_none());
+        assert_eq!(
+            scheduler.metrics().delegated_runs,
+            0,
+            "a cancelled middle waiter must not let a later write dispatch first"
+        );
+        runtime().block_on(async {
+            let (a, b) = tokio::join!(first, last);
+            a.expect("first write");
+            b.expect("last write");
+        });
+        assert_eq!(get_sync(scheduler, Some(&paths), "k").unwrap(), "last");
+    }
+
+    #[test]
+    fn cancelling_a_running_write_keeps_its_gate_until_the_worker_finishes() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let scheduler = Arc::new(IoScheduler::new(1));
+        let paths = paths("storage-cancelled-running");
+        let dir = storage_dir(Some(&paths)).unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let mut first = Box::pin(run_mutate(
+            Arc::clone(&scheduler),
+            Some(&paths),
+            0,
+            move |dir| {
+                started_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                let result = storage_ops::storage_set(dir, "k", "first", MAX_TOTAL_BYTES);
+                let _ = done_tx.send(());
+                result
+            },
+        ));
+        assert!(first.as_mut().now_or_never().is_none());
+        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        drop(first);
+        let still_owned = MUTATION_CHAINS
+            .lock()
+            .get(&dir)
+            .is_some_and(|chain| chain.strong_count() > 0);
+        let mut last = Box::pin(set(
+            Arc::clone(&scheduler),
+            Some(&paths),
+            "k".into(),
+            "last".into(),
+        ));
+        let completed = last.as_mut().now_or_never();
+        let waiting = completed.is_none();
+        let dispatched = scheduler.metrics().delegated_runs;
+        // Always release the worker before asserting the cancellation behavior.
+        release_tx.send(()).unwrap();
+        done_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        match completed {
+            Some(result) => result.expect("last write"),
+            None => runtime().block_on(last).expect("last write"),
+        }
+        assert!(
+            still_owned,
+            "a running mutation must keep its directory gate alive"
+        );
+        assert!(waiting);
+        assert_eq!(dispatched, 1, "cancelled response released an active write");
+        assert_eq!(get_sync(scheduler, Some(&paths), "k").unwrap(), "last");
+        assert!(
+            MUTATION_CHAINS
+                .lock()
+                .get(&dir)
+                .and_then(Weak::upgrade)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn waiting_mutations_charge_string_capacity_before_the_first_poll() {
+        let mut key = String::with_capacity(64);
+        key.push('k');
+        let mut value = String::with_capacity(128);
+        value.push('v');
+        let retained = (key.capacity() + value.capacity()) as u64;
+        let scheduler = Arc::new(IoScheduler::isolated_for_admission_probe(1, 1, retained));
+        let paths = paths("storage-pending-bytes");
+        let first = set(Arc::clone(&scheduler), Some(&paths), key, value);
+        assert!(
+            scheduler.pools().reserve_bytes(1).is_err(),
+            "a mutation must charge retained capacity before it is polled"
+        );
+        let refused = set(
+            Arc::clone(&scheduler),
+            Some(&paths),
+            "another".into(),
+            "value".into(),
+        )
+        .now_or_never()
+        .expect("over-budget mutation must not join the directory queue")
+        .expect_err("budget exhausted");
+        assert_eq!(refused.class, CLASS_STORAGE_ERROR);
+        assert!(refused.message.contains("pending-byte budget exhausted"));
+        assert_eq!(scheduler.metrics().delegated_runs, 0);
+        assert!(
+            !storage_dir(Some(&paths))
+                .unwrap()
+                .join("storage.db")
+                .exists()
+        );
+        drop(first);
+        drop(scheduler.pools().reserve_bytes(retained).unwrap());
+        runtime()
+            .block_on(set(
+                Arc::clone(&scheduler),
+                Some(&paths),
+                "k".into(),
+                "retry".into(),
+            ))
+            .expect("retry after released reservation");
+        assert_eq!(get_sync(scheduler, Some(&paths), "k").unwrap(), "retry");
+    }
+
+    #[test]
+    fn rejected_mutations_drop_their_capture_without_polling() {
+        let scheduler = Arc::new(IoScheduler::isolated_for_admission_probe(1, 1, 1));
+        let paths = paths("storage-rejected-capture");
+        let payload = Arc::new(vec![0_u8; 2]);
+        let weak = Arc::downgrade(&payload);
+        let rejected = run_mutate(scheduler, Some(&paths), 2, move |_| {
+            drop(payload);
+            Ok(())
+        });
+        assert!(
+            weak.upgrade().is_none(),
+            "a rejected mutation must drop its payload before the first poll"
+        );
+        assert!(rejected.now_or_never().unwrap().is_err());
+    }
+
+    #[test]
+    fn cancelled_responses_keep_running_mutation_bytes_until_completion() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let scheduler = Arc::new(IoScheduler::isolated_for_admission_probe(1, 1, 16));
+        let paths = paths("storage-running-bytes");
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let mut first = Box::pin(run_mutate(
+            Arc::clone(&scheduler),
+            Some(&paths),
+            8,
+            move |dir| {
+                started_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                storage_ops::storage_set(dir, "k", "first", MAX_TOTAL_BYTES)
+            },
+        ));
+        assert!(first.as_mut().now_or_never().is_none());
+        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let waiting = run_mutate(Arc::clone(&scheduler), Some(&paths), 8, |_| Ok(()));
+        let full = scheduler.pools().reserve_bytes(1).is_err();
+        drop(waiting);
+        let waiting_returned = scheduler.pools().reserve_bytes(8).is_ok();
+        drop(first);
+        let running_still_charged = scheduler.pools().reserve_bytes(9).is_err();
+        // Release the worker before asserting so a failing test cannot strand it.
+        release_tx.send(()).unwrap();
+        runtime()
+            .block_on(run_mutate(Arc::clone(&scheduler), Some(&paths), 0, |_| {
+                Ok(())
+            }))
+            .expect("wait for the accepted write to finish");
+        assert!(full, "waiting mutation inputs must share the byte budget");
+        assert!(waiting_returned, "a dropped waiter must return its bytes");
+        assert!(
+            running_still_charged,
+            "a cancelled response must keep accepted mutation bytes charged"
+        );
+        drop(scheduler.pools().reserve_bytes(16).unwrap());
+        assert_eq!(get_sync(scheduler, Some(&paths), "k").unwrap(), "first");
+    }
+
+    #[test]
+    fn host_close_wakes_mutations_waiting_for_their_directory() {
+        use std::time::Duration;
+
+        let scheduler = Arc::new(IoScheduler::isolated_for_admission_probe(1, 1, 16));
+        let paths = paths("storage-waiting-close");
+        let first = run_mutate(Arc::clone(&scheduler), Some(&paths), 8, |_| Ok(()));
+        let mut last = Box::pin(run_mutate(Arc::clone(&scheduler), Some(&paths), 8, |_| {
+            panic!("closed waiter must not run")
+        }));
+        assert!(last.as_mut().now_or_never().is_none());
+        scheduler.close();
+        let error = runtime()
+            .block_on(async { tokio::time::timeout(Duration::from_secs(2), last).await })
+            .expect("host close must wake a storage waiter")
+            .expect_err("closed host");
+        assert_eq!(error.class, CLASS_STORAGE_ERROR);
+        assert_eq!(error.message, "IO worker pool closed");
+        assert_eq!(scheduler.metrics().delegated_runs, 0);
+        drop(scheduler.pools().reserve_bytes(8).unwrap());
+        drop(first);
+        drop(scheduler.pools().reserve_bytes(16).unwrap());
+    }
+
+    #[test]
+    fn creation_order_is_reserved_even_with_an_exhausted_cooperative_budget() {
+        let scheduler = Arc::new(IoScheduler::new(1));
+        let paths = paths("storage-cooperative-order");
+        runtime().block_on(async move {
+            tokio::spawn(async move {
+                let permits = tokio::sync::Semaphore::new(1);
+                for _ in 0..1024 {
+                    if !tokio::task::coop::has_budget_remaining() {
+                        break;
+                    }
+                    drop(permits.acquire().await.unwrap());
+                }
+                assert!(!tokio::task::coop::has_budget_remaining());
+                let first = set(
+                    Arc::clone(&scheduler),
+                    Some(&paths),
+                    "k".into(),
+                    "first".into(),
+                );
+                let mut last = Box::pin(set(
+                    Arc::clone(&scheduler),
+                    Some(&paths),
+                    "k".into(),
+                    "last".into(),
+                ));
+                tokio::task::yield_now().await;
+                assert!(last.as_mut().now_or_never().is_none());
+                assert_eq!(
+                    scheduler.metrics().delegated_runs,
+                    0,
+                    "creation order must survive an exhausted cooperative budget"
+                );
+                let (a, b) = tokio::join!(first, last);
+                a.expect("first write");
+                b.expect("last write");
+                assert_eq!(get_sync(scheduler, Some(&paths), "k").unwrap(), "last");
+            })
+            .await
+            .expect("joined ordering test");
+        });
+    }
+
     /// The line is per store: another game's writes do not wait behind this one's.
     #[test]
     fn two_stores_do_not_wait_for_each_other() {
         let scheduler = Arc::new(IoScheduler::new(1));
         let (one, two) = (paths("storage-one"), paths("storage-two"));
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-        let blocked = run_mutate(Arc::clone(&scheduler), Some(&one), move |_| {
+        let blocked = run_mutate(Arc::clone(&scheduler), Some(&one), 0, move |_| {
             // Holds the first store's line until the second store's write has run.
             done_rx
                 .recv_timeout(std::time::Duration::from_secs(10))
@@ -709,7 +1022,7 @@ mod tests {
                     )
                 })
         });
-        let free = run_mutate(scheduler, Some(&two), move |_| {
+        let free = run_mutate(scheduler, Some(&two), 0, move |_| {
             let _ = done_tx.send(());
             Ok(())
         });
@@ -727,7 +1040,7 @@ mod tests {
         let scheduler = Arc::new(IoScheduler::new(1));
         let paths = paths("storage-pruned");
         runtime()
-            .block_on(run_mutate(scheduler, Some(&paths), |_| Ok(())))
+            .block_on(run_mutate(scheduler, Some(&paths), 0, |_| Ok(())))
             .expect("applied");
         let dir = storage_dir(Some(&paths)).expect("dir");
         assert!(

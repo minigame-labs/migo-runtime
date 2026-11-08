@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::network::url::Url;
-use bytes::Bytes;
+pub use bytes::Bytes;
 use futures::Stream;
 use http::header::{
     ACCEPT_ENCODING, AUTHORIZATION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST,
@@ -181,6 +181,14 @@ impl fmt::Debug for HttpClient {
 }
 
 impl HttpClient {
+    /// Admit caller-owned response storage against this client's original IO
+    /// byte ledger. Keep the ticket until the allocation is really destroyed.
+    pub fn reserve_response_bytes(
+        &self,
+        bytes: u64,
+    ) -> Result<migo_io::pools::ByteTicket, migo_io::pools::ByteAdmitError> {
+        self.inner.pools.reserve_bytes(bytes)
+    }
     /// A request made as `kind`: every redirect it follows is gated as `kind` too, so it stays on the channel it was
     /// made on.
     pub fn request(&self, kind: GateKind, method: Method, url: Url) -> RequestBuilder {

@@ -33,3 +33,16 @@ Migo product decoder, new CPU pool, blocking Reader or thread per stream.
 The first integration checkpoint is library/typed-codec only. Chained and
 multiplexed streams are explicitly rejected by this profile. Migo's shared
 adapter and HTTP/DSP/player integration are separate acceptance steps.
+
+`0003` adds optional pinned-length source requests and normalized presentation
+metadata to the same Vorbis packetizer. It checks the final CRC page in the
+caller's bounded window, restores the original pending first page, and replays
+from byte zero with the existing packet durations and granule trimming. Ordinary
+`new()` stays sequential. No second page parser or encoded working Vec is added;
+seek refusal preserves state, and retained Vec capacities stay with their owner.
+Migo services these requests through the original sealed File, CPU and ACK path.
+
+`0004` waits for the original pending first audio page after a tail probe when
+source restoration arrives in smaller chunks. The same page and packet locations
+remain in place; no parsing, codec state or encoded buffer is duplicated. An
+incomplete restored page at EOF is rejected before exposing a borrowed packet.

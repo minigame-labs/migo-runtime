@@ -48,6 +48,19 @@ enum Location {
     Input(Range<usize>),
     Completed,
 }
+#[derive(Clone, Copy)]
+enum Resume {
+    Tail,
+    Packet,
+    Replay,
+}
+#[derive(Clone, Copy)]
+enum ReadState {
+    Media,
+    Pending(u64, Resume),
+    Tail,
+    Packet,
+}
 pub struct VorbisPacketizer {
     options: PacketizerOptions,
     mapper: Option<mappings::VorbisMapper>,
@@ -67,6 +80,13 @@ pub struct VorbisPacketizer {
     prev_end: Option<Timestamp>,
     eos: bool,
     failed: bool,
+    object_len: Option<u64>,
+    position: u64,
+    read_state: ReadState,
+    first_packet: bool,
+    first_page: u64,
+    origin: Option<i64>,
+    frames: Option<u64>,
 }
 impl VorbisPacketizer {
     pub fn new(options: PacketizerOptions) -> Self {
@@ -89,6 +109,13 @@ impl VorbisPacketizer {
             prev_end: None,
             eos: false,
             failed: false,
+            object_len: None,
+            position: 0,
+            read_state: ReadState::Media,
+            first_packet: true,
+            first_page: 0,
+            origin: None,
+            frames: None,
         }
     }
     pub fn track(&self) -> Option<&Track> {
@@ -112,7 +139,7 @@ impl VorbisPacketizer {
         if self.failed {
             return decode_error("ogg: Vorbis packetizer previously failed");
         }
-        let result = self.next_inner(input, eof);
+        let result = self.controlled_next(input, eof);
         if result.is_err() {
             self.failed = true;
         }
@@ -381,3 +408,6 @@ impl VorbisPacketizer {
         Ok(self.ready_packet())
     }
 }
+
+#[path = "vorbis_control.rs"]
+mod control;

@@ -20,6 +20,7 @@ def declarations(originals):
         return text[a:i]
     curve=method(originals['context'],'    pub(crate) fn try_set_wave_shaper_curve(')
     snapshot=method(originals['context'],'    pub(crate) fn try_set_started_buffer(')
+    atomic=method(originals['context'],'    pub(crate) fn try_start_buffer(')
     cpu='replacement input escaped CPU retirement'
     credit='replacement credit returned before CPU drop'
     pcm='replacement changed complete PCM, offset, duration or old binding'
@@ -39,11 +40,11 @@ def declarations(originals):
       ('replacement-curve-old-admission-ignored','node','self.retirement.as_ref(),\n                    data.capacity() * std::mem::size_of::<f32>(),','None,\n                    data.capacity() * std::mem::size_of::<f32>(),',pcm),
       ('replacement-snapshot-old-admission-ignored','context',snapshot,snapshot.replace('source.retire_buffer(self.node_retirement.as_ref())','Ok::<(), EngineError>(())'),start),
       ('replacement-curve-cloned','context','node.try_set_curve(curve)','node.try_set_curve(&mut curve.clone())',consumed),
-      ('replacement-snapshot-cloned','context','source.set_snapshot(buffer.take());','source.set_snapshot(buffer.clone());',consumed),
-      ('replacement-start-time-lost','replacement','ctx.start_source(*node_id, *when, *offset, *duration)','ctx.start_source(*node_id, 0.0, *offset, *duration)',pcm),
-      ('replacement-start-offset-lost','replacement','ctx.start_source(*node_id, *when, *offset, *duration)','ctx.start_source(*node_id, *when, 0.0, *duration)',pcm),
-      ('replacement-start-duration-lost','replacement','ctx.start_source(*node_id, *when, *offset, *duration)','ctx.start_source(*node_id, *when, *offset, None)',pcm),
-      ('replacement-start-after-refusal','replacement','&& ctx.start_source(*node_id, *when, *offset, *duration)','| ctx.start_source(*node_id, *when, *offset, *duration)',start),
+      ('replacement-snapshot-cloned','context',snapshot,snapshot.replace('source.set_snapshot(buffer.take());','source.set_snapshot(buffer.clone());'),consumed),
+      ('replacement-start-time-lost','context',atomic,atomic.replace('source.start(when, offset, duration, now);','source.start(0.0, offset, duration, now);'),pcm),
+      ('replacement-start-offset-lost','context',atomic,atomic.replace('source.start(when, offset, duration, now);','source.start(when, 0.0, duration, now);'),pcm),
+      ('replacement-start-duration-lost','context',atomic,atomic.replace('source.start(when, offset, duration, now);','source.start(when, offset, None, now);'),pcm),
+      ('replacement-start-after-refusal','context',atomic,atomic.replace('        if source.retire_buffer(self.node_retirement.as_ref()).is_err() {','        source.start(when, offset, duration, now);\n        if source.retire_buffer(self.node_retirement.as_ref()).is_err() {'),pcm),
       ('replacement-resume-lost','replacement','return started.then_some((*ctx_id, *node_id));','return None;',start),
       ('replacement-small-offloaded','replacement',cap,cap.replace('< 4096','< 0'),'replacement threshold or legacy dispatch changed'),
       ('replacement-unrelated-selected','replacement',selector,'        || false','replacement completion requires a curve or snapshot command'),

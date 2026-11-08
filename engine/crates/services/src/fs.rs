@@ -413,18 +413,6 @@ pub fn code_relative(virtual_path: &str) -> &str {
     virtual_path.strip_prefix("/code/").unwrap_or("")
 }
 
-/// Whether a virtual path refers to the read-only `/code` mount.
-///
-/// mmap-based whole-file reads are only safe on read-only, immutable
-/// backends: `/code` is read-only and immutable within a mount generation,
-/// so mapping its files can't hit the truncation→SIGBUS window. `/user`
-/// `/cache` `/tmp` are writable and must not be mmap'd. Mirrors
-/// `resolve_path_vfs`'s mapping of relative paths onto `/code`.
-#[inline]
-fn is_read_only_code_path(path: &str) -> bool {
-    !path.starts_with('/') || path == "/code" || path.starts_with("/code/")
-}
-
 /// Read bytes for a /code path via MountTable.  Used by read-oriented ops
 /// when the path resolves to a pack backend.
 #[inline]
@@ -432,13 +420,13 @@ fn read_pack_bytes(mount_table: Option<&MountTable>, virtual_path: &str) -> FsRe
     let mt = mount_table.ok_or_else(|| ioerr("mount table not initialized"))?;
     let relative = code_relative(virtual_path);
     let max_len = shared::protocol::io_cmd::MAX_READ_LENGTH;
-    if let Some(size) = mt.entry_size(relative) {
-        if size > max_len {
-            return Err(ioerr(format!(
-                "file size {} exceeds limit {}",
-                size, max_len
-            )));
-        }
+    if let Some(size) = mt.entry_size(relative)
+        && size > max_len
+    {
+        return Err(ioerr(format!(
+            "file size {} exceeds limit {}",
+            size, max_len
+        )));
     }
     mt.read_range_limited(relative, 0, None, max_len)
         .map_err(|e| ioerr(format!("pack read failed: {e}")))
@@ -903,10 +891,10 @@ pub async fn open(env: FsEnv, path: String, flag: String) -> FsResult<u32> {
     })
     .await;
 
-    if result.is_err() {
-        if let Some(path) = cleanup_on_error {
-            scheduler.domain().remove_temp_file(Path::new(&path));
-        }
+    if result.is_err()
+        && let Some(path) = cleanup_on_error
+    {
+        scheduler.domain().remove_temp_file(Path::new(&path));
     }
     result
 }
@@ -1191,28 +1179,28 @@ fn pack_read_plan(
 ) -> FsResult<Option<u64>> {
     let max_len = shared::protocol::io_cmd::MAX_READ_LENGTH;
     // Reject if explicit length > MAX_READ_LENGTH.
-    if let Some(len) = length {
-        if len > max_len {
-            return Err(ioerr(format!(
-                "read length {} exceeds limit {}",
-                len, max_len,
-            )));
-        }
+    if let Some(len) = length
+        && len > max_len
+    {
+        return Err(ioerr(format!(
+            "read length {} exceeds limit {}",
+            len, max_len,
+        )));
     }
     let entry_size = mount_table.entry_size(rel);
     // When length is not specified, check the effective read size
     // (entry_size - position) against the limit.  This prevents
     // unbounded reads from oversized pack entries regardless of
     // whether position is specified.
-    if length.is_none() {
-        if let Some(entry_sz) = entry_size {
-            let effective = entry_sz.saturating_sub(position.unwrap_or(0));
-            if effective > max_len {
-                return Err(ioerr(format!(
-                    "file size {} exceeds limit {}",
-                    effective, max_len,
-                )));
-            }
+    if length.is_none()
+        && let Some(entry_sz) = entry_size
+    {
+        let effective = entry_sz.saturating_sub(position.unwrap_or(0));
+        if effective > max_len {
+            return Err(ioerr(format!(
+                "file size {} exceeds limit {}",
+                effective, max_len,
+            )));
         }
     }
     Ok(entry_size.map(|sz| sz.saturating_sub(position.unwrap_or(0))))
@@ -1242,7 +1230,6 @@ pub async fn read_file(
                 .map_err(|e| ioerr(format!("pack read failed: {e}")))
         }
         ResolvedPath::Filesystem(full_path) => {
-            let allow_mmap = is_read_only_code_path(&path);
             let request = filesystem_read_request(
                 request_kind,
                 length,
@@ -1252,17 +1239,17 @@ pub async fn read_file(
             env.scheduler
                 .run_async(request, move || {
                     let t0 = Instant::now();
-                    let r = fs_ops::read_file(&full_path, position, length, allow_mmap);
+                    let r = fs_ops::read_file(&full_path, position, length);
                     let disk_ms = t0.elapsed().as_millis() as u64;
-                    if let Ok(ref d) = r {
-                        if disk_ms >= 30 {
-                            tracing::warn!(
-                                "[IOTrace] read slow {}ms size={}B path={}",
-                                disk_ms,
-                                d.len(),
-                                path
-                            );
-                        }
+                    if let Ok(ref d) = r
+                        && disk_ms >= 30
+                    {
+                        tracing::warn!(
+                            "[IOTrace] read slow {}ms size={}B path={}",
+                            disk_ms,
+                            d.len(),
+                            path
+                        );
                     }
                     r
                 })
@@ -1297,7 +1284,6 @@ pub fn read_file_sync(
                 .map_err(|e| ioerr(format!("pack read failed: {e}")))
         }
         ResolvedPath::Filesystem(full_path) => {
-            let allow_mmap = is_read_only_code_path(path);
             let request = filesystem_read_request(
                 request_kind,
                 length,
@@ -1306,7 +1292,7 @@ pub fn read_file_sync(
             );
             scheduler
                 .run_sync(&request, move || {
-                    fs_ops::read_file(&full_path, position, length, allow_mmap)
+                    fs_ops::read_file(&full_path, position, length)
                 })
                 .map_err(pool_err)?
                 .map_err(engine_err)

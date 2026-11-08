@@ -99,6 +99,7 @@ pub(crate) fn rejected_payloads() {
                 id: 1,
                 load: old_url,
                 url: "x".repeat(bytes),
+                spool: None,
                 resp: url,
             },
             AudioCmd::SetStartedBuffer {

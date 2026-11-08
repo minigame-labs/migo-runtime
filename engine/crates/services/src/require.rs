@@ -59,12 +59,11 @@ fn resolve_module_path(path: PathBuf, mount_table: Option<&MountTable>, code_dir
             return true;
         }
         // Check mount table for pack-backed entries.
-        if let Some(mt) = mount_table {
-            if let Ok(rel) = p.strip_prefix(code_path) {
-                if let Some(rel_str) = rel.to_str() {
-                    return mt.is_file(rel_str);
-                }
-            }
+        if let Some(mt) = mount_table
+            && let Ok(rel) = p.strip_prefix(code_path)
+            && let Some(rel_str) = rel.to_str()
+        {
+            return mt.is_file(rel_str);
         }
         false
     };

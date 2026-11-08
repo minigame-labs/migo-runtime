@@ -123,6 +123,12 @@ if [[ "$V8_SYSROOT_IDENTITY" != "$MIGO_SYSROOT_IDENTITY" ]]; then
     exit 1
 fi
 
+# This SDK embeds V8. Use its ICU code and the data installed before rendering,
+# as Android does, rather than also linking Skia's bundled ICU/data.
+# shellcheck source=scripts/lib/skia-external-icu.sh
+source "$SCRIPT_DIR/lib/skia-external-icu.sh"
+skia_external_icu_export "$ENGINE_DIR" "$TARGET" || exit 1
+
 # The NDK must not be visible, or skia-bindings picks its toolchain over ours.
 unset ANDROID_NDK ANDROID_NDK_HOME
 
@@ -206,32 +212,18 @@ VERSION="$(read_release_version "$REPO_ROOT")"
 # for one reason: rustc gives every cdylib a version script of its own listing
 # each reachable `#[no_mangle]` symbol, the linker takes the union with ours,
 # and the result exported 338 symbols -- `diplomat_*`, `temporal_rs_*` and
-# `rusty_v8_*` from dependency crates alongside the 20 documented entry points.
+# `rusty_v8_*` from dependency crates alongside the documented entry points.
 # `--exclude-libs,ALL` does not reach them either. Linking here makes migo.map
 # the only version script, so the exported surface is exactly what the headers
 # declare.
 #
 # Two details that are not obvious:
-#   * No --whole-archive. The static library carries ICU twice (V8's copy and
-#     Skia's), and pulling every member in produces duplicate definitions.
-#     `-u` on each entry point gives the linker roots to resolve from, so it
-#     pulls the same object set cargo's own link does.
+#   * `-u` on each public entry point gives the linker roots to resolve from.
+#     Skia uses the external ICU selected above, shared with V8.
 #   * --no-undefined, so a missing symbol fails here rather than at dlopen on a
 #     machine we cannot see.
-#   * --gc-sections is load-bearing, not an optimisation. skia-bindings compiles
-#     one translation unit containing wrappers for JPEG, PDF and pathops, and
-#     Skia here is built without those features, so that object references
-#     symbols that do not exist (SkJpegEncoder::Encode, SkPDF::AttributeList::*,
-#     SkOpBuilder::resolve, ...). An executable survives because the unreferenced
-#     wrappers are collected before their references have to resolve; a shared
-#     library treats every global as a potential entry point and keeps them. The
-#     version script above demotes everything but `migo_*` to local, which is
-#     what lets section GC drop them here too.
-#
-#     This is the failure the C ABI runtime slice recorded as "adding Skia's
-#     archives forces skia-bindings' translation unit to be linked whole". The
-#     mechanism is different: the object is always linked, and what matters is
-#     whether the linker may discard the parts of it nothing calls.
+#   * --gc-sections drops unreachable implementation. The version script uses
+#     exact public names: internal helpers can also have a `migo_` prefix.
 # ------------------------------------------------------------
 # lld, not the default GNU ld.
 #
@@ -244,9 +236,8 @@ VERSION="$(read_release_version "$REPO_ROOT")"
 # the linker's own. lld given the identical inputs produces a well-formed table
 # and a library external consumers link cleanly.
 #
-# The version script cannot simply be dropped to avoid this: without it,
-# --gc-sections has nothing to collect and the link fails on the JPEG/PDF
-# wrappers described below.
+# The version script must stay: it limits the library to the public ABI and
+# makes implementation symbols eligible for section GC.
 #
 # Resolved once by migo_sysroot_lld_bin (linux-sysroot.sh), which
 # RUSTFLAGS_SYSROOT_LINK above already used for the cargo-driven links --
@@ -263,12 +254,17 @@ python3 "$SCRIPT_DIR/write-linux-build-metadata.py" \
     --sysroot "$MIGO_SYSROOT_IDENTITY"
 
 info "linking libmigo.so (linker: $LLD_BIN)"
-SO_MAP="$ENGINE_DIR/crates/capi/migo.map"
+SO_MAP="$CARGO_TARGET/$TARGET/release/migo.map"
 ENTRY_POINTS=$(python3 "$SCRIPT_DIR/c-abi-entry-points.py" embedded "$REPO_ROOT/include/migo")
 UNDEF_ARGS=()
-for entry in $ENTRY_POINTS; do
-    UNDEF_ARGS+=("-Wl,-u,$entry")
-done
+{
+    printf 'MIGO_1.0 {\n    global:\n'
+    for entry in $ENTRY_POINTS; do
+        printf '        %s;\n' "$entry"
+        UNDEF_ARGS+=("-Wl,-u,$entry")
+    done
+    printf '    local: *;\n};\n'
+} > "$SO_MAP"
 NATIVE_LIBS=$(sed -n 's/.*native-static-libs: *//p' "$LINK_NOTE" | head -1)
 SO_BUILD="$CARGO_TARGET/$TARGET/release/libmigo.so.$VERSION"
 

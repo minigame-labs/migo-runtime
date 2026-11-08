@@ -1,3 +1,6 @@
+> Current product: the pinned patched crate is selected for AAC-LC full-file ADTS/M4A decoding.
+> Progressive playback and the broader profiles described as candidates below remain separate.
+
 # Symphonia AAC 0.6.1 candidate patches
 
 `UPSTREAM` pins the published crate archive. These patches are applied only in

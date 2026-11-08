@@ -292,5 +292,36 @@ for (const [w, h, transparent] of [[1, 1, false], [8, 8, false], [37, 29, false]
   check(Math.abs(decoded.pixels[0] - 90) < 3 && Math.abs(decoded.pixels[1] - 180) < 3 && Math.abs(decoded.pixels[2] - 30) < 3, "a flat colour stays that colour");
 }
 
+console.log("Native dispatch");
+{
+  const rgba = new Uint8Array([1, 2, 3, 4]);
+  const nativeBytes = new Uint8Array([10, 20, 30]);
+  for (const [type, quality, jpeg, q] of [
+    [" IMAGE/JPEG ", undefined, true, 92], ["image/jpeg", NaN, true, 92],
+    ["image/jpeg", -1, true, 92], ["image/jpeg", 2, true, 92],
+    ["image/jpeg", "0.5", true, 92], ["image/jpeg", 0, true, 1],
+    ["image/jpeg", 0.499, true, 50], ["image/jpeg", 1, true, 100],
+    ["image/unsupported", 0.5, false, 50],
+  ]) {
+    let calls = 0;
+    const native = (pixels, width, height, isJpeg, quality) => {
+      check(pixels === rgba && width === 1 && height === 1 && isJpeg === jpeg && quality === q,
+        `native receives borrowed pixels and normalized arguments: ${type}, ${q}`);
+      calls++;
+      return nativeBytes;
+    };
+    const encoded = encodeImage(rgba, 1, 1, type, quality, native);
+    check(calls === 1 && encoded.bytes === nativeBytes && encoded.mime === (jpeg ? "image/jpeg" : "image/png"), "native result is returned directly");
+  }
+  check(encodeDataUrl(rgba, 1, 1, "image/png", undefined, () => nativeBytes) === "data:image/png;base64,ChQe", "data URL uses native bytes");
+  const fallback = encodeImage(rgba, 1, 1, "image/png", undefined, () => null);
+  check(decodePng(fallback.bytes).pixels.every((v, i) => v === rgba[i]), "an absent native encoder selects the producer fallback");
+  const failure = new Error("native encoding failed");
+  let thrown;
+  try { encodeImage(rgba, 1, 1, "image/png", undefined, () => { throw failure; }); }
+  catch (e) { thrown = e; }
+  check(thrown === failure, "native failures reach the caller");
+}
+
 console.log(failures === 0 ? "PASS" : `FAIL (${failures})`);
 process.exit(failures === 0 ? 0 : 1);

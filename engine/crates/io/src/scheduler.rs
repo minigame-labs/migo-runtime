@@ -1265,7 +1265,7 @@ mod tests {
                 let path = probe_path.clone();
                 let output = scheduler
                     .run_sync(&hinted, move || {
-                        let bytes = read_file(&path, None, None, false).unwrap();
+                        let bytes = read_file(&path, None, None).unwrap();
                         std::hint::black_box(bytes[(i as usize) % bytes.len()])
                     })
                     .unwrap();
@@ -1279,7 +1279,7 @@ mod tests {
                 let path = probe_path.clone();
                 let output = scheduler
                     .run_sync(&unhinted, move || {
-                        let bytes = read_file(&path, None, None, false).unwrap();
+                        let bytes = read_file(&path, None, None).unwrap();
                         std::hint::black_box(bytes[(i as usize) % bytes.len()])
                     })
                     .unwrap();

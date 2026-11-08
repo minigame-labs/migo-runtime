@@ -57,18 +57,57 @@ impl Drop for NativeEglScope {
 }
 
 pub(crate) fn native_gles3_context() -> (NativeEglScope, glow::Context) {
+    native_context(
+        "libEGL.so.1",
+        0x31DD, // EGL_PLATFORM_SURFACELESS_MESA
+        &[khronos_egl::ATTRIB_NONE],
+        &[khronos_egl::CONTEXT_CLIENT_VERSION, 3, khronos_egl::NONE],
+    )
+}
+
+/// Opt-in shader conformance probe using an existing ANGLE/SwiftShader build.
+/// The caller supplies the library; it is never selected by production code.
+pub(crate) fn native_angle_context(version: i32, webgl: bool) -> (NativeEglScope, glow::Context) {
+    let library = std::env::var("MIGO_TEST_ANGLE_EGL_LIBRARY")
+        .expect("set MIGO_TEST_ANGLE_EGL_LIBRARY to the ANGLE EGL library");
+    native_context(
+        &library,
+        0x3202, // EGL_PLATFORM_ANGLE_ANGLE
+        &[
+            0x3203,
+            0x3450, // Vulkan backend
+            0x3209,
+            0x3487, // SwiftShader device
+            0x348F,
+            0x34A5, // Headless native platform
+            khronos_egl::ATTRIB_NONE,
+        ],
+        &[
+            khronos_egl::CONTEXT_CLIENT_VERSION,
+            version,
+            0x3483,
+            0, // EGL_CONTEXT_OPENGL_BACKWARDS_COMPATIBLE_ANGLE
+            0x33AC,
+            i32::from(webgl), // EGL_CONTEXT_WEBGL_COMPATIBILITY_ANGLE
+            khronos_egl::NONE,
+        ],
+    )
+}
+
+fn native_context(
+    library: &str,
+    platform: u32,
+    display_attributes: &[usize],
+    context_attributes: &[i32],
+) -> (NativeEglScope, glow::Context) {
     let display_lifetime = crate::backend::gl::readback_test_gl::lock_egl_display();
     let api = unsafe {
-        khronos_egl::DynamicInstance::<khronos_egl::EGL1_5>::load_required_from_filename(
-            "libEGL.so.1",
-        )
+        khronos_egl::DynamicInstance::<khronos_egl::EGL1_5>::load_required_from_filename(library)
     }
     .expect("load EGL 1.5");
-    // EGL_PLATFORM_SURFACELESS_MESA uses EGL_DEFAULT_DISPLAY (null).
-    let display = unsafe {
-        api.get_platform_display(0x31DD, std::ptr::null_mut(), &[khronos_egl::ATTRIB_NONE])
-    }
-    .expect("Mesa surfaceless display");
+    let display =
+        unsafe { api.get_platform_display(platform, std::ptr::null_mut(), display_attributes) }
+            .expect("native test display");
     api.initialize(display).expect("initialize EGL");
     let mut scope = NativeEglScope {
         api,
@@ -103,12 +142,7 @@ pub(crate) fn native_gles3_context() -> (NativeEglScope, glow::Context) {
     scope.context = Some(
         scope
             .api
-            .create_context(
-                display,
-                config,
-                None,
-                &[khronos_egl::CONTEXT_CLIENT_VERSION, 3, khronos_egl::NONE],
-            )
+            .create_context(display, config, None, context_attributes)
             .unwrap(),
     );
     scope.surface = Some(

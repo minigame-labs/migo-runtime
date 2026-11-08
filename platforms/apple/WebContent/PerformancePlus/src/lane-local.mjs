@@ -7,7 +7,7 @@
 // implements only ops the contract gives this lane is checked by
 // scripts/gen-performance-plus-engine.py.
 
-import { bytesOf, f32BitsOf, smiU32, smiU8, stringOf, toBool } from "./op-args.mjs";
+import { bytesOf, f32BitsOf, smiU32, smiU8, stringOf, toBool, toU32 } from "./op-args.mjs";
 import { platform } from "./engine-core.mjs";
 import { decodeBytes, encodeString } from "./text-codec.mjs";
 import { engineHost } from "./engine-host.mjs";
@@ -70,6 +70,17 @@ export function op_timer_is_backgrounded() {
 }
 
 // ---- canvases ---------------------------------------------------------------
+
+// WebContent has no Rust encoder. The shared image module uses its JS codec
+// when this op explicitly reports absence; pixel bytes never cross the host.
+export function op_encode_canvas_image(rgba, width, height, jpeg, quality) {
+  bytesOf(rgba, "rgba");
+  toU32(width, "width");
+  toU32(height, "height");
+  toBool(jpeg, "jpeg");
+  toU32(quality, "quality");
+  return null;
+}
 
 /// The sizes of the canvases this producer created, by id.
 ///

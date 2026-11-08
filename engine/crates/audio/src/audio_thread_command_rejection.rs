@@ -89,6 +89,17 @@ fn rejection(
             (!players.get(id).is_some_and(|p| p.shared.owns_load(load)) || resp.is_closed())
                 .then(crate::inner_audio::InnerAudioLoadToken::cancelled_error)
         }
+        AudioCmd::InnerAudioLoadFile { id, load, resp, .. } => {
+            if let Some(player) = players.get(id) {
+                if !player.shared.owns_load(load) || resp.is_closed() {
+                    Some(crate::inner_audio::InnerAudioLoadToken::cancelled_error())
+                } else {
+                    None
+                }
+            } else {
+                Some(missing_inner(id))
+            }
+        }
         AudioCmd::InnerAudioLoadUrl { id, load, .. } => {
             if let Some(player) = players.get(id) {
                 (!player.shared.owns_load(load))

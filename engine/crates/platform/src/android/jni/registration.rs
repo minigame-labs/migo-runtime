@@ -1,6 +1,6 @@
 use std::ffi::c_void;
 
-use jni::{JNIEnv, NativeMethod};
+use jni::{Env, NativeMethod, jni_str, signature::RuntimeMethodSignature, strings::JNIString};
 use tracing::info;
 
 use crate::{
@@ -29,7 +29,7 @@ use crate::{
         onUserCaptureScreen, onVideoEvent, onVideoResult, onVsync, onWheelEvent,
         onWindowStateChanged, shutdown, updatePermission, updateSurface, version,
     },
-    jni_profile_contract::{self, JniMethod, MethodDirection},
+    jni_profile_contract::{self, MethodDirection},
 };
 
 fn native_fn_ptr(name: &str) -> Option<*mut c_void> {
@@ -183,30 +183,36 @@ fn native_fn_ptr(name: &str) -> Option<*mut c_void> {
     Some(pointer)
 }
 
-fn registered_native_method(spec: JniMethod) -> Result<NativeMethod, String> {
-    let fn_ptr = native_fn_ptr(spec.name).ok_or_else(|| {
-        format!(
-            "active NativeBridge method has no compiled Rust callback: {} {}",
-            spec.name, spec.sig
-        )
-    })?;
-    Ok(NativeMethod {
-        name: spec.name.into(),
-        sig: spec.sig.into(),
-        fn_ptr,
-    })
-}
-
-pub(crate) fn register_native_exports(env: &mut JNIEnv) -> Result<(), String> {
+pub(crate) fn register_native_exports(env: &mut Env) -> Result<(), String> {
     let class = env
-        .find_class("com/migo/runtime/internal/NativeBridge")
+        .find_class(jni_str!("com/migo/runtime/internal/NativeBridge"))
         .map_err(|error| format!("Failed to find NativeBridge: {error:?}"))?;
-    let methods = jni_profile_contract::active_methods(MethodDirection::JavaToNative)
-        .into_iter()
-        .map(registered_native_method)
-        .collect::<Result<Vec<_>, _>>()?;
+    // JNI 0.22 descriptors borrow their strings. Keep these owned encodings
+    // alive until RegisterNatives has copied the descriptors into the VM.
+    let specs = jni_profile_contract::active_methods(MethodDirection::JavaToNative);
+    let descriptors: Vec<_> = specs
+        .iter()
+        .map(|spec| (JNIString::new(spec.name), JNIString::new(spec.sig)))
+        .collect();
+    let methods = specs
+        .iter()
+        .zip(&descriptors)
+        .map(|(spec, (name, sig))| {
+            let pointer = native_fn_ptr(spec.name).ok_or_else(|| {
+                format!(
+                    "active NativeBridge method has no compiled Rust callback: {} {}",
+                    spec.name, spec.sig
+                )
+            })?;
+            // SAFETY: the profile contract and native_fn_ptr describe the same
+            // static NativeBridge callbacks. The JNI signature gates check
+            // their Java declarations and Rust argument/return types together.
+            Ok(unsafe { NativeMethod::from_raw_parts(name, sig, pointer) })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
 
-    env.register_native_methods(&class, &methods)
+    // SAFETY: each descriptor above has a matching native function pointer.
+    unsafe { env.register_native_methods(&class, &methods) }
         .map_err(|error| format!("Failed to register native methods: {error:?}"))?;
 
     info!(
@@ -216,9 +222,9 @@ pub(crate) fn register_native_exports(env: &mut JNIEnv) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn register_java_exports(env: &mut JNIEnv) -> Result<(), String> {
+pub(crate) fn register_java_exports(env: &mut Env) -> Result<(), String> {
     let local_class = env
-        .find_class("com/migo/runtime/internal/NativeExports")
+        .find_class(jni_str!("com/migo/runtime/internal/NativeExports"))
         .map_err(|error| format!("Failed to find class NativeExports: {error}"))?;
     let methods = jni_profile_contract::active_methods(MethodDirection::NativeToJava);
     let global_class = env
@@ -227,11 +233,13 @@ pub(crate) fn register_java_exports(env: &mut JNIEnv) -> Result<(), String> {
     let mut cache = JavaMethodCache::new(global_class);
 
     for method in &methods {
+        let signature = RuntimeMethodSignature::from_str(method.sig)
+            .map_err(|error| format!("Invalid JNI signature for {}: {error}", method.name))?;
         let method_id = env
             .get_static_method_id(
-                "com/migo/runtime/internal/NativeExports",
-                method.name,
-                method.sig,
+                cache.class(),
+                JNIString::new(method.name),
+                signature.method_signature(),
             )
             .map_err(|error| {
                 format!(

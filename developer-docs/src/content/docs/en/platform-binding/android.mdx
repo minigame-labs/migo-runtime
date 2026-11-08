@@ -52,18 +52,7 @@ outer descriptor and the inner platform descriptor.
 MigoResult migo_android_init_context(void *vm, void *activity);
 ```
 
-Call this only when both of the following conditions hold:
-
-1. The host is a **pure C / NDK host** (no Java layer, not using the `com.migo.runtime` AAR).
-2. The Session **will play audio**.
-
-`vm` and `activity` correspond to the `vm` and `clazz` fields of `ANativeActivity`. Repeated calls
-after the first are no-ops; calling again after an Activity recreation is safe without checking.
-Passing `NULL` for `vm` returns `MIGO_ERROR_INVALID_ARGUMENT`.
-
-Omitting this call does not cause `attach` to fail, but the first audio playback will terminate
-the process instead of returning an error — call this **before creating any Session that will
-play audio**.
+The current native Oboe audio backend needs no JavaVM, so pure C / NDK hosts do not need to call this function. The symbol remains for compatibility with older hosts. Neither pointer is retained or dereferenced, and repeated calls have no side effects. A non-null `vm` returns `MIGO_OK`; a null `vm` still returns `MIGO_ERROR_INVALID_ARGUMENT`, preserving the original argument contract.
 
 ## The generation Counter (Android-Specific Pitfall)
 

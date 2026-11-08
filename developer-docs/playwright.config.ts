@@ -34,7 +34,9 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run docs:serve',
+    // Astro preview may background itself when run by an agent; this child
+    // must stay in the foreground so Playwright owns its lifetime.
+    command: 'npm run docs:serve -- --ignore-lock',
     url: 'http://127.0.0.1:8097/docs/',
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,

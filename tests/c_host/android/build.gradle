@@ -1,14 +1,22 @@
 plugins { id 'com.android.application' }
 
+// Use the same locked NDK revision as the native producer.
+def migoNativeBuildLock = new groovy.json.JsonSlurper().parse(
+        rootProject.file('../../contracts/artifact-manifest/android-v8.lock.json'))
+def migoNdkHome = providers.environmentVariable('ANDROID_NDK_HOME').orNull
+
 android {
     namespace 'com.migo.chost'
-    compileSdk 34
-    ndkVersion '23.2.8568313'
+    compileSdk 36
+    ndkVersion = migoNativeBuildLock.ndk.version
+    if (migoNdkHome) {
+        ndkPath = migoNdkHome
+    }
 
     defaultConfig {
         applicationId 'com.migo.chost'
         minSdk 26          // project floor; do not raise
-        targetSdk 34
+        targetSdk 36
         versionCode 1
         versionName '1.0'
         // Which ABIs to build is a property because the staticlib CMake links

@@ -44,6 +44,7 @@ pub mod audio_channel;
 pub mod audio_decoded_pcm;
 #[cfg(test)]
 mod audio_decoded_pcm_tests;
+pub mod audio_file;
 pub mod audio_frequency_response;
 pub mod audio_load;
 pub mod audio_physical;

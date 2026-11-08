@@ -118,14 +118,10 @@ fn legacy(
             offset,
             duration,
         } => {
-            return start_buffer_scoped(
-                contexts,
-                index,
-                ctx_id,
-                node_id,
-                buffer,
-                (when, offset, duration),
-            )
+            // Keep the reference independent of the atomic production entry.
+            let ctx = contexts.get_mut(&ctx_id).unwrap();
+            return (ctx.set_started_buffer(node_id, buffer)
+                && ctx.start_source(node_id, when, offset, duration))
             .then_some((ctx_id, node_id));
         }
         _ => unreachable!(),

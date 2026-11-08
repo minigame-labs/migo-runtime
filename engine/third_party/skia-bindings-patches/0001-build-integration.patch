@@ -1,0 +1,134 @@
+--- skia-bindings-0.157.0/Cargo.toml
++++ skia-bindings-0.157.0/Cargo.toml
+@@ -116,6 +116,8 @@
+ 
+ [dev-dependencies.bindgen]
+ version = "0.73.2"
++default-features = false
++features = ["logging", "runtime"]
+ 
+ [dev-dependencies.cc]
+ version = "1.1.28"
+@@ -143,6 +145,8 @@
+ 
+ [build-dependencies.bindgen]
+ version = "0.73.2"
++default-features = false
++features = ["logging", "runtime"]
+ 
+ [build-dependencies.cc]
+ version = "1.1.28"
+--- skia-bindings-0.157.0/Cargo.toml.orig
++++ skia-bindings-0.157.0/Cargo.toml.orig
+@@ -74,7 +74,8 @@
+ 
+ [build-dependencies]
+ cc = { version = "1.1.28" }
+-bindgen = { version = "0.73.2" }
++# The default rustfmt backend avoids prettyplease 0.2's incompatible syn major.
++bindgen = { version = "0.73.2", default-features = false, features = ["logging", "runtime"] }
+ pkg-config = "0.3.32"
+ 
+ # For enum variant name replacements.
+@@ -93,7 +94,8 @@
+ [dev-dependencies]
+ # build dependencies duplicated for testing :(
+ cc = { version = "1.1.28" }
+-bindgen = { version = "0.73.2" }
++# The default rustfmt backend avoids prettyplease 0.2's incompatible syn major.
++bindgen = { version = "0.73.2", default-features = false, features = ["logging", "runtime"] }
+ pkg-config = "0.3.32"
+ regex = "1.12.3"
+ heck = "0.5.0"
+--- skia-bindings-0.157.0/build.rs
++++ skia-bindings-0.157.0/build.rs
+@@ -186,6 +186,15 @@
+         binaries_config.copy_emscripten_ninja_archives_for_linking();
+     }
+ 
++    // Source builds also need the exact key for publishing corrected native archives.
++    #[cfg(feature = "binary-cache")]
++    if let Ok(hash) = cargo::crate_repository_hash() {
++        fs::write(
++            binaries_config.output_directory.join("key.txt"),
++            binaries_config.key(&hash[..20]),
++        )
++        .expect("failed to record source-built Skia identity");
++    }
+     final_configuration
+ }
+ 
+--- skia-bindings-0.157.0/build_support/binary_cache/download.rs
++++ skia-bindings-0.157.0/build_support/binary_cache/download.rs
+@@ -223,6 +223,10 @@
+ 
+ /// Returns whether the prepared download needs to be built.
+ pub fn try_prepare_download(binaries_config: &binaries_config::BinariesConfiguration) -> bool {
++    // External ICU is not encoded in the upstream binary-cache key.
++    if crate::build_support::skia::env::external_icu_include_dirs().is_some() {
++        return true;
++    }
+     env::force_skia_build() || {
+         let force_download = env::force_skia_binaries_download();
+         if let Some((tag, key)) = should_try_download_binaries(binaries_config, force_download) {
+--- skia-bindings-0.157.0/build_support/binary_cache/git.rs
++++ skia-bindings-0.157.0/build_support/binary_cache/git.rs
+@@ -8,6 +8,10 @@
+ 
+ /// Returns a 20 digit hash of the repository located in the current directory.
+ pub fn half_hash() -> Option<String> {
++    // A packaged vendor copy must not use the embedding repository HEAD.
++    if crate::build_support::cargo::is_crate() {
++        return None;
++    }
+     let mut cmd = Command::new("git");
+     cmd.arg("rev-parse").arg("--short=20");
+     let output = cmd.arg("HEAD").stderr(Stdio::inherit()).output().ok()?;
+--- skia-bindings-0.157.0/build_support/skia/config.rs
++++ skia-bindings-0.157.0/build_support/skia/config.rs
+@@ -186,10 +186,19 @@
+             }
+ 
+             if features[feature::TEXTLAYOUT] {
++                let external_icu = super::env::external_icu_include_dirs();
++                if let Some(dirs) = &external_icu {
++                    for dir in dirs {
++                        builder.cflag(format!("-I{}", dir.display()));
++                    }
++                }
+                 builder
+                     .arg("skia_enable_skshaper", yes())
+                     .arg("skia_use_icu", yes())
+-                    .arg("skia_use_system_icu", yes_if(use_system_libraries))
++                    .arg(
++                        "skia_use_system_icu",
++                        yes_if(use_system_libraries || external_icu.is_some()),
++                    )
+                     .arg("skia_use_harfbuzz", yes())
+                     .arg("skia_pdf_subset_harfbuzz", yes())
+                     .arg("skia_use_system_harfbuzz", yes_if(use_system_libraries))
+--- skia-bindings-0.157.0/build_support/skia/env.rs
++++ skia-bindings-0.157.0/build_support/skia/env.rs
+@@ -6,6 +6,12 @@
+ /// provided libraries are used.
+ pub fn use_system_libraries() -> bool {
+     cargo::env_var("SKIA_USE_SYSTEM_LIBRARIES").is_some()
++}
++
++/// Header directories of an ICU already supplied by the final embedder link.
++pub fn external_icu_include_dirs() -> Option<Vec<PathBuf>> {
++    cargo::env_var("SKIA_EXTERNAL_ICU_INCLUDE_DIRS")
++        .map(|dirs| std::env::split_paths(&dirs).collect())
+ }
+ 
+ /// The full path of the ninja command to run.
+--- skia-bindings-0.157.0/build_support/skia_bindgen.rs
++++ skia-bindings-0.157.0/build_support/skia_bindgen.rs
+@@ -979,6 +979,7 @@
+             // system ICU is active (either via SKIA_USE_SYSTEM_LIBRARIES or
+             // skia_use_system_icu=true in SKIA_GN_ARGS).
+             let system_icu = use_system_libraries
++                || crate::build_support::skia::env::external_icu_include_dirs().is_some()
+                 || cargo::env_var("SKIA_GN_ARGS")
+                     .is_some_and(|args| args.contains("skia_use_system_icu=true"));
+             if !system_icu {

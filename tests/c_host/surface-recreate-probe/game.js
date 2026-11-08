@@ -22,6 +22,7 @@ const ctx = canvas.getContext('2d');
 
 const FOLLOWS = '#00a000';   // green -- canvas matches the window it draws into
 const STALE = '#c00000';     // red   -- canvas kept a size the window no longer has
+const NATIVE_REFERENCE = '#1b5e9c'; // blue -- compare with native size and density
 
 let resizeEvents = 0;
 let frames = 0;
@@ -39,16 +40,18 @@ if (typeof migo.onWindowResize === 'function') {
 
 function paint() {
   frames++;
-  const info = migo.getSystemInfoSync();
+  const info = typeof migo.getSystemInfoSync === 'function' ? migo.getSystemInfoSync() : null;
   // Both are CSS pixels, but only one of them is an integer: the backing store
   // is a whole number of pixels (the surface divided by the device pixel ratio,
   // rounded), while `windowWidth` carries the exact ratio. Comparing them
   // directly is a verdict that can never be green -- 1080/2.75 is 392.7272.
-  const wantW = Math.round(info.windowWidth);
-  const wantH = Math.round(info.windowHeight);
-  const follows = canvas.width === wantW && canvas.height === wantH;
+  // Slim has no independent window-info API. Report the canvas without a local
+  // verdict; the host must compare it with its actual surface size and density.
+  const wantW = info ? Math.round(info.windowWidth) : null;
+  const wantH = info ? Math.round(info.windowHeight) : null;
+  const follows = info && canvas.width === wantW && canvas.height === wantH;
 
-  ctx.fillStyle = follows ? FOLLOWS : STALE;
+  ctx.fillStyle = info ? (follows ? FOLLOWS : STALE) : NATIVE_REFERENCE;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   const size = Math.max(14, Math.round(canvas.width / 16));
@@ -58,11 +61,15 @@ function paint() {
   let y = line * 1.5;
   ctx.fillText('canvas ' + canvas.width + 'x' + canvas.height, size, y);
   y += line;
-  ctx.fillText('window ' + wantW + 'x' + wantH, size, y);
-  y += line;
-  ctx.fillText('screen ' + Math.round(info.screenWidth) + 'x' + Math.round(info.screenHeight), size, y);
-  y += line;
-  ctx.fillText('dpr ' + info.pixelRatio, size, y);
+  if (info) {
+    ctx.fillText('window ' + wantW + 'x' + wantH, size, y);
+    y += line;
+    ctx.fillText('screen ' + Math.round(info.screenWidth) + 'x' + Math.round(info.screenHeight), size, y);
+    y += line;
+    ctx.fillText('dpr ' + info.pixelRatio, size, y);
+  } else {
+    ctx.fillText('reference: native surface / density', size, y);
+  }
   y += line;
   ctx.fillText('resizes ' + resizeEvents + ' frames ' + frames, size, y);
 
@@ -71,9 +78,9 @@ function paint() {
   if (frames - lastReport >= 60) {
     lastReport = frames;
     console.error('[srprobe] canvas=' + canvas.width + 'x' + canvas.height +
-      ' window=' + wantW + 'x' + wantH +
-      ' dpr=' + info.pixelRatio + ' resizes=' + resizeEvents + ' frames=' + frames +
-      ' verdict=' + (follows ? 'follows' : 'stale'));
+      (info ? ' window=' + wantW + 'x' + wantH + ' dpr=' + info.pixelRatio : ' reference=native') +
+      ' resizes=' + resizeEvents + ' frames=' + frames +
+      (info ? ' verdict=' + (follows ? 'follows' : 'stale') : ''));
   }
   requestAnimationFrame(paint);
 }

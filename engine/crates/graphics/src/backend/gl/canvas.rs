@@ -276,7 +276,7 @@ impl Canvas2DRenderer {
         let mut area = if stroke {
             // The stroke is traced in user space -- the line width is in user units -- and then moved to the canvas,
             // as it is drawn. `ctm` sets how finely its curves are cut.
-            let mut outline = skia_safe::Path::default();
+            let mut outline = skia_safe::PathBuilder::new();
             if !skia_safe::path_utils::fill_path_with_paint(
                 &path,
                 &build_stroke_geometry_paint(&self.state),
@@ -286,7 +286,7 @@ impl Canvas2DRenderer {
             ) {
                 return false;
             }
-            outline
+            outline.detach()
         } else {
             path.with_fill_type(if even_odd {
                 PathFillType::EvenOdd

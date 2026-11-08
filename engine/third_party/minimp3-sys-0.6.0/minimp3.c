@@ -51,9 +51,9 @@ migo_mp3_presentation *migo_mp3_presentation_new(void)
 
 void migo_mp3_presentation_free(migo_mp3_presentation *p) { free(p); }
 
-int migo_mp3_presentation_begin(migo_mp3_presentation *p, const uint8_t *frame,
+static int migo_mp3_presentation_begin_mode(migo_mp3_presentation *p, const uint8_t *frame,
     int size, int free_format_bytes, const mp3dec_frame_info_t *info,
-    uint64_t limit, uint64_t *expected)
+    uint64_t limit, uint64_t *expected, int streaming)
 {
     if (!p || p->initialized || !frame || size < HDR_SIZE || size > MAX_FREE_FORMAT_FRAME_SIZE || !info || !expected ||
         info->channels < 1 || info->channels > 2 || info->hz <= 0 ||
@@ -67,13 +67,30 @@ int migo_mp3_presentation_begin(migo_mp3_presentation *p, const uint8_t *frame,
         (size_t)size, 0, &measured);
     p->initialized = 1;
     if ((status != MP3D_E_USER && status != 0) || p->state.index.frames ||
-        p->state.detected_samples > MINIMP3_MIN(limit, UINT64_C(16777216)))
+        (!streaming && p->state.detected_samples > MINIMP3_MIN(limit, UINT64_C(16777216))))
     {
         p->state.last_error = MP3D_E_DECODE;
         return MP3D_E_DECODE;
     }
     *expected = p->state.detected_samples;
     return p->state.start_offset == (uint64_t)size;
+}
+
+/* Whole-file and progressive callers share the same upstream metadata kernel.
+ * Only whole-file PCM is subject to the contiguous result allocation ceiling. */
+int migo_mp3_presentation_begin(migo_mp3_presentation *p, const uint8_t *frame,
+    int size, int free_format_bytes, const mp3dec_frame_info_t *info,
+    uint64_t limit, uint64_t *expected)
+{
+    return migo_mp3_presentation_begin_mode(p, frame, size, free_format_bytes,
+        info, limit, expected, 0);
+}
+
+int migo_mp3_presentation_begin_stream(migo_mp3_presentation *p, const uint8_t *frame,
+    int size, int free_format_bytes, const mp3dec_frame_info_t *info, uint64_t *expected)
+{
+    return migo_mp3_presentation_begin_mode(p, frame, size, free_format_bytes,
+        info, 0, expected, 1);
 }
 
 int migo_mp3_presentation_decode(migo_mp3_presentation *p, mp3dec_t *decoder,

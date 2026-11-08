@@ -83,6 +83,12 @@ pub enum BeginLoadResult {
     StartLoading,
 }
 
+impl Default for ImageCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ImageCache {
     pub fn new() -> Self {
         Self {
@@ -97,24 +103,23 @@ impl ImageCache {
     /// Called at start of op_load_image: remove previous alias and dec refs.
     /// Returns Some(shared_id) if refs dropped to 0 -> caller should destroy that shared_id.
     pub fn remove_previous_alias(&mut self, image_id: u32) -> Option<u32> {
-        if let Some(shared_id) = self.alias_to_shared.remove(&image_id) {
-            if let Some(key) = self.shared_to_key.get(&shared_id).cloned() {
-                if let Some(entry) = self.by_src.get_mut(&key) {
-                    entry.refs = entry.refs.saturating_sub(1);
-                    // Each alias removal releases exactly one
-                    // pin on the io-side LRU entry.  When refs hits
-                    // zero the full unpin drops the count back to
-                    // regular-LRU eligibility so the bytes can age
-                    // out normally; idle entries don't deserve
-                    // permanent residence any more than the caller
-                    // deserves a silent black texture.
-                    migo_io::image_cache::global_cache().unpin(&key);
-                    if entry.refs == 0 {
-                        self.by_src.remove(&key);
-                        self.shared_to_key.remove(&shared_id);
-                        return Some(shared_id);
-                    }
-                }
+        if let Some(shared_id) = self.alias_to_shared.remove(&image_id)
+            && let Some(key) = self.shared_to_key.get(&shared_id).cloned()
+            && let Some(entry) = self.by_src.get_mut(&key)
+        {
+            entry.refs = entry.refs.saturating_sub(1);
+            // Each alias removal releases exactly one
+            // pin on the io-side LRU entry.  When refs hits
+            // zero the full unpin drops the count back to
+            // regular-LRU eligibility so the bytes can age
+            // out normally; idle entries don't deserve
+            // permanent residence any more than the caller
+            // deserves a silent black texture.
+            migo_io::image_cache::global_cache().unpin(&key);
+            if entry.refs == 0 {
+                self.by_src.remove(&key);
+                self.shared_to_key.remove(&shared_id);
+                return Some(shared_id);
             }
         }
         self.pending_alias_to_key.remove(&image_id);
@@ -207,9 +212,7 @@ impl ImageCache {
         actual_key: &ImageCacheKey,
         res: Result<(usize, usize), String>,
     ) -> Option<u32> {
-        let Some(waiters) = self.loading_map.remove(requested_key) else {
-            return None;
-        };
+        let waiters = self.loading_map.remove(requested_key)?;
 
         match res {
             Ok(dims) => {
@@ -294,25 +297,25 @@ impl ImageCache {
         let had_alias = self.alias_to_shared.contains_key(&image_id);
         let shared_id = self.alias_to_shared.remove(&image_id).unwrap_or(image_id);
 
-        if let Some(key) = self.shared_to_key.get(&shared_id).cloned() {
-            if let Some(entry) = self.by_src.get_mut(&key) {
-                if entry.refs > 0 {
-                    entry.refs -= 1;
-                    // One alias released → unpin once.  When
-                    // entry.refs still > 0 the remaining aliases
-                    // keep their own pins, so the io entry
-                    // stays live.  When refs hits zero the
-                    // final unpin here transitions the entry
-                    // to LRU-evictable.
-                    migo_io::image_cache::global_cache().unpin(&key);
-                }
-                if entry.refs == 0 {
-                    self.by_src.remove(&key);
-                    self.shared_to_key.remove(&shared_id);
-                    return Some(shared_id);
-                }
-                return None;
+        if let Some(key) = self.shared_to_key.get(&shared_id).cloned()
+            && let Some(entry) = self.by_src.get_mut(&key)
+        {
+            if entry.refs > 0 {
+                entry.refs -= 1;
+                // One alias released → unpin once.  When
+                // entry.refs still > 0 the remaining aliases
+                // keep their own pins, so the io entry
+                // stays live.  When refs hits zero the
+                // final unpin here transitions the entry
+                // to LRU-evictable.
+                migo_io::image_cache::global_cache().unpin(&key);
             }
+            if entry.refs == 0 {
+                self.by_src.remove(&key);
+                self.shared_to_key.remove(&shared_id);
+                return Some(shared_id);
+            }
+            return None;
         }
 
         if had_alias {

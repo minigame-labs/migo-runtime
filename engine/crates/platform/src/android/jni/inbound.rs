@@ -42,12 +42,8 @@ fn parse_prelude_scripts(json: Option<String>) -> Vec<(String, String)> {
 /// Convert a JNI string to `Cow<'static, str>`.
 /// Returns a borrowed `&'static str` for known constant values,
 /// avoiding heap allocation in the common case.
-fn jni_string_to_cow(
-    env: &mut JNIEnv,
-    jstr: &JString,
-    known: &[&'static str],
-) -> Cow<'static, str> {
-    let s: String = env.get_string(jstr).map(|s| s.into()).unwrap_or_default();
+fn jni_string_to_cow(env: &mut Env, jstr: &JString, known: &[&'static str]) -> Cow<'static, str> {
+    let s: String = jstr.mutf8_chars(env).map(|s| s.into()).unwrap_or_default();
     for &k in known {
         if s == k {
             return Cow::Borrowed(k);
@@ -62,8 +58,9 @@ fn jni_string_to_cow(
 // need to invoke a global `_internalOn*('escaped_json')` function in V8.
 // ---------------------------------------------------------------------------
 
-fn read_json_result(env: &mut JNIEnv, result_json: &JString, fallback_json: &str) -> String {
-    env.get_string(result_json)
+fn read_json_result(env: &mut Env, result_json: &JString, fallback_json: &str) -> String {
+    result_json
+        .mutf8_chars(env)
         .map(|s| s.into())
         .unwrap_or_else(|_| fallback_json.to_string())
 }
@@ -80,7 +77,7 @@ fn send_json_result_to_js(host_id: jint, json: &str, js_callback: &'static str) 
 }
 
 fn forward_json_result_to_js(
-    env: &mut JNIEnv,
+    env: &mut Env,
     host_id: jint,
     result_json: &JString,
     js_callback: &'static str,
@@ -102,13 +99,13 @@ macro_rules! jni_json_callback {
     };
     ($fn_name:ident, $js_callback:literal, $fallback:expr) => {
         pub(crate) extern "system" fn $fn_name<'local>(
-            mut env: JNIEnv<'local>,
+            mut env: EnvUnowned<'local>,
             _class: JClass<'local>,
             host_id: jint,
             result_json: JString<'local>,
         ) {
-            jni_safe!(stringify!($fn_name), {
-                forward_json_result_to_js(&mut env, host_id, &result_json, $js_callback, $fallback);
+            jni_safe!(stringify!($fn_name), env => (), {
+                forward_json_result_to_js(env, host_id, &result_json, $js_callback, $fallback);
             });
         }
     };
@@ -121,14 +118,14 @@ macro_rules! jni_json_callback {
 macro_rules! jni_host_files_callback {
     ($fn_name:ident, $js_callback:literal, $files:expr) => {
         pub(crate) extern "system" fn $fn_name<'local>(
-            mut env: JNIEnv<'local>,
+            mut env: EnvUnowned<'local>,
             _class: JClass<'local>,
             host_id: jint,
             result_json: JString<'local>,
         ) {
-            jni_safe!(stringify!($fn_name), {
+            jni_safe!(stringify!($fn_name), env => (), {
                 let json = read_json_result(
-                    &mut env,
+                    env,
                     &result_json,
                     r#"{"error":"failed to read result"}"#,
                 );
@@ -139,7 +136,7 @@ macro_rules! jni_host_files_callback {
     };
 }
 use jni::sys::{JNI_FALSE, JNI_TRUE, jboolean, jdouble, jfloat, jint, jlong, jobject, jstring};
-use jni::{JNIEnv, JavaVM};
+use jni::{Env, EnvUnowned, JavaVM, jni_sig, jni_str};
 
 use shared::services::host_files::HostFiles;
 use tracing::{error, info, warn};
@@ -230,23 +227,19 @@ fn invalidate_hot_ingress(host_id: jint) {
 /// the one exported symbol there — is what lets `platform` stay a reusable
 /// rlib while every target owns a separate, audited delivery boundary.
 pub fn on_load(vm: JavaVM) -> jint {
-    // Initialize logging/tracing once.
-    logging::init_logging();
+    jni_safe!("JNI_OnLoad", jni::sys::JNI_ERR, {
+        // Initialize logging/tracing once.
+        logging::init_logging();
 
-    // Initialize ndk-context for cpal/oboe audio backend.
-    // This must be done before any audio operations.
-    unsafe {
-        ndk_context::initialize_android_context(
-            vm.get_java_vm_pointer().cast(),
-            std::ptr::null_mut(), // activity can be null for audio-only usage
-        );
-    }
+        // Initialize the global JNI environment helper.
+        // This also registers Java exports + native exports.
+        if let Err(error) = init_jni_env(vm) {
+            tracing::error!("Failed to initialize JNI environment: {error}");
+            return jni::sys::JNI_ERR;
+        }
 
-    // Initialize the global JNI environment helper.
-    // This also registers Java exports + native exports.
-    init_jni_env(vm).expect("Failed to initialize JNI environment");
-
-    jni::sys::JNI_VERSION_1_6
+        jni::sys::JNI_VERSION_1_6
+    })
 }
 
 /// The engine version `NativeBridge.version()` hands back to the Java SDK.
@@ -258,10 +251,10 @@ pub fn on_load(vm: JavaVM) -> jint {
 /// the 0.1.x line and left `MigoRuntime`'s SDK-vs-native skew check comparing
 /// that constant against an identically frozen Java one, so it could never fire.
 pub(crate) extern "system" fn version<'local>(
-    env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
 ) -> jstring {
-    jni_safe!("version", std::ptr::null_mut(), {
+    jni_safe!("version", env => std::ptr::null_mut(), {
         match env.new_string(env!("CARGO_PKG_VERSION")) {
             Ok(s) => s.into_raw(),
             Err(_) => std::ptr::null_mut(),
@@ -278,7 +271,7 @@ pub(crate) extern "system" fn version<'local>(
 /// silent mismatch between the build script's ANDROID_API and a
 /// hard-coded Java constant is possible any more.
 pub(crate) extern "system" fn getMinApiLevel<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
 ) -> jint {
     // Must be kept in sync with scripts/build-android-so.sh
@@ -304,22 +297,21 @@ pub(crate) extern "system" fn getMinApiLevel<'local>(
 ///   returns `false` so callers surface a clear "ICU bootstrap
 ///   incomplete" signal instead of crashing inside SkParagraph.
 pub(crate) extern "system" fn initIcuData<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     icu_path: JString<'local>,
 ) -> jni::sys::jboolean {
-    jni_safe!("initIcuData", jni::sys::JNI_FALSE, {
+    jni_safe!("initIcuData", env => jni::sys::JNI_FALSE, {
         // Fast path: embedded data.  We still read the string so
         // Java doesn't leak the local ref but ignore the value.
         if graphics::EMBEDS_ICU_DATA {
-            let _ = env.get_string(&icu_path);
+            let _ = icu_path.mutf8_chars(env);
             return jni::sys::JNI_TRUE;
         }
         // External path: placeholder until SkLoadICU is linked.
         // Read the string to consume the arg, then log + return
         // false so the caller knows the bootstrap didn't run.
-        let path: String = env
-            .get_string(&icu_path)
+        let path: String = icu_path.mutf8_chars(env)
             .map(|s| s.into())
             .unwrap_or_default();
         tracing::warn!(
@@ -331,13 +323,13 @@ pub(crate) extern "system" fn initIcuData<'local>(
 }
 
 pub(crate) extern "system" fn init(
-    mut env: JNIEnv,
+    mut env: EnvUnowned,
     _class: JClass,
     surface: jobject,
     options: JObject<'_>,
 ) -> jint {
-    jni_safe!("init", -1, {
-        if let Err(error) = super::tls::init(&mut env) {
+    jni_safe!("init", env => -1, {
+        if let Err(error) = super::tls::init(env) {
             error!("init failed: {error}");
             return -1;
         }
@@ -350,7 +342,7 @@ pub(crate) extern "system" fn init(
             None
         } else {
             // Convert Java Surface to ANativeWindow*.
-            let window = unsafe { ANativeWindow_fromSurface(env.get_native_interface(), surface) };
+            let window = unsafe { ANativeWindow_fromSurface(env.get_raw(), surface) };
             if window.is_null() {
                 error!("init failed: ANativeWindow_fromSurface returned null");
                 return -1;
@@ -403,7 +395,7 @@ pub(crate) extern "system" fn init(
         };
 
         // Read required fields from RuntimeConfig
-        let cache_dir = match super::get_string_field(&mut env, "cacheDir", &options) {
+        let cache_dir = match super::get_string_field(env, jni_str!("cacheDir"), &options) {
             Ok(s) => s,
             Err(e) => {
                 error!("init failed: read cacheDir error: {}", e);
@@ -411,7 +403,7 @@ pub(crate) extern "system" fn init(
             }
         };
 
-        let files_dir = match super::get_string_field(&mut env, "filesDir", &options) {
+        let files_dir = match super::get_string_field(env, jni_str!("filesDir"), &options) {
             Ok(s) => s,
             Err(e) => {
                 error!("init failed: read filesDir error: {}", e);
@@ -419,7 +411,7 @@ pub(crate) extern "system" fn init(
             }
         };
 
-        let display_density = match super::get_f32(&mut env, "displayDensity", &options) {
+        let display_density = match super::get_f32(env, jni_str!("displayDensity"), &options) {
             Ok(v) => v,
             Err(e) => {
                 error!("init failed: read displayDensity error: {}", e);
@@ -433,16 +425,16 @@ pub(crate) extern "system" fn init(
         // an enum reference, which always have a value, so a failed read is a
         // Java/native mismatch and not an unset option. See its own comment for
         // what that difference cost.
-        let code_cache_dir = super::get_string_field(&mut env, "codeCacheDir", &options)
+        let code_cache_dir = super::get_string_field(env, jni_str!("codeCacheDir"), &options)
             .unwrap_or_else(|_| cache_dir.clone());
 
         let target_fps = super::or_default(
-            super::get_i32(&mut env, "targetFps", &options),
+            super::get_i32(env, jni_str!("targetFps"), &options),
             shared::frame_rate::DEFAULT_FPS as i32,
         );
 
         let debug_enabled =
-            super::or_default(super::get_bool(&mut env, "debugEnabled", &options), false);
+            super::or_default(super::get_bool(env, jni_str!("debugEnabled"), &options), false);
 
         // Three outcomes, and only one of them is the host speaking.
         //
@@ -452,9 +444,9 @@ pub(crate) extern "system" fn init(
         // to talk. `from_ordinal` rather than `From<i32>` because an ordinal the
         // two enums do not share is a fact worth saying, not a silent `Warn`.
         let log_level = match super::get_enum_ordinal(
-            &mut env,
-            "logLevel",
-            "Lcom/migo/runtime/RuntimeConfig$LogLevel;",
+            env,
+            jni_str!("logLevel"),
+            jni_sig!("Lcom/migo/runtime/RuntimeConfig$LogLevel;"),
             &options,
         ) {
             Ok(Some(ordinal)) => match shared::config::LogLevel::from_ordinal(ordinal) {
@@ -489,26 +481,26 @@ pub(crate) extern "system" fn init(
         };
 
         let watchdog_enabled =
-            super::or_default(super::get_bool(&mut env, "watchdogEnabled", &options), true);
+            super::or_default(super::get_bool(env, jni_str!("watchdogEnabled"), &options), true);
         let watchdog_timeout_secs = super::or_default(
-            super::get_i32(&mut env, "watchdogTimeoutSecs", &options),
+            super::get_i32(env, jni_str!("watchdogTimeoutSecs"), &options),
             10,
         );
         let code_signing_enabled = super::or_default(
-            super::get_bool(&mut env, "codeSigningEnabled", &options),
+            super::get_bool(env, jni_str!("codeSigningEnabled"), &options),
             true,
         );
 
         // Read optional code signing public key (hex-encoded Ed25519, 64 chars).
         // Returns None if the field is null, empty, or not present.
         let code_signing_pubkey =
-            super::get_optional_string_field(&mut env, "codeSigningPubkey", &options);
+            super::get_optional_string_field(env, jni_str!("codeSigningPubkey"), &options);
 
         // Boot prelude scripts (BOM/DOM adapter injection, etc.).
         // Optional — empty list when the host app doesn't configure any.
         let prelude_scripts = parse_prelude_scripts(super::get_optional_string_field(
-            &mut env,
-            "preludeScriptsJson",
+            env,
+            jni_str!("preludeScriptsJson"),
             &options,
         ));
 
@@ -517,7 +509,7 @@ pub(crate) extern "system" fn init(
         // every entry, so a field that is missing, null or does not parse is a
         // Java/native mismatch: refused rather than run under a policy the host did
         // not write. Read as optional, a renamed field became a silent deny-all.
-        let network_policy = match super::get_string_field(&mut env, "networkPolicyJson", &options)
+        let network_policy = match super::get_string_field(env, jni_str!("networkPolicyJson"), &options)
             .and_then(|json| {
                 shared::network_policy::NetworkPolicy::from_json(&json)
                     .map_err(|error| error.to_string())
@@ -533,7 +525,7 @@ pub(crate) extern "system" fn init(
         // `RuntimeConfig.Builder.setLaunchOptions` serialised, so one that is not an
         // object is a Java/native mismatch, refused for the policy's reason.
         let launch_options =
-            match super::get_optional_string_field(&mut env, "launchOptionsJson", &options)
+            match super::get_optional_string_field(env, jni_str!("launchOptionsJson"), &options)
                 .map(|json| serde_json::from_str::<serde_json::Value>(&json))
             {
                 None => None,
@@ -611,7 +603,7 @@ pub(crate) extern "system" fn init(
 }
 
 pub(crate) extern "system" fn updateSurface<'local>(
-    env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     surface: JObject<'local>,
@@ -619,14 +611,14 @@ pub(crate) extern "system" fn updateSurface<'local>(
     height: jint,
     density: jfloat,
 ) {
-    jni_safe!("updateSurface", {
+    jni_safe!("updateSurface", env => (), {
         let Some(pixel_ratio) = PixelRatio::new(density) else {
             error!("updateSurface failed: invalid display density {density}");
             return;
         };
         // NOTE: ANativeWindow_fromSurface creates a new ANativeWindow reference.
         let raw_surface = surface.into_raw();
-        let window = unsafe { ANativeWindow_fromSurface(env.get_native_interface(), raw_surface) };
+        let window = unsafe { ANativeWindow_fromSurface(env.get_raw(), raw_surface) };
 
         if window.is_null() {
             error!("updateSurface failed: ANativeWindow_fromSurface returned null");
@@ -718,7 +710,7 @@ pub(crate) extern "system" fn updateSurface<'local>(
     });
 }
 
-pub(crate) extern "system" fn onSurfaceDestroyed(_env: JNIEnv, _class: JClass, host_id: jint) {
+pub(crate) extern "system" fn onSurfaceDestroyed(_env: EnvUnowned, _class: JClass, host_id: jint) {
     jni_safe!("onSurfaceDestroyed", {
         // Retire the exact generation BEFORE this callback returns (Android
         // abandons the BufferQueue on return). Duplicate destroy callbacks are
@@ -743,7 +735,7 @@ pub(crate) extern "system" fn onSurfaceDestroyed(_env: JNIEnv, _class: JClass, h
 }
 
 pub(crate) extern "system" fn onOpenSystemBluetoothSetting<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     request_id: jint,
@@ -764,7 +756,7 @@ pub(crate) extern "system" fn onOpenSystemBluetoothSetting<'local>(
 }
 
 pub(crate) extern "system" fn onOpenAppAuthorizeSetting<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     request_id: jint,
@@ -809,20 +801,18 @@ fn send_settings_page_result(
 }
 
 pub(crate) extern "system" fn onTouch(
-    env: JNIEnv,
+    mut env: EnvUnowned,
     _cls: JClass,
     host_id: jint,
     action: jint,
     time: jlong,
     count: jint,
-    buffer: JObject,
+    buf: JByteBuffer,
 ) -> jboolean {
-    jni_safe!("onTouch", JNI_FALSE, {
+    jni_safe!("onTouch", env => JNI_FALSE, {
         if count <= 0 || count > 10 {
             return JNI_FALSE;
         }
-
-        let buf = JByteBuffer::from(buffer);
 
         let addr = match env.get_direct_buffer_address(&buf) {
             Ok(p) => p,
@@ -911,13 +901,13 @@ pub(crate) extern "system" fn onTouch(
 }
 
 pub(crate) extern "system" fn executeScript<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     script: JString<'local>,
 ) -> jint {
-    jni_safe!("executeScript", -1, {
-        let script_str: String = match env.get_string(&script) {
+    jni_safe!("executeScript", env => -1, {
+        let script_str: String = match script.mutf8_chars(env) {
             Ok(s) => s.into(),
             Err(e) => {
                 error!("executeScript failed: convert JString error: {:?}", e);
@@ -936,14 +926,14 @@ pub(crate) extern "system" fn executeScript<'local>(
 }
 
 pub(crate) extern "system" fn mod_main<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     game_id: JString<'local>,
     entry: JString<'local>,
 ) -> jint {
-    jni_safe!("mod_main", -1, {
-        let game_id: String = match env.get_string(&game_id) {
+    jni_safe!("mod_main", env => -1, {
+        let game_id: String = match game_id.mutf8_chars(env) {
             Ok(s) => s.into(),
             Err(e) => {
                 error!("modMain failed: convert game_id JString error: {:?}", e);
@@ -951,7 +941,7 @@ pub(crate) extern "system" fn mod_main<'local>(
             }
         };
 
-        let entry: String = match env.get_string(&entry) {
+        let entry: String = match entry.mutf8_chars(env) {
             Ok(s) => s.into(),
             Err(e) => {
                 error!("modMain failed: convert entry JString error: {:?}", e);
@@ -972,7 +962,7 @@ pub(crate) extern "system" fn mod_main<'local>(
 }
 
 pub(crate) extern "system" fn shutdown<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
 ) -> jboolean {
@@ -1000,16 +990,16 @@ pub(crate) extern "system" fn shutdown<'local>(
 }
 
 pub(crate) extern "system" fn onShow<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     options_json: JString<'local>,
 ) {
-    jni_safe!("onShow", {
+    jni_safe!("onShow", env => (), {
         let options_json: Option<String> = if options_json.is_null() {
             None
         } else {
-            env.get_string(&options_json).ok().map(|s| s.into())
+            options_json.mutf8_chars(env).ok().map(|s| s.into())
         };
 
         if let Some(json) = options_json.as_ref() {
@@ -1029,7 +1019,7 @@ pub(crate) extern "system" fn onShow<'local>(
     });
 }
 
-pub(crate) extern "system" fn onHide(_env: JNIEnv, _class: JClass, host_id: jint) {
+pub(crate) extern "system" fn onHide(_env: EnvUnowned, _class: JClass, host_id: jint) {
     jni_safe!("onHide", {
         info!("Host {} onHide received", host_id);
         if let Err(e) = send_critical_command_to_host(host_id, HostCommand::OnHide) {
@@ -1038,7 +1028,7 @@ pub(crate) extern "system" fn onHide(_env: JNIEnv, _class: JClass, host_id: jint
     });
 }
 
-pub(crate) extern "system" fn onRestart(_env: JNIEnv, _class: JClass, host_id: jint) {
+pub(crate) extern "system" fn onRestart(_env: EnvUnowned, _class: JClass, host_id: jint) {
     jni_safe!("onRestart", {
         if let Err(e) = send_command_to_host(host_id, HostCommand::Restart { launch_query: None }) {
             error!("Failed to send Restart for host {host_id}: {e}");
@@ -1047,7 +1037,7 @@ pub(crate) extern "system" fn onRestart(_env: JNIEnv, _class: JClass, host_id: j
 }
 
 pub(crate) extern "system" fn onAudioInterruptionBegin(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     host_id: jint,
 ) {
@@ -1056,14 +1046,18 @@ pub(crate) extern "system" fn onAudioInterruptionBegin(
     });
 }
 
-pub(crate) extern "system" fn onAudioInterruptionEnd(_env: JNIEnv, _class: JClass, host_id: jint) {
+pub(crate) extern "system" fn onAudioInterruptionEnd(
+    _env: EnvUnowned,
+    _class: JClass,
+    host_id: jint,
+) {
     jni_safe!("onAudioInterruptionEnd", {
         let _ = send_command_to_host(host_id, HostCommand::OnAudioInterruptionEnd);
     });
 }
 
 pub(crate) extern "system" fn onUserCaptureScreen(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     host_id: jint,
     generation: jlong,
@@ -1109,7 +1103,7 @@ const POINTER_BUTTON_MAX: u32 = 31;
 /// One mouse press (`kind` 0), motion (1) or release (2). A motion may be
 /// coalesced; a press and a release are not dropped.
 pub(crate) extern "system" fn onPointerEvent(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     host_id: jint,
     kind: jint,
@@ -1156,7 +1150,7 @@ pub(crate) extern "system" fn onPointerEvent(
 /// One scroll, its deltas in the unit `delta_mode` (DOM `WheelEvent.deltaMode`)
 /// names.
 pub(crate) extern "system" fn onWheelEvent(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     host_id: jint,
     delta_mode: jint,
@@ -1188,13 +1182,13 @@ pub(crate) extern "system" fn onWheelEvent(
 
 /// Whether the session's view now holds the pointer.
 pub(crate) extern "system" fn onPointerLockChanged(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     host_id: jint,
     locked: jni::sys::jboolean,
 ) {
     jni_safe!("onPointerLockChanged", {
-        let json = if locked == JNI_TRUE {
+        let json = if locked {
             r#"{"locked":true}"#
         } else {
             r#"{"locked":false}"#
@@ -1214,7 +1208,7 @@ jni_json_callback!(onWindowStateChanged, "_internalOnWindowStateEvent");
 /// One physical key press (`down`) or release, as DOM `key` and `code`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) extern "system" fn onKeyEvent<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     down: jboolean,
@@ -1224,8 +1218,8 @@ pub(crate) extern "system" fn onKeyEvent<'local>(
     repeat: jboolean,
     timestamp_ms: jdouble,
 ) -> jboolean {
-    jni_safe!("onKeyEvent", JNI_FALSE, {
-        let (Ok(key), Ok(code)) = (env.get_string(&key), env.get_string(&code)) else {
+    jni_safe!("onKeyEvent", env => JNI_FALSE, {
+        let (Ok(key), Ok(code)) = (key.mutf8_chars(env), code.mutf8_chars(env)) else {
             return JNI_FALSE;
         };
         let (key, code): (String, String) = (key.into(), code.into());
@@ -1234,13 +1228,13 @@ pub(crate) extern "system" fn onKeyEvent<'local>(
             return JNI_FALSE;
         }
         let modifiers = modifiers as u32;
-        let command = if down == JNI_TRUE {
+        let command = if down {
             HostCommand::OnKeyDown {
                 key,
                 code,
                 timestamp_ms,
                 modifiers,
-                repeat: repeat == JNI_TRUE,
+                repeat,
             }
         } else {
             HostCommand::OnKeyUp {
@@ -1262,7 +1256,7 @@ pub(crate) extern "system" fn onKeyEvent<'local>(
 /// effects its motors play (`GAMEPAD_HAPTICS_*`), or leaving it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) extern "system" fn onGamepadConnection<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     index: jint,
@@ -1273,14 +1267,14 @@ pub(crate) extern "system" fn onGamepadConnection<'local>(
     button_count: jint,
     haptics: jint,
 ) -> jboolean {
-    jni_safe!("onGamepadConnection", JNI_FALSE, {
+    jni_safe!("onGamepadConnection", env => JNI_FALSE, {
         let Ok(index) = u32::try_from(index) else {
             return JNI_FALSE;
         };
         if index as usize >= GAMEPAD_MAX_COUNT {
             return JNI_FALSE;
         }
-        let command = if connected == JNI_TRUE {
+        let command = if connected {
             let (Ok(axis_count), Ok(button_count), Ok(haptics)) = (
                 u8::try_from(axis_count),
                 u8::try_from(button_count),
@@ -1295,7 +1289,7 @@ pub(crate) extern "system" fn onGamepadConnection<'local>(
             {
                 return JNI_FALSE;
             }
-            let (Ok(id), Ok(mapping)) = (env.get_string(&id), env.get_string(&mapping)) else {
+            let (Ok(id), Ok(mapping)) = (id.mutf8_chars(env), mapping.mutf8_chars(env)) else {
                 return JNI_FALSE;
             };
             HostCommand::OnGamepadConnected {
@@ -1322,16 +1316,16 @@ pub(crate) extern "system" fn onGamepadConnection<'local>(
 /// `gamepad_state` reads it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) extern "system" fn onGamepadState<'local>(
-    env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     index: jint,
     axis_count: jint,
     button_count: jint,
-    buffer: JObject<'local>,
+    buffer: JByteBuffer<'local>,
     timestamp_ms: jdouble,
 ) -> jboolean {
-    jni_safe!("onGamepadState", JNI_FALSE, {
+    jni_safe!("onGamepadState", env => JNI_FALSE, {
         let (Ok(index), Ok(axis_count), Ok(button_count)) = (
             u32::try_from(index),
             usize::try_from(axis_count),
@@ -1345,7 +1339,6 @@ pub(crate) extern "system" fn onGamepadState<'local>(
         {
             return JNI_FALSE;
         }
-        let buffer = JByteBuffer::from(buffer);
         let (Ok(address), Ok(capacity)) = (
             env.get_direct_buffer_address(&buffer),
             env.get_direct_buffer_capacity(&buffer),
@@ -1370,7 +1363,7 @@ pub(crate) extern "system" fn onGamepadState<'local>(
 // ==================== Device Sensor ====================
 
 pub(crate) extern "system" fn onDeviceMotionChange(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     host_id: jint,
     generation: jlong,
@@ -1392,7 +1385,7 @@ pub(crate) extern "system" fn onDeviceMotionChange(
 }
 
 pub(crate) extern "system" fn onGyroscopeChange(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     host_id: jint,
     generation: jlong,
@@ -1414,14 +1407,14 @@ pub(crate) extern "system" fn onGyroscopeChange(
 }
 
 pub(crate) extern "system" fn onDeviceOrientationChange<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     value: JString<'local>,
 ) {
-    jni_safe!("onDeviceOrientationChange", {
+    jni_safe!("onDeviceOrientationChange", env => (), {
         static KNOWN: &[&str] = &["portrait", "landscape", "landscapeReverse"];
-        let val = jni_string_to_cow(&mut env, &value, KNOWN);
+        let val = jni_string_to_cow(env, &value, KNOWN);
         let _ = send_command_to_host(
             host_id,
             HostCommand::OnDeviceOrientationChange { value: val },
@@ -1430,16 +1423,16 @@ pub(crate) extern "system" fn onDeviceOrientationChange<'local>(
 }
 
 pub(crate) extern "system" fn onCompassChange<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     generation: jlong,
     direction: jdouble,
     accuracy: JString<'local>,
 ) {
-    jni_safe!("onCompassChange", {
+    jni_safe!("onCompassChange", env => (), {
         static KNOWN: &[&str] = &["high", "medium", "low", "no-contact", "unreliable"];
-        let acc = jni_string_to_cow(&mut env, &accuracy, KNOWN);
+        let acc = jni_string_to_cow(env, &accuracy, KNOWN);
         let _ = send_command_to_host(
             host_id,
             HostCommand::OnCompassChange {
@@ -1452,7 +1445,7 @@ pub(crate) extern "system" fn onCompassChange<'local>(
 }
 
 pub(crate) extern "system" fn onAccelerometerChange(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     host_id: jint,
     generation: jlong,
@@ -1474,19 +1467,19 @@ pub(crate) extern "system" fn onAccelerometerChange(
 }
 
 pub(crate) extern "system" fn onNetworkStatusChange<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     is_connected: jni::sys::jboolean,
     network_type: JString<'local>,
 ) {
-    jni_safe!("onNetworkStatusChange", {
+    jni_safe!("onNetworkStatusChange", env => (), {
         static KNOWN: &[&str] = &["wifi", "2g", "3g", "4g", "5g", "unknown", "none"];
-        let net = jni_string_to_cow(&mut env, &network_type, KNOWN);
+        let net = jni_string_to_cow(env, &network_type, KNOWN);
         let _ = send_command_to_host(
             host_id,
             HostCommand::OnNetworkStatusChange {
-                is_connected: is_connected != 0,
+                is_connected,
                 network_type: net,
             },
         );
@@ -1500,13 +1493,13 @@ pub(crate) extern "system" fn onNetworkStatusChange<'local>(
 /// Must-deliver, on the reliable lane: a full data queue may drop a frame, but
 /// it must never swallow a recording's end.
 pub(crate) extern "system" fn onRecorderEvent<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     event: jint,
     payload_json: JString<'local>,
 ) {
-    jni_safe!("onRecorderEvent", {
+    jni_safe!("onRecorderEvent", env => (), {
         let Some((event, hook)) = u32::try_from(event).ok().and_then(|event| {
             shared::services::RECORDER_EVENT_HOOKS
                 .get(event as usize)
@@ -1515,7 +1508,7 @@ pub(crate) extern "system" fn onRecorderEvent<'local>(
             error!("onRecorderEvent: no recorder event {event}");
             return;
         };
-        let json = read_json_result(&mut env, &payload_json, "{}");
+        let json = read_json_result(env, &payload_json, "{}");
         let for_js = shared::services::host_files::deliver_event(
             host_id,
             shared::services::recorder_event_files(event),
@@ -1526,18 +1519,17 @@ pub(crate) extern "system" fn onRecorderEvent<'local>(
 }
 
 pub(crate) extern "system" fn onRecorderFrameData(
-    mut env: JNIEnv,
+    mut env: EnvUnowned,
     _class: JClass,
     host_id: jint,
     recording_id: jint,
-    frame_data: jni::sys::jbyteArray,
+    frame_data: jni::objects::JByteArray,
     frame_length: jint,
     is_last_frame: jni::sys::jboolean,
 ) {
-    jni_safe!("onRecorderFrameData", {
-        let frame_data = unsafe { jni::objects::JByteArray::from_raw(frame_data) };
-        let array_len = match env.get_array_length(&frame_data) {
-            Ok(length) => usize::try_from(length).unwrap_or(0),
+    jni_safe!("onRecorderFrameData", env => (), {
+        let array_len = match frame_data.len(env) {
+            Ok(length) => length,
             Err(error) => {
                 error!(
                     "onRecorderFrameData: failed to inspect byte array: {:?}",
@@ -1553,13 +1545,12 @@ pub(crate) extern "system" fn onRecorderFrameData(
                 return;
             }
         };
-        let is_last_frame = is_last_frame != 0;
         let Some((credit, copy_result)) = with_recorder_frame_credit(
             host_id,
             if is_last_frame { 0 } else { frame_length },
             || {
                 let mut raw = vec![0i8; frame_length];
-                env.get_byte_array_region(&frame_data, 0, &mut raw)
+                frame_data.get_region(env, 0, &mut raw)
                     .map(|()| raw)
             },
         ) else {
@@ -1605,7 +1596,7 @@ pub(crate) extern "system" fn onRecorderFrameData(
 /// (`shared::services::CAMERA_EVENT_HOOKS`): it stopped, or the player refused
 /// the system's permission.
 pub(crate) extern "system" fn onCameraEvent<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     camera_id: jint,
@@ -1627,13 +1618,13 @@ pub(crate) extern "system" fn onCameraEvent<'local>(
 /// and with the files the one table names for it
 /// (`shared::services::CAMERA_RESULT_HOOKS`, `camera_result_files`).
 pub(crate) extern "system" fn onCameraResult<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     method: jint,
     result_json: JString<'local>,
 ) {
-    jni_safe!("onCameraResult", {
+    jni_safe!("onCameraResult", env => (), {
         let Some((method, hook)) = u32::try_from(method).ok().and_then(|method| {
             shared::services::CAMERA_RESULT_HOOKS
                 .get(method as usize)
@@ -1645,7 +1636,7 @@ pub(crate) extern "system" fn onCameraResult<'local>(
             return;
         };
         let json = read_json_result(
-            &mut env,
+            env,
             &result_json,
             r#"{"error":"failed to read result"}"#,
         );
@@ -1659,7 +1650,7 @@ pub(crate) extern "system" fn onCameraResult<'local>(
 }
 
 pub(crate) extern "system" fn onCameraFrameData<'local>(
-    env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     generation: jlong,
@@ -1679,7 +1670,7 @@ pub(crate) extern "system" fn onCameraFrameData<'local>(
     width: jint,
     height: jint,
 ) {
-    jni_safe!("onCameraFrameData", {
+    jni_safe!("onCameraFrameData", env => (), {
         // Reject oversized dimensions and byte windows before converting signed
         // values or borrowing a Java direct-buffer address. `yuv_frame_to_rgba`
         // repeats the frame cap and checks every window against its strides
@@ -1810,7 +1801,7 @@ pub(crate) extern "system" fn onCameraFrameData<'local>(
 // ==================== Bluetooth Callbacks ====================
 
 pub(crate) extern "system" fn onBluetoothAdapterStateChange(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     host_id: jint,
     available: jni::sys::jboolean,
@@ -1820,22 +1811,21 @@ pub(crate) extern "system" fn onBluetoothAdapterStateChange(
         let _ = send_command_to_host(
             host_id,
             HostCommand::OnBluetoothAdapterStateChange {
-                available: available != 0,
-                discovering: discovering != 0,
+                available,
+                discovering,
             },
         );
     });
 }
 
 pub(crate) extern "system" fn onBluetoothDeviceFound<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     devices_json: JString<'local>,
 ) {
-    jni_safe!("onBluetoothDeviceFound", {
-        let json: String = env
-            .get_string(&devices_json)
+    jni_safe!("onBluetoothDeviceFound", env => (), {
+        let json: String = devices_json.mutf8_chars(env)
             .map(|s| s.into())
             .unwrap_or_else(|_| "[]".to_string());
         let _ = send_command_to_host(
@@ -1846,14 +1836,13 @@ pub(crate) extern "system" fn onBluetoothDeviceFound<'local>(
 }
 
 pub(crate) extern "system" fn onBeaconUpdate<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     beacons_json: JString<'local>,
 ) {
-    jni_safe!("onBeaconUpdate", {
-        let json: String = env
-            .get_string(&beacons_json)
+    jni_safe!("onBeaconUpdate", env => (), {
+        let json: String = beacons_json.mutf8_chars(env)
             .map(|s| s.into())
             .unwrap_or_else(|_| "[]".to_string());
         let _ = send_command_to_host(host_id, HostCommand::OnBeaconUpdate { beacons_json: json });
@@ -1867,18 +1856,18 @@ pub(crate) extern "system" fn onBeaconUpdate<'local>(
 /// at all -- a permission answer content can reach is a permission answer
 /// content can change.
 pub(crate) extern "system" fn updatePermission<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     scope: JString<'local>,
     granted: jni::sys::jboolean,
 ) -> jboolean {
-    jni_safe!("updatePermission", JNI_FALSE, {
+    jni_safe!("updatePermission", env => JNI_FALSE, {
         if host_ingress(host_id).is_err() {
             tracing::debug!(host_id, "ignoring permission update for ended session");
             return JNI_FALSE;
         }
-        let scope: String = match env.get_string(&scope) {
+        let scope: String = match scope.mutf8_chars(env) {
             Ok(s) => s.into(),
             Err(_) => return JNI_FALSE,
         };
@@ -1886,7 +1875,7 @@ pub(crate) extern "system" fn updatePermission<'local>(
             tracing::warn!(host_id, "ignoring unknown permission scope");
             return JNI_FALSE;
         };
-        match crate::android::services::update_permission(host_id, scope, granted != 0, || {
+        match crate::android::services::update_permission(host_id, scope, granted, || {
             crate::android::jni::permission_revoke_resources(host_id, scope.as_minigame_str())
         }) {
             Ok(()) => JNI_TRUE,
@@ -1916,7 +1905,7 @@ pub(crate) extern "system" fn updatePermission<'local>(
 }
 
 pub(crate) extern "system" fn onBeaconServiceChange(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     host_id: jint,
     available: jni::sys::jboolean,
@@ -1926,8 +1915,8 @@ pub(crate) extern "system" fn onBeaconServiceChange(
         let _ = send_command_to_host(
             host_id,
             HostCommand::OnBeaconServiceChange {
-                available: available != 0,
-                discovering: discovering != 0,
+                available,
+                discovering,
             },
         );
     });
@@ -1936,22 +1925,21 @@ pub(crate) extern "system" fn onBeaconServiceChange(
 // ==================== BLE GATT Callbacks ====================
 
 pub(crate) extern "system" fn onBLEConnectionStateChange<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     device_id: JString<'local>,
     connected: jni::sys::jboolean,
 ) {
-    jni_safe!("onBLEConnectionStateChange", {
-        let dev: String = env
-            .get_string(&device_id)
+    jni_safe!("onBLEConnectionStateChange", env => (), {
+        let dev: String = device_id.mutf8_chars(env)
             .map(|s| s.into())
             .unwrap_or_default();
         let _ = send_command_to_host(
             host_id,
             HostCommand::OnBLEConnectionStateChange {
                 device_id: dev,
-                connected: connected != 0,
+                connected,
             },
         );
     });
@@ -1973,42 +1961,27 @@ const BLE_INLINE_VALUE_BYTES: usize = 512;
 /// `Err` means the JVM raised — a pending exception must reach Java rather than
 /// be papered over with an empty value.
 fn read_characteristic_value<'a>(
-    env: &JNIEnv<'_>,
+    env: &Env<'_>,
     value: &jni::objects::JByteArray<'_>,
     inline: &'a mut [i8; BLE_INLINE_VALUE_BYTES],
     spill: &'a mut Vec<i8>,
 ) -> Result<&'a [u8], jni::errors::Error> {
-    let len = env.get_array_length(value)?.max(0) as usize;
+    let len = value.len(env)?;
     let buffer: &mut [i8] = if len <= BLE_INLINE_VALUE_BYTES {
         &mut inline[..len]
     } else {
         spill.resize(len, 0);
         spill.as_mut_slice()
     };
-    env.get_byte_array_region(value, 0, buffer)?;
+    value.get_region(env, 0, buffer)?;
     // SAFETY: `i8` and `u8` have the same size, alignment and validity, so a
     // shared reinterpretation of an initialised `[i8]` is sound. JNI types the
     // region as `jbyte`; every consumer above this boundary wants bytes.
     Ok(unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), buffer.len()) })
 }
 
-/// Read a Java string without the class check `get_string` performs.
-///
-/// # Safety
-/// `obj` must be a `java.lang.String`. Every caller here is a parameter of a
-/// `native` method declared with a `String` parameter in `NativeBridge`, so the
-/// JVM has already type-checked it at the call site; the check `get_string`
-/// repeats is a `FindClass` plus an assignability test, three times per
-/// notification, on a path a peripheral drives at its own rate.
-unsafe fn borrow_java_string<'obj_ref, 'local: 'obj_ref>(
-    env: &JNIEnv<'local>,
-    obj: &'obj_ref JString<'local>,
-) -> Option<jni::strings::JavaStr<'local, 'local, 'obj_ref>> {
-    unsafe { env.get_string_unchecked(obj) }.ok()
-}
-
 pub(crate) extern "system" fn onBLECharacteristicValueChange<'local>(
-    env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     device_id: JString<'local>,
@@ -2016,7 +1989,7 @@ pub(crate) extern "system" fn onBLECharacteristicValueChange<'local>(
     characteristic_id: JString<'local>,
     value: jni::objects::JByteArray<'local>,
 ) {
-    jni_safe!("onBLECharacteristicValueChange", {
+    jni_safe!("onBLECharacteristicValueChange", env => (), {
         // The steady-state requirement: a peripheral chooses this path's rate, so nothing here
         // may reach the heap or a lock shared beyond this Session. The three
         // identifiers stay borrowed from the JVM, the value lands in a stack
@@ -2025,22 +1998,22 @@ pub(crate) extern "system" fn onBLECharacteristicValueChange<'local>(
         // see its gates in `core::runtime::registry`.
         let mut inline = [0i8; BLE_INLINE_VALUE_BYTES];
         let mut spill: Vec<i8> = Vec::new();
-        let Ok(bytes) = read_characteristic_value(&env, &value, &mut inline, &mut spill) else {
+        let Ok(bytes) = read_characteristic_value(env, &value, &mut inline, &mut spill) else {
             // Cleared, not propagated. The only way to get here is a JVM
             // exception, and letting one stay pending as this returns would
             // deliver it to whichever framework thread runs the GATT callback --
             // an app-visible crash raised from inside the Bluetooth stack, for a
             // notification that could simply be dropped. The bounds come from the
             // array itself, so nothing is expected to raise here at all.
-            let _ = env.exception_clear();
+            env.exception_clear();
             tracing::debug!("Host {host_id} dropped a BLE notification: value unreadable");
             return;
         };
 
-        // SAFETY: all three are `String` parameters of a `native` method.
-        let device = unsafe { borrow_java_string(&env, &device_id) };
-        let service = unsafe { borrow_java_string(&env, &service_id) };
-        let characteristic = unsafe { borrow_java_string(&env, &characteristic_id) };
+        // Typed String parameters support safe, borrowed MUTF-8 access.
+        let device = device_id.mutf8_chars(env).ok();
+        let service = service_id.mutf8_chars(env).ok();
+        let characteristic = characteristic_id.mutf8_chars(env).ok();
         // Borrowed for ASCII, which every UUID and device address is; the owned
         // arm exists so a non-conforming identifier is delivered rather than
         // dropped, and it is the only allocation this path can make.
@@ -2055,15 +2028,14 @@ pub(crate) extern "system" fn onBLECharacteristicValueChange<'local>(
 }
 
 pub(crate) extern "system" fn onBLEMTUChange<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     device_id: JString<'local>,
     mtu: jint,
 ) {
-    jni_safe!("onBLEMTUChange", {
-        let dev: String = env
-            .get_string(&device_id)
+    jni_safe!("onBLEMTUChange", env => (), {
+        let dev: String = device_id.mutf8_chars(env)
             .map(|s| s.into())
             .unwrap_or_default();
         let _ = send_command_to_host(
@@ -2079,14 +2051,14 @@ pub(crate) extern "system" fn onBLEMTUChange<'local>(
 // ==================== Keyboard Callbacks ====================
 
 pub(crate) extern "system" fn onKeyboardInput<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     generation: jlong,
     value: JString<'local>,
 ) {
-    jni_safe!("onKeyboardInput", {
-        let val: String = env.get_string(&value).map(|s| s.into()).unwrap_or_default();
+    jni_safe!("onKeyboardInput", env => (), {
+        let val: String = value.mutf8_chars(env).map(|s| s.into()).unwrap_or_default();
         let _ = send_command_to_host(
             host_id,
             HostCommand::OnKeyboardInput {
@@ -2098,14 +2070,14 @@ pub(crate) extern "system" fn onKeyboardInput<'local>(
 }
 
 pub(crate) extern "system" fn onKeyboardConfirm<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     generation: jlong,
     value: JString<'local>,
 ) {
-    jni_safe!("onKeyboardConfirm", {
-        let val: String = env.get_string(&value).map(|s| s.into()).unwrap_or_default();
+    jni_safe!("onKeyboardConfirm", env => (), {
+        let val: String = value.mutf8_chars(env).map(|s| s.into()).unwrap_or_default();
         let _ = send_command_to_host(
             host_id,
             HostCommand::OnKeyboardConfirm {
@@ -2117,14 +2089,14 @@ pub(crate) extern "system" fn onKeyboardConfirm<'local>(
 }
 
 pub(crate) extern "system" fn onKeyboardComplete<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     generation: jlong,
     value: JString<'local>,
 ) {
-    jni_safe!("onKeyboardComplete", {
-        let val: String = env.get_string(&value).map(|s| s.into()).unwrap_or_default();
+    jni_safe!("onKeyboardComplete", env => (), {
+        let val: String = value.mutf8_chars(env).map(|s| s.into()).unwrap_or_default();
         let _ = send_command_to_host(
             host_id,
             HostCommand::OnKeyboardComplete {
@@ -2136,7 +2108,7 @@ pub(crate) extern "system" fn onKeyboardComplete<'local>(
 }
 
 pub(crate) extern "system" fn onKeyboardHeightChange(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     host_id: jint,
     generation: jlong,
@@ -2156,7 +2128,7 @@ pub(crate) extern "system" fn onKeyboardHeightChange(
 // ==================== Memory Warning Callbacks ====================
 
 pub(crate) extern "system" fn onMemoryWarning(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     host_id: jint,
     level: jint,
@@ -2174,7 +2146,7 @@ pub(crate) extern "system" fn onMemoryWarning(
 // ==================== ADPF Thermal Callbacks ====================
 
 pub(crate) extern "system" fn onThermalStatusChanged(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     host_id: jint,
     status: jint,
@@ -2194,13 +2166,13 @@ pub(crate) extern "system" fn onThermalStatusChanged(
 /// The answer to a Bluetooth request, for the request's method number: the one
 /// table every SDK routes by (`shared::services::BLUETOOTH_RESULT_HOOKS`).
 pub(crate) extern "system" fn onBluetoothResult<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     method: jint,
     result_json: JString<'local>,
 ) {
-    jni_safe!("onBluetoothResult", {
+    jni_safe!("onBluetoothResult", env => (), {
         let Some(hook) = usize::try_from(method)
             .ok()
             .and_then(|method| shared::services::BLUETOOTH_RESULT_HOOKS.get(method))
@@ -2209,7 +2181,7 @@ pub(crate) extern "system" fn onBluetoothResult<'local>(
             return;
         };
         let json = read_json_result(
-            &mut env,
+            env,
             &result_json,
             r#"{"error":"failed to read result"}"#,
         );
@@ -2222,13 +2194,13 @@ pub(crate) extern "system" fn onBluetoothResult<'local>(
 /// The answer to a peripheral request, by method number
 /// (`shared::services::BLE_PERIPHERAL_RESULT_HOOKS`).
 pub(crate) extern "system" fn onBlePeripheralResult<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     method: jint,
     result_json: JString<'local>,
 ) {
-    jni_safe!("onBlePeripheralResult", {
+    jni_safe!("onBlePeripheralResult", env => (), {
         let Some(hook) = usize::try_from(method)
             .ok()
             .and_then(|method| shared::services::BLE_PERIPHERAL_RESULT_HOOKS.get(method))
@@ -2237,7 +2209,7 @@ pub(crate) extern "system" fn onBlePeripheralResult<'local>(
             return;
         };
         let json = read_json_result(
-            &mut env,
+            env,
             &result_json,
             r#"{"error":"failed to read result"}"#,
         );
@@ -2250,13 +2222,13 @@ pub(crate) extern "system" fn onBlePeripheralResult<'local>(
 /// every one must arrive -- a request content does not hear of is one the
 /// central never gets answered.
 pub(crate) extern "system" fn onBlePeripheralEvent<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     event: jint,
     payload_json: JString<'local>,
 ) {
-    jni_safe!("onBlePeripheralEvent", {
+    jni_safe!("onBlePeripheralEvent", env => (), {
         let Some(hook) = usize::try_from(event)
             .ok()
             .and_then(|event| shared::services::BLE_PERIPHERAL_EVENT_HOOKS.get(event))
@@ -2264,7 +2236,7 @@ pub(crate) extern "system" fn onBlePeripheralEvent<'local>(
             error!("onBlePeripheralEvent: no peripheral event {event}");
             return;
         };
-        let json = read_json_result(&mut env, &payload_json, "{}");
+        let json = read_json_result(env, &payload_json, "{}");
         send_json_result_to_js(host_id, &json, hook);
     });
 }
@@ -2343,14 +2315,14 @@ jni_json_callback!(
 /// runtime rather than handed to the game. `op_install_subpackage` takes it back
 /// by request id, so a game cannot name a file for the installer to ingest.
 pub(crate) extern "system" fn onSubpackageResult<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     result_json: JString<'local>,
 ) {
-    jni_safe!("onSubpackageResult", {
+    jni_safe!("onSubpackageResult", env => (), {
         let json = read_json_result(
-            &mut env,
+            env,
             &result_json,
             r#"{"requestId":0,"error":"failed to read result"}"#,
         );
@@ -2362,7 +2334,7 @@ pub(crate) extern "system" fn onSubpackageResult<'local>(
 // ==================== VSync (Choreographer) ====================
 
 pub(crate) extern "system" fn onVsync(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     host_id: jint,
     frame_time_nanos: jlong,
@@ -2380,11 +2352,11 @@ pub(crate) extern "system" fn onVsync(
 // ==================== Debug Stats ====================
 
 pub(crate) extern "system" fn getDebugStats(
-    env: JNIEnv,
+    mut env: EnvUnowned,
     _class: JClass,
     host_id: jint,
 ) -> jni::sys::jbyteArray {
-    jni_safe!("getDebugStats", std::ptr::null_mut(), {
+    jni_safe!("getDebugStats", env => std::ptr::null_mut(), {
         let stats = match shared::stats::get_stats(host_id) {
             Some(s) => s,
             None => return std::ptr::null_mut(),
@@ -2451,13 +2423,13 @@ jni_json_callback!(
 /// position, the buffering -- travels the bounded lane and is dropped when
 /// content falls behind; every other event must arrive.
 pub(crate) extern "system" fn onVideoEvent<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     event: jint,
     payload_json: JString<'local>,
 ) {
-    jni_safe!("onVideoEvent", {
+    jni_safe!("onVideoEvent", env => (), {
         let Some((event, hook)) = u32::try_from(event).ok().and_then(|event| {
             shared::services::VIDEO_EVENT_HOOKS
                 .get(event as usize)
@@ -2466,7 +2438,7 @@ pub(crate) extern "system" fn onVideoEvent<'local>(
             error!("onVideoEvent: no video event {event}");
             return;
         };
-        let json = read_json_result(&mut env, &payload_json, "{}");
+        let json = read_json_result(env, &payload_json, "{}");
         if shared::services::video_event_droppable(event) {
             let _ = send_command_to_host(
                 host_id,
@@ -2484,13 +2456,13 @@ pub(crate) extern "system" fn onVideoEvent<'local>(
 /// The answer to a video call, by method number
 /// (`shared::services::VIDEO_RESULT_HOOKS`).
 pub(crate) extern "system" fn onVideoResult<'local>(
-    mut env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     method: jint,
     result_json: JString<'local>,
 ) {
-    jni_safe!("onVideoResult", {
+    jni_safe!("onVideoResult", env => (), {
         let Some(hook) = u32::try_from(method).ok().and_then(|method| {
             shared::services::VIDEO_RESULT_HOOKS
                 .get(method as usize)
@@ -2501,7 +2473,7 @@ pub(crate) extern "system" fn onVideoResult<'local>(
             return;
         };
         let json = read_json_result(
-            &mut env,
+            env,
             &result_json,
             r#"{"error":"failed to read result"}"#,
         );
@@ -2512,12 +2484,12 @@ pub(crate) extern "system" fn onVideoResult<'local>(
 // ==================== Console Logs ====================
 
 pub(crate) extern "system" fn getConsoleLogs<'local>(
-    env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     host_id: jint,
     since_cursor: jlong,
 ) -> jstring {
-    jni_safe!("getConsoleLogs", std::ptr::null_mut(), {
+    jni_safe!("getConsoleLogs", env => std::ptr::null_mut(), {
         let json = shared::console_log::read_console_logs_json(host_id, since_cursor as u64)
             .unwrap_or_else(|| r#"{"logs":[],"cursor":0}"#.to_string());
         match env.new_string(&json) {
@@ -2561,11 +2533,11 @@ unsafe extern "C" {
 /// another acquire.
 #[cfg(target_os = "android")]
 pub(crate) extern "system" fn nativeAhbPointerFromHardwareBuffer<'local>(
-    env: JNIEnv<'local>,
+    mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     hb: JObject<'local>,
 ) -> jni::sys::jlong {
-    jni_safe!("nativeAhbPointerFromHardwareBuffer", 0, {
+    jni_safe!("nativeAhbPointerFromHardwareBuffer", env => 0, {
         if hb.is_null() {
             return 0;
         }
@@ -2590,7 +2562,7 @@ pub(crate) extern "system" fn nativeAhbPointerFromHardwareBuffer<'local>(
 // builds where there is no real AHB subsystem.
 #[cfg(not(target_os = "android"))]
 pub(crate) extern "system" fn nativeAhbPointerFromHardwareBuffer<'local>(
-    _env: JNIEnv<'local>,
+    _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     _hb: JObject<'local>,
 ) -> jni::sys::jlong {

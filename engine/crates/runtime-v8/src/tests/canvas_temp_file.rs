@@ -75,3 +75,54 @@ fn an_empty_file_or_region_is_refused_in_the_api_s_words() {
         )
     );
 }
+
+#[test]
+fn canvas_exports_use_the_native_encoder() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
+    let (mut runtime, renderer) = boot();
+    let checked = run_to_idle(
+        &mut runtime,
+        r#"
+        __canvas.width = 1;
+        __canvas.height = 1;
+        const backing = new Uint8Array([99, 99, 200, 100, 50, 128, 99]);
+        __canvas._readAllPixels = () => backing.subarray(2, 6);
+        const png = __canvas._encode('image/png');
+        const jpeg = __canvas._encode('image/jpeg', 1);
+        const url = __canvas.toDataURL('image/unknown');
+        globalThis.__nativeUrl = url;
+        // pHYs/sRGB and 96 dpi JFIF identify the native path; the external JS
+        // fallback has neither metadata chunk. The borrowed view must keep its
+        // offset and length through the op rather than exposing its backing.
+        const pngText = Array.from(png.bytes, c => String.fromCharCode(c)).join('');
+        globalThis.__encoded = [png.mime, jpeg.mime, pngText.includes('pHYs'),
+          pngText.includes('sRGB'), Array.from(jpeg.bytes.slice(13, 18)).join(','),
+          url.startsWith('data:image/png;base64,'), backing.join(',')];
+        let rejected = false;
+        __canvas._readAllPixels = () => new Uint8Array(3);
+        try { __canvas.toDataURL(); } catch (e) { rejected = e.message.includes('InvalidArgument'); }
+        __encoded.push(rejected);
+        __canvas.width = 0;
+        __encoded.push(__canvas.toDataURL());
+        "#,
+        "JSON.stringify(__encoded)",
+    );
+    let url = run_to_idle(&mut runtime, "", "__nativeUrl");
+    drop(runtime);
+    renderer.join().unwrap();
+    assert_eq!(
+        checked,
+        r#"["image/png","image/jpeg",true,true,"1,0,96,0,96",true,"99,99,200,100,50,128,99",true,"data:,"]"#
+    );
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(url.strip_prefix("data:image/png;base64,").unwrap())
+        .unwrap();
+    let expected =
+        migo_io::image_ops::encode_canvas_image(&[200, 100, 50, 128], 1, 1, false, 92).unwrap();
+    assert_eq!(
+        bytes, expected,
+        "native encoding must borrow only the view's pixels"
+    );
+}

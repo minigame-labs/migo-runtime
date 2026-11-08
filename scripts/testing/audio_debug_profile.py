@@ -14,7 +14,8 @@ HOT = {'migo-audio', 'migo-io', 'migo-services', 'migo-shared', 'migo-alloc-prob
        'migo-executor-probe', 'rubato', 'audioadapter', 'audioadapter-buffers',
        'audioadapter-sample', 'tokio', 'minimp3-sys', 'symphonia-core',
        'symphonia-codec-pcm', 'symphonia-format-riff', 'symphonia-format-ogg',
-       'symphonia-codec-vorbis'}
+       'symphonia-codec-vorbis', 'symphonia-codec-aac',
+       'symphonia-format-isomp4', 'symphonia-metadata'}
 
 
 def inputs(root: Path):

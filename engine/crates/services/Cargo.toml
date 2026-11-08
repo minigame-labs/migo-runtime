@@ -26,7 +26,8 @@ shared = { package = "migo-shared", path = "../shared", default-features = false
 # `zip-extract` because `unzip` and `readZipEntry` are file-system calls every
 # execution offers; the embedded runtime has always enabled it.
 migo-io = { path = "../io", default-features = false, features = ["zip-extract"] }
-tokio = { workspace = true, features = ["rt", "sync", "time", "fs", "io-util", "net"] }
+# select! is used by production cancellation/close paths, independently of tests.
+tokio = { workspace = true, features = ["rt", "sync", "time", "fs", "io-util", "net", "macros"] }
 # `join_all` for the DNS warm-up, which resolves a capped batch at a time
 # rather than spawning one task per host.
 futures.workspace = true

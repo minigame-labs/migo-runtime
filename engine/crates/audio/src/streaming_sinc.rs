@@ -62,6 +62,8 @@ pub(crate) struct Stream {
     channels: usize,
     pub(crate) rates: Vec<u32>,
     layers: Vec<Layer>,
+    input_origin: u64,
+    output_start: u64,
     input_frames: u64,
     output_frames: u64,
     source_end: Option<u64>,
@@ -77,12 +79,40 @@ impl Stream {
         channels: u32,
         source_end: Option<u64>,
     ) -> EngineResult<Self> {
+        Self::new_at(source, target, channels, source_end, 0, 0)
+    }
+    /// Cold stream on the original track's integer clock. The caller supplies
+    /// real decoded history from input_origin; only the final layer discards
+    /// preroll before output_start. No kernel or interpolation math changes.
+    pub(crate) fn new_at(
+        source: u32,
+        target: u32,
+        channels: u32,
+        source_end: Option<u64>,
+        input_origin: u64,
+        output_start: u64,
+    ) -> EngineResult<Self> {
         bandlimited::validate_format(source, target, channels).map_err(invalid)?;
         let rates = if source == target {
             Vec::new()
         } else {
             rates(source, target)
         };
+        let mut origin = input_origin;
+        for rate in &rates {
+            origin = map_origin(input_origin, source, *rate)?;
+        }
+        if output_start < origin || source_end.is_some_and(|end| input_origin > end) {
+            return Err(invalid("SRC publication precedes its origin or source end"));
+        }
+        if (input_origin != 0 || output_start != 0)
+            && source_end.is_some_and(|end| {
+                u128::from(output_start)
+                    > (u128::from(end) * u128::from(target)).div_ceil(u128::from(source))
+            })
+        {
+            return Err(invalid("SRC publication exceeds its source endpoint"));
+        }
         let layers = Vec::with_capacity(rates.len());
         Ok(Self {
             source,
@@ -90,8 +120,10 @@ impl Stream {
             channels: channels as usize,
             rates,
             layers,
-            input_frames: 0,
-            output_frames: 0,
+            input_origin,
+            output_start,
+            input_frames: input_origin,
+            output_frames: output_start,
             source_end,
             eof: false,
             finished: false,
@@ -101,6 +133,17 @@ impl Stream {
     }
     pub(crate) fn is_preparing(&self) -> bool {
         self.layers.len() < self.rates.len()
+    }
+    pub(crate) fn grid_period(&self) -> u64 {
+        let mut common = self.source;
+        for rate in &self.rates {
+            let (mut a, mut b) = (common, *rate);
+            while b != 0 {
+                (a, b) = (b, a % b);
+            }
+            common = a;
+        }
+        u64::from(self.source / common)
     }
     #[cfg(test)]
     pub(crate) fn prepared_layers(&self) -> usize {
@@ -217,6 +260,17 @@ impl Stream {
             if let Some(end) = self.endpoint(target)? {
                 filter = filter.with_output_end(end);
             }
+            if self.input_origin != 0 || self.output_start != 0 {
+                let input_origin = map_origin(self.input_origin, self.source, source)?;
+                let output_start = if index + 1 == self.rates.len() {
+                    self.output_start
+                } else {
+                    map_origin(self.input_origin, self.source, target)?
+                };
+                filter
+                    .reset_from(input_origin, output_start)
+                    .map_err(invalid)?;
+            }
             let pcm = Vec::with_capacity(filter.output_capacity());
             self.layers.push(Layer {
                 filter,
@@ -243,10 +297,23 @@ impl Stream {
             if self.source_end.is_some_and(|end| frames > end) {
                 return Err(invalid("SRC input exceeds its declared duration"));
             }
-            out.extend_from_slice(&input[..consumed]);
+            let discard = self
+                .output_start
+                .saturating_sub(self.input_frames)
+                .min((consumed / self.channels) as u64) as usize
+                * self.channels;
+            out.extend_from_slice(&input[discard..consumed]);
             self.input_frames = frames;
-            self.output_frames = frames;
+            self.output_frames = self
+                .output_frames
+                .checked_add(((consumed - discard) / self.channels) as u64)
+                .ok_or_else(|| invalid("SRC output duration overflow"))?;
             self.finished = self.eof;
+            if self.finished && self.output_frames != frames {
+                return Err(invalid(
+                    "SRC publication begins after the actual source endpoint",
+                ));
+            }
             return Ok(Step {
                 consumed,
                 progress: if self.finished {
@@ -353,6 +420,13 @@ impl Stream {
         })
     }
 }
+fn map_origin(origin: u64, source: u32, target: u32) -> EngineResult<u64> {
+    let scaled = u128::from(origin) * u128::from(target);
+    if !scaled.is_multiple_of(u128::from(source)) {
+        return Err(invalid("SRC origin is not on every cascade output grid"));
+    }
+    u64::try_from(scaled / u128::from(source)).map_err(|_| invalid("SRC absolute origin overflow"))
+}
 fn invalid(detail: impl Into<String>) -> EngineError {
     EngineError::from_detail(ErrorCode::InvalidArgument, detail.into())
 }
@@ -360,3 +434,7 @@ fn invalid(detail: impl Into<String>) -> EngineError {
 #[cfg(test)]
 #[path = "streaming_sinc_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "streaming_sinc_origin_tests.rs"]
+mod origin_tests;

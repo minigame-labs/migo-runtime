@@ -64,8 +64,8 @@ if isinstance(package_json, dict):
     engines = package_json.get("engines", {})
     if isinstance(engines, dict):
         node = engines.get("node")
-        if node != ">=22.19.0":
-            error(f"package.json engines.node must be '>=22.19.0', got {node!r}")
+        if node != ">=22.23.4":
+            error(f"package.json engines.node must be '>=22.23.4', got {node!r}")
     deps = {**package_json.get("dependencies", {}), **package_json.get("devDependencies", {})}
     for name in ("@astrojs/starlight", "astro"):
         if name not in deps:

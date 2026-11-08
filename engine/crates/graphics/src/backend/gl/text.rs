@@ -721,7 +721,7 @@ impl TextContext {
         aliases: &[String],
         bytes: &[u8],
     ) -> Option<RegisteredFont> {
-        let typeface = FontMgr::default().new_from_data(bytes, None)?;
+        let typeface = FontMgr::default().new_from_data(skia_safe::Data::new_copy(bytes), None)?;
         let internal_family = normalize_registered_family(&typeface.family_name());
         let aliases = dedupe_registered_families(
             aliases
@@ -775,7 +775,7 @@ impl TextContext {
     /// Register a typeface with no family alias — useful when the TTF
     /// itself already carries the correct `name` table entry.
     pub fn register_typeface_data(&mut self, bytes: &[u8]) -> Option<Typeface> {
-        let tf = FontMgr::default().new_from_data(bytes, None)?;
+        let tf = FontMgr::default().new_from_data(skia_safe::Data::new_copy(bytes), None)?;
         self.provider.register_typeface(tf.clone(), None);
         self.font_collection
             .set_asset_font_manager(Some(self.provider.clone().into()));

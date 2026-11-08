@@ -132,3 +132,26 @@ android_ndk_readelf() {
     fi
     printf '%s\n' "$candidate"
 }
+
+# Check the linked ELF, since Rust's own export map can override local: *.
+# Arguments: the selected readelf tool and the JNI shared library.
+android_jni_verify_exports() {
+    local readelf="$1" library="$2" symbols name found=0
+    symbols="$("$readelf" --dyn-syms --wide "$library")" || return 1
+    symbols="$(printf '%s\n' "$symbols" | awk '
+        $5 ~ /^(GLOBAL|WEAK|UNIQUE)$/ && $7 != "UND" {
+            name = $8; sub(/@.*/, "", name); print name
+        }' | LC_ALL=C sort -u)"
+    while IFS= read -r name; do
+        case "$name" in
+            '') continue ;;
+            JNI_OnLoad) found=1 ;;
+            Java_*) ;;
+            *) _android_ndk_err "unexpected JNI export in $library: $name"; return 1 ;;
+        esac
+    done <<< "$symbols"
+    if [[ "$found" != 1 ]]; then
+        _android_ndk_err "JNI_OnLoad is not exported by $library"
+        return 1
+    fi
+}
