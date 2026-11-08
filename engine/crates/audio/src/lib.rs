@@ -103,6 +103,8 @@ mod decoder;
 mod device_prepare;
 mod inner_audio;
 mod limits;
+mod media_source;
+mod media_source_http;
 #[cfg(test)]
 mod mp3_fixture;
 mod nodes;

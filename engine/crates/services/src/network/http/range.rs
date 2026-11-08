@@ -53,6 +53,7 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Initial response identity. No body is consumed by capturing it.
+#[derive(Clone)]
 pub struct Identity {
     url: Url,
     etag: HeaderValue,

@@ -107,7 +107,7 @@ fn gzip(data: &[u8]) -> Vec<u8> {
 pub(crate) async fn server(data: Vec<u8>, mode: Mode, hold: bool, short: bool) -> Server {
     server_with_initial_prefix(data, mode, hold.then_some(4096), short).await
 }
-pub(super) async fn server_with_initial_prefix(
+pub(crate) async fn server_with_initial_prefix(
     data: Vec<u8>,
     mode: Mode,
     initial_prefix: Option<usize>,

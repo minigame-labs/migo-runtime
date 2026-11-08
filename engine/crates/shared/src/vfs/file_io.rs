@@ -114,6 +114,43 @@ impl FileStamp {
     }
 }
 
+/// Write all of `buffer` at `offset` without using the file cursor (the write
+/// counterpart of [`read_exact_at`]; same cursor caveat on Windows).
+pub fn write_all_at(file: &File, buffer: &[u8], offset: u64) -> io::Result<()> {
+    offset
+        .checked_add(buffer.len() as u64)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "file offset overflow"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        file.write_all_at(buffer, offset)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        let mut at = 0;
+        while at < buffer.len() {
+            match file.seek_write(&buffer[at..], offset + at as u64) {
+                Ok(0) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "positioned file write made no progress",
+                    ));
+                }
+                Ok(n) => at += n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(any(unix, windows)))]
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "positioned file IO unavailable",
+    ))
+}
+
 /// Caller validates its logical extent and checks its FileStamp before/after IO.
 /// Unix leaves the cursor unchanged; Windows seek_read uses the explicit offset
 /// and may move the cursor. Never combine this with cursor-based reads.

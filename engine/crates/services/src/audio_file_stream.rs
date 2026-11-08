@@ -55,6 +55,15 @@ impl AudioFile for File {
     fn is_closed(&self) -> bool {
         self.domain.is_closed()
     }
+    fn read_blocking(&self, offset: u64, output: &mut [u8]) -> Result<(), EngineError> {
+        if self.is_closed() {
+            return Err(io_error());
+        }
+        self.sealed
+            .reader()
+            .read_into_at(offset, output)
+            .map_err(|_| io_error())
+    }
     fn closed_signal(&self) -> &tokio::sync::Notify {
         self.domain.closed_signal()
     }
