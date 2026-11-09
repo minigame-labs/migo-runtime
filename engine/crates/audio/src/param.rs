@@ -1,5 +1,3 @@
-use shared::error::EngineResult;
-
 /// Represents a scheduled automation event on an AudioParam timeline.
 #[derive(Debug, Clone)]
 enum AutomationEvent {
@@ -119,10 +117,6 @@ impl AudioParamTimeline {
     /// the ramp continues from it toward its target (ramp events store only their
     /// end, so without the anchor they would interpolate from t=0).
     pub fn set_value_now(&mut self, value: f32, current_time: f64) {
-        let _ = self.try_set_value_now(value, current_time);
-    }
-
-    pub(crate) fn try_set_value_now(&mut self, value: f32, current_time: f64) -> EngineResult<()> {
         let clamped = value.clamp(self.min_value, self.max_value);
         let has_active_ramp = self.events.iter().any(|e| {
             e.time() > current_time
@@ -136,10 +130,9 @@ impl AudioParamTimeline {
             self.insert_event(AutomationEvent::SetValue {
                 value: clamped,
                 time: current_time,
-            })?;
+            });
         }
         self.current_value = clamped;
-        Ok(())
     }
 
     pub fn default_value(&self) -> f32 {
@@ -156,64 +149,35 @@ impl AudioParamTimeline {
 
     /// Schedule a value change at a specific time
     pub fn set_value_at_time(&mut self, value: f32, time: f64) {
-        let _ = self.try_set_value_at_time(value, time);
-    }
-
-    pub(crate) fn try_set_value_at_time(&mut self, value: f32, time: f64) -> EngineResult<()> {
         let value = value.clamp(self.min_value, self.max_value);
-        self.insert_event(AutomationEvent::SetValue { value, time })
+        self.insert_event(AutomationEvent::SetValue { value, time });
     }
 
     /// Schedule a linear ramp to a value ending at end_time
     pub fn linear_ramp_to_value_at_time(&mut self, value: f32, end_time: f64) {
-        let _ = self.try_linear_ramp_to_value_at_time(value, end_time);
-    }
-
-    pub(crate) fn try_linear_ramp_to_value_at_time(
-        &mut self,
-        value: f32,
-        end_time: f64,
-    ) -> EngineResult<()> {
         let value = value.clamp(self.min_value, self.max_value);
-        self.insert_event(AutomationEvent::LinearRamp { value, end_time })
+        self.insert_event(AutomationEvent::LinearRamp { value, end_time });
     }
 
     /// Schedule an exponential ramp to a value ending at end_time
     pub fn exponential_ramp_to_value_at_time(&mut self, value: f32, end_time: f64) {
-        let _ = self.try_exponential_ramp_to_value_at_time(value, end_time);
-    }
-
-    pub(crate) fn try_exponential_ramp_to_value_at_time(
-        &mut self,
-        value: f32,
-        end_time: f64,
-    ) -> EngineResult<()> {
         // Exponential ramp requires non-zero positive values
         let value = if value <= 0.0 {
             f32::EPSILON
         } else {
             value.clamp(f32::EPSILON, self.max_value)
         };
-        self.insert_event(AutomationEvent::ExponentialRamp { value, end_time })
+        self.insert_event(AutomationEvent::ExponentialRamp { value, end_time });
     }
 
     /// Asymptotically approach target starting at start_time with time_constant
     pub fn set_target_at_time(&mut self, target: f32, start_time: f64, time_constant: f64) {
-        let _ = self.try_set_target_at_time(target, start_time, time_constant);
-    }
-
-    pub(crate) fn try_set_target_at_time(
-        &mut self,
-        target: f32,
-        start_time: f64,
-        time_constant: f64,
-    ) -> EngineResult<()> {
         let target = target.clamp(self.min_value, self.max_value);
         self.insert_event(AutomationEvent::SetTarget {
             target,
             start_time,
             time_constant: time_constant.max(0.0001), // Prevent division by zero
-        })
+        });
     }
 
     /// Cancel all scheduled events at or after cancel_time
@@ -337,13 +301,12 @@ impl AudioParamTimeline {
     }
 
     /// Insert event in sorted order by time
-    fn insert_event(&mut self, event: AutomationEvent) -> EngineResult<()> {
+    fn insert_event(&mut self, event: AutomationEvent) {
         let time = event.time();
         // Equal-time events retain call order; a later set/target must not be
         // evaluated before the anchor that was scheduled immediately before it.
         let pos = self.events.partition_point(|e| e.time() <= time);
         self.events.insert(pos, event);
-        Ok(())
     }
 }
 
