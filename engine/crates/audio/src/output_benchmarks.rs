@@ -2,6 +2,7 @@
 //! SPSC ring, AudioSync and wakeup. No device, DSP or speaker latency claim.
 use super::*;
 use ringbuf::traits::Producer;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};

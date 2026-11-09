@@ -290,12 +290,13 @@ async fn cross_page_and_eight_channel_public_seek_keep_complete_suffix_bits() {
             .await;
             let want = &reference.samples[start as usize * native.channels as usize..];
             let got = suffix(&mut p, want.len() / native.channels as usize).await;
+            // Equal values, not equal bits: played samples are mixed into a
+            // cleared buffer, and `0.0 + -0.0` is `+0.0`. The reference is not
+            // mixed, so a decoder that emits -0.0 -- NEON does where SSE gives
+            // +0.0 -- differs from it only in the sign of zero. Any other change
+            // still fails, and so does a NaN.
             assert!(
-                got.len() == want.len()
-                    && got
-                        .iter()
-                        .zip(want)
-                        .all(|(a, b)| a.to_bits() == b.to_bits()),
+                got.len() == want.len() && got.iter().zip(want).all(|(a, b)| a == b),
                 "Vorbis cross-page/multichannel complete suffix changed"
             );
             compare(&got, want, &format!("{name}-{rate}-seek"));
