@@ -16,7 +16,20 @@ pub struct RafSender(SenderInner);
 
 /// Receiver half — lives on the host thread (tokio async).
 /// Wrapped in `Arc` for restart survival.
-pub struct RafReceiver(ReceiverInner);
+pub struct RafReceiver {
+    inner: ReceiverInner,
+    /// The `seq` of the last frame `recv` handed out.
+    delivered: AtomicU64,
+}
+
+impl RafReceiver {
+    fn new(inner: ReceiverInner) -> Self {
+        Self {
+            inner,
+            delivered: AtomicU64::new(0),
+        }
+    }
+}
 
 impl RafSender {
     /// Signal the next frame timestamp (milliseconds).
@@ -31,7 +44,7 @@ impl RafSender {
             #[cfg(target_os = "android")]
             SenderInner::Eventfd { fd, frame } => {
                 use std::os::fd::AsRawFd;
-                *frame.lock() = RafFrame { ts_ms, ticket };
+                frame.lock().replace(ts_ms, ticket);
                 let val: u64 = 1;
                 loop {
                     // SAFETY: fd is a live nonblocking eventfd owned by this
@@ -51,7 +64,7 @@ impl RafSender {
                 }
             }
             SenderInner::Slot(slot) => {
-                *slot.frame.lock() = RafFrame { ts_ms, ticket };
+                slot.frame.lock().replace(ts_ms, ticket);
                 // `notify_one` keeps one permit when nobody is waiting, so a signal that
                 // arrives before `recv` is not lost, and several before it collapse into one.
                 slot.wake.notify_one();
@@ -70,7 +83,7 @@ impl RafReceiver {
     /// consuming a timestamp produced for the old isolate.
     pub async fn recv(&self, expected_ticket: u64) -> Option<f64> {
         loop {
-            let frame = match &self.0 {
+            let frame = match &self.inner {
                 #[cfg(target_os = "android")]
                 ReceiverInner::Eventfd {
                     async_fd,
@@ -136,7 +149,16 @@ impl RafReceiver {
                 }
             };
 
+            // The frame is written before its wake, so a consumer woken by an earlier wake can
+            // already have read this frame, and then its own wake arrives: delivering it again
+            // handed content two animation frames with one timestamp (a 0 ms step after a late
+            // 33 ms one on a Mate 30) and ran a whole extra frame of game logic for nothing.
+            // A frame goes out once; its late wake waits for the next one.
+            if frame.seq <= self.delivered.load(Ordering::Acquire) {
+                continue;
+            }
             if frame_matches_ticket(frame.ticket, expected_ticket) {
+                self.delivered.store(frame.seq, Ordering::Release);
                 return Some(frame.ts_ms);
             }
         }
@@ -176,10 +198,23 @@ struct RafSlot {
     wake: tokio::sync::Notify,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct RafFrame {
     ts_ms: f64,
     ticket: u64,
+    /// 1 for the first frame signalled, one more for each after it; 0 for none yet. The
+    /// render thread is the only writer, so it is the slot's own count.
+    seq: u64,
+}
+
+impl RafFrame {
+    fn replace(&mut self, ts_ms: f64, ticket: u64) {
+        *self = Self {
+            ts_ms,
+            ticket,
+            seq: self.seq + 1,
+        };
+    }
 }
 
 #[inline]
@@ -243,10 +278,7 @@ fn create_eventfd_pair() -> Result<(RafSender, RafReceiver), String> {
         return Err(format!("dup(eventfd): {}", std::io::Error::last_os_error()));
     }
 
-    let frame = Arc::new(parking_lot::Mutex::new(RafFrame {
-        ts_ms: 0.0,
-        ticket: 0,
-    }));
+    let frame = Arc::new(parking_lot::Mutex::new(RafFrame::default()));
 
     Ok((
         RafSender(SenderInner::Eventfd {
@@ -255,7 +287,7 @@ fn create_eventfd_pair() -> Result<(RafSender, RafReceiver), String> {
             fd: unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) },
             frame: frame.clone(),
         }),
-        RafReceiver(ReceiverInner::Eventfd {
+        RafReceiver::new(ReceiverInner::Eventfd {
             async_fd: tokio::sync::OnceCell::new(),
             // SAFETY: fd2 is a successful dup result; ownership moves into
             // OwnedFd exactly once.
@@ -267,15 +299,12 @@ fn create_eventfd_pair() -> Result<(RafSender, RafReceiver), String> {
 
 fn create_channel_pair() -> (RafSender, RafReceiver) {
     let slot = Arc::new(RafSlot {
-        frame: parking_lot::Mutex::new(RafFrame {
-            ts_ms: 0.0,
-            ticket: 0,
-        }),
+        frame: parking_lot::Mutex::new(RafFrame::default()),
         wake: tokio::sync::Notify::new(),
     });
     (
         RafSender(SenderInner::Slot(slot.clone())),
-        RafReceiver(ReceiverInner::Slot(slot)),
+        RafReceiver::new(ReceiverInner::Slot(slot)),
     )
 }
 
@@ -368,7 +397,7 @@ pub type RafDemandRef = Arc<RafDemand>;
 
 #[cfg(test)]
 mod demand_tests {
-    use super::{RafDemand, create_channel_pair, frame_matches_ticket};
+    use super::{RafDemand, RafSender, SenderInner, create_channel_pair, frame_matches_ticket};
 
     #[test]
     fn new_is_not_waiting() {
@@ -504,6 +533,36 @@ mod demand_tests {
         );
         tx.signal(2.0, 3);
         assert_eq!(runtime.block_on(rx.recv(3)), Some(2.0));
+    }
+
+    /// The interleaving that gave content one timestamp twice: the consumer, woken by the
+    /// previous frame's wake, reads the slot after the render thread wrote the next frame into it
+    /// and before that frame's own wake; then the wake arrives. The frame is not delivered again.
+    #[test]
+    fn a_frame_read_ahead_of_its_wake_is_not_delivered_twice() {
+        let (tx, rx) = create_channel_pair();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        // Irrefutable off Android, where the slot is the only transport.
+        #[allow(irrefutable_let_patterns)]
+        let RafSender(SenderInner::Slot(slot)) = &tx else {
+            unreachable!("the channel pair is a slot")
+        };
+        tx.signal(100.0, 3);
+        // The next frame is written, its wake not yet given...
+        slot.frame.lock().replace(116.6, 3);
+        // ...and the consumer, woken by the first wake, reads it.
+        assert_eq!(runtime.block_on(rx.recv(3)), Some(116.6));
+        // Now that frame's wake arrives.
+        slot.wake.notify_one();
+        let replay = runtime.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_millis(30), rx.recv(3)).await
+        });
+        assert!(replay.is_err(), "the frame was delivered twice: {replay:?}");
+        tx.signal(133.2, 3);
+        assert_eq!(runtime.block_on(rx.recv(3)), Some(133.2));
     }
 
     #[test]
