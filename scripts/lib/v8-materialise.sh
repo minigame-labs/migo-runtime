@@ -176,29 +176,24 @@ v8_materialise() {
 
 # v8_materialise_windows <v8-dir> <materialise-root>
 #
-# Windows' V8 archive has a shape v8_materialise does not know: `hashes.archive`
-# covers `rusty_v8.lib` -- the static build product write-windows-v8-component-
-# manifest.py deliberately hashes -- but the actual link uses the DLL's import
-# library, `rusty_v8.dll.lib`, instead. See build-windows-sdk.sh's own header
-# comment for why: V8 is built with its own libc++ there, and linking the
-# static archive puts that libc++ into the same link as Skia's MSVC STL, which
-# define std::terminate incompatibly. Widening the manifest schema to cover the
-# DLL/import-lib pair too would change the shape every other platform's
-# manifest is verified against, for one platform's linking detail; their
-# integrity is instead covered "one level up", by the SDK package manifest's
-# own artifact hashes over the final migo.dll.
+# Windows' V8 build has a shape v8_materialise does not know: rusty_v8 is a DLL,
+# and the link has to go through its import library. V8 is built with its own
+# libc++ there, and a static archive would put that libc++ into the same link as
+# Skia's MSVC STL, which defines std::terminate incompatibly (see
+# build-windows-sdk.sh's header). The 0009-windows-static-lib-from-dll-implib
+# patch therefore makes the build's `rusty_v8.lib` the DLL's import library:
+# `rusty_v8.lib` and `rusty_v8.dll.lib` are the same bytes. `hashes.archive` covers
+# `rusty_v8.lib`, and the vendored v8 crate requires that name.
 #
-# So this verifies rusty_v8.lib + src_binding.rs against the component
-# manifest, exactly like v8_materialise, then materialises rusty_v8.dll and
-# rusty_v8.dll.lib alongside them into the same content-addressed directory --
-# sharing that directory's provenance (all four files come from one fetch of
-# one release asset set) even though the manifest carries no independent
-# per-file hash for the two it does not cover; a reused directory's copies are
-# still checked for internal consistency against the source, the same
-# "recorded rather than trusted" rule the manifest-covered files use, just
-# against the source's own hash rather than an authoritative recorded one.
-# Sets V8_MATERIALISED_ARCHIVE to the materialised rusty_v8.dll.lib -- what the
-# link actually consumes -- and V8_MATERIALISED_BINDING as v8_materialise does.
+# So this verifies rusty_v8.lib + src_binding.rs against the component manifest,
+# exactly like v8_materialise, and refuses a rusty_v8.lib that is not the import
+# library: a build without 0009 yields a static archive that would link with V8's
+# libc++. rusty_v8.dll is materialised alongside, into the same content-addressed
+# directory, sharing its provenance (one fetch of one release asset set); its
+# integrity is covered one level up by the SDK package manifest's hash over the
+# final migo.dll. A reused directory's copies are checked against their sources.
+# Sets V8_MATERIALISED_ARCHIVE to the materialised rusty_v8.lib -- what the link
+# consumes -- and V8_MATERIALISED_BINDING as v8_materialise does.
 v8_materialise_windows() {
     local v8_dir="$1" root="$2"
     local archive="$v8_dir/rusty_v8.lib"
@@ -243,6 +238,13 @@ v8_materialise_windows() {
         return 1
     fi
 
+    if [[ "$(_v8_mat_sha256 "$dll_lib")" != "$got_archive" ]]; then
+        _v8_mat_err "$archive is not the import library of rusty_v8.dll"
+        _v8_mat_err "a static archive would link V8's libc++ beside Skia's MSVC STL"
+        _v8_mat_err "(build it with 0009-windows-static-lib-from-dll-implib, as windows-v8.lock.json declares)"
+        return 1
+    fi
+
     local dest="$root/$got_archive-$got_binding"
     mkdir -p "$dest" || { _v8_mat_err "cannot create $dest"; return 1; }
 
@@ -264,7 +266,7 @@ v8_materialise_windows() {
         }
     done
 
-    V8_MATERIALISED_ARCHIVE="$dest/rusty_v8.dll.lib"
+    V8_MATERIALISED_ARCHIVE="$dest/rusty_v8.lib"
     V8_MATERIALISED_BINDING="$dest/src_binding.rs"
     export V8_MATERIALISED_ARCHIVE V8_MATERIALISED_BINDING
 }

@@ -89,5 +89,10 @@ fn variable_rate() {
         )
         .file(root.join("native/variable_rate.c"))
         .compile("migo_variable_rate");
-    println!("cargo:rustc-link-lib=m");
+    // libsamplerate calls into libm. MSVC has no separate math library -- the CRT
+    // carries it -- and `m.lib` does not exist there: naming it stopped the
+    // Windows SDK link with LNK1181.
+    if env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
+        println!("cargo:rustc-link-lib=m");
+    }
 }
