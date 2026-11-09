@@ -4794,6 +4794,11 @@ fn internalformat_samples_json(gl: &glow::Context, target: u32, internalformat: 
     unsafe {
         gl.get_internal_format_i32_slice(target, internalformat, glow::SAMPLES, &mut samples);
     }
+    // A count above MAX_SAMPLES is one `renderbufferStorageMultisample` refuses with INVALID_VALUE, yet a
+    // driver can list it (Mali: [16, 8, 4] for RGBA8 with MAX_SAMPLES 4), and content that takes the first
+    // count gets no multisampled buffer at all. Only counts the context can allocate are answered.
+    let max_samples = unsafe { gl.get_parameter_i32(glow::MAX_SAMPLES) };
+    samples.retain(|count| (1..=max_samples).contains(count));
     // The driver lists them largest first; the specification promises it, so it is not left to the driver.
     samples.sort_unstable_by(|a, b| b.cmp(a));
     samples.dedup();

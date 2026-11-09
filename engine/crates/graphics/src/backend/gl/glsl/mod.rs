@@ -10,6 +10,9 @@ mod zero_init;
 
 pub(crate) use preprocess::Environment;
 
+/// WebGL 2's default uniform-block layout, declared ahead of a GLSL ES 3.00 shader's first token.
+const STD140_DEFAULT: &str = "layout(std140) uniform; ";
+
 /// The source a driver should compile for the WebGL shader `source`: every variable it leaves without a value
 /// initialized to zero, as WebGL requires and a driver need not do (see `zero_init`). `None` when the driver can take
 /// `source` as it is -- its WebGL translator owns initialization, nothing is missing, or the shader will be refused.
@@ -20,7 +23,25 @@ pub(crate) fn for_driver(source: &str, env: &Environment) -> Option<String> {
         return None;
     }
     let preprocessed = preprocess::preprocess(source, env).ok()?;
-    let edits = zero_init::edits(&preprocessed.tokens, preprocessed.version).ok()?;
+    let mut edits = zero_init::edits(&preprocessed.tokens, preprocessed.version).ok()?;
+    // WebGL 2 lays every uniform block out as std140: "the initial state of compilation is as if
+    // `layout(std140) uniform;` were declared". GLSL ES 3.00's own default is `shared`, whose layout
+    // is the driver's, so content that fills a uniform buffer by the std140 rules, as WebGL promises
+    // it may, would be read with other offsets wherever a driver packs differently. The default goes
+    // in before the first token, on its line, so the driver's line numbers stay the source's; a
+    // block that names a layout keeps it.
+    if preprocessed.version >= 300
+        && let Some((start, _)) = preprocessed.tokens.first().and_then(|token| token.span)
+    {
+        edits.insert(
+            0,
+            zero_init::Edit {
+                start,
+                end: start,
+                text: STD140_DEFAULT.to_owned(),
+            },
+        );
+    }
     if edits.is_empty() {
         return None;
     }
@@ -193,6 +214,30 @@ mod tests {
     }
 
     #[test]
+    fn a_webgl2_shader_lays_its_uniform_blocks_out_as_std140() {
+        let source = "#version 300 es\nprecision highp float;\nuniform B { vec4 a; float f[3]; } b;\nout vec4 o;\nvoid main() { o = b.a; }\n";
+        let out = amended(source);
+        assert!(
+            out.contains("\nlayout(std140) uniform; precision highp float;\n"),
+            "{out}"
+        );
+        assert_eq!(
+            lines(&out),
+            lines(source),
+            "the driver's line numbers are the source's"
+        );
+        // A layout the shader names is the shader's.
+        let named =
+            amended("#version 300 es\nlayout(shared) uniform B { vec4 a; } b;\nvoid main() {}\n");
+        assert!(
+            named.contains("layout(std140) uniform; layout(shared) uniform B"),
+            "{named}"
+        );
+        // WebGL 1 has no uniform blocks.
+        assert!(!amended("precision mediump float;\nvoid main() {}\n").contains("std140"));
+    }
+
+    #[test]
     fn a_declaration_a_macro_writes_is_left_to_the_macro() {
         let source = "#define DECLARE(t, n) t n;\nDECLARE(vec3, a)\nvoid main() {}";
         assert_eq!(for_driver(source, &FRAGMENT), None);
@@ -202,7 +247,6 @@ mod tests {
     fn what_has_a_value_or_is_not_a_variable_is_left_alone() {
         for source in [
             "uniform vec3 u;\nattribute vec4 p;\nvarying vec2 v;\nconst float k = 1.0;\nvoid main() {}",
-            "#version 300 es\nin vec4 p;\nout vec4 o;\nlayout(std140) uniform B { mat4 m; } b;\nvoid main() { o = p; }",
             "void main() { float x = 1.0; vec3 y = vec3(x); y.x = 2.0; vec3(1.0); }",
             "float f(float a, out float b);\nfloat f(float a, out float b) { b = a; return a; }\nvoid main() {}",
             "precision highp float;\ninvariant gl_Position;\nvoid main() {}",
@@ -210,6 +254,15 @@ mod tests {
         ] {
             assert_eq!(for_driver(source, &FRAGMENT), None, "{source}");
         }
+        // A GLSL ES 3.00 shader with nothing to initialize gains only the std140 default.
+        let es3 = "#version 300 es\nin vec4 p;\nout vec4 o;\nlayout(std140) uniform B { mat4 m; } b;\nvoid main() { o = p; }";
+        assert_eq!(
+            for_driver(es3, &FRAGMENT).as_deref(),
+            Some(
+                es3.replacen("\nin vec4 p;", "\nlayout(std140) uniform; in vec4 p;", 1)
+                    .as_str()
+            )
+        );
     }
 
     #[test]

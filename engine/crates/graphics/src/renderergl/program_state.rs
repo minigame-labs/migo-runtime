@@ -239,9 +239,17 @@ fn block_parameter(gl: &glow::Context, program: glow::Program, block: u32, pname
     // SAFETY: `gl` is the current context and `program` a linked program of it, which `answer` checked.
     unsafe {
         match pname {
-            UNIFORM_BLOCK_BINDING | UNIFORM_BLOCK_DATA_SIZE | UNIFORM_BLOCK_ACTIVE_UNIFORMS => {
+            UNIFORM_BLOCK_BINDING | UNIFORM_BLOCK_ACTIVE_UNIFORMS => {
                 let n = gl.get_active_uniform_block_parameter_i32(program, block, pname);
                 value((n as u32).to_string())
+            }
+            // Every WebGL 2 block is std140 (`glsl::for_driver` declares it the default), and a std140
+            // block is a structure whose size is a multiple of a vec4's 16 bytes. A driver may answer the
+            // end of the last member instead -- Mali reports 116 for a block ending in `float[3]` that
+            // std140 makes 128 -- which a browser never does; the offsets are std140's either way.
+            UNIFORM_BLOCK_DATA_SIZE => {
+                let n = gl.get_active_uniform_block_parameter_i32(program, block, pname);
+                value((n.max(0) as u32).next_multiple_of(16).to_string())
             }
             UNIFORM_BLOCK_ACTIVE_UNIFORM_INDICES => {
                 let count = gl
