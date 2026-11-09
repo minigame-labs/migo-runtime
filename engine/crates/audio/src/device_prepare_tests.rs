@@ -6,6 +6,13 @@ use std::{
 };
 
 const WAIT: Duration = Duration::from_secs(10);
+/// A private executor per test. The shared process executor counts the audio
+/// CPU work of every test running in parallel against one operation limit; a
+/// preparation refused there drops its hook, and the waits below then fail as a
+/// disconnected channel instead of on what the test checks.
+fn scheduler(id: i32) -> migo_io::scheduler::IoScheduler {
+    migo_io::scheduler::IoScheduler::isolated_for_admission_probe(id, 2, u64::MAX)
+}
 fn format(source: u32, target: u32, channels: u32) -> Format {
     Format {
         source,
@@ -65,7 +72,7 @@ fn hold_layer(layer: usize) -> (Hook, mpsc::Receiver<()>, Release) {
 
 #[test]
 fn actual_cpu_turns_prepare_one_layer_and_leave_the_shared_async_worker_free() {
-    let host = migo_io::scheduler::IoScheduler::new(0);
+    let host = scheduler(0);
     let mut slot = Slot::new(7);
     let (hold, started, release) = hold_layer(0);
     let observations = Arc::new(Mutex::new(Vec::new()));
@@ -120,7 +127,7 @@ fn actual_cpu_turns_prepare_one_layer_and_leave_the_shared_async_worker_free() {
 
 #[test]
 fn acceptance_rejects_live_foreign_cancelled_and_unprepared_results() {
-    let host = migo_io::scheduler::IoScheduler::new(0);
+    let host = scheduler(0);
     let f = format(44100, 48000, 2);
     let mut slot = Slot::new(7);
     let own = prepared(&mut slot, &host, f);
@@ -153,7 +160,7 @@ fn acceptance_rejects_live_foreign_cancelled_and_unprepared_results() {
 
 #[test]
 fn same_format_and_aba_replacement_cancel_taken_owners_and_keep_new_identity() {
-    let host = migo_io::scheduler::IoScheduler::new(0);
+    let host = scheduler(0);
     let a = format(44100, 48000, 2);
     let b = format(44100, 8000, 2);
     let mut slot = Slot::new(19);
@@ -190,7 +197,7 @@ fn same_format_and_aba_replacement_cancel_taken_owners_and_keep_new_identity() {
 
 #[test]
 fn precancelled_setup_and_closed_hosts_never_construct_a_filter() {
-    let host = migo_io::scheduler::IoScheduler::new(0);
+    let host = scheduler(0);
     let request = Arc::new(Request {
         context: 1,
         format: format(44100, 48000, 2),
@@ -235,8 +242,8 @@ fn precancelled_setup_and_closed_hosts_never_construct_a_filter() {
 
 #[test]
 fn running_cancel_keeps_the_cpu_owner_until_return_and_preserves_other_hosts() {
-    let host = migo_io::scheduler::IoScheduler::new(0);
-    let other = migo_io::scheduler::IoScheduler::new(1);
+    let host = scheduler(0);
+    let other = host.peer_for_admission_probe(1);
     let mut slot = Slot::new(2);
     let (hook, started, release) = hold_layer(1);
     slot.request(
@@ -267,7 +274,7 @@ fn running_cancel_keeps_the_cpu_owner_until_return_and_preserves_other_hosts() {
 
 #[test]
 fn setup_panic_and_host_close_publish_typed_failures_without_poisoning_cpu() {
-    let host = migo_io::scheduler::IoScheduler::new(0);
+    let host = scheduler(0);
     let mut slot = Slot::new(3);
     slot.request(
         format(44100, 48000, 2),
@@ -307,7 +314,7 @@ fn setup_panic_and_host_close_publish_typed_failures_without_poisoning_cpu() {
 
 #[test]
 fn native_bypass_uses_no_cpu_and_invalid_formats_preserve_the_live_route() {
-    let host = migo_io::scheduler::IoScheduler::new(0);
+    let host = scheduler(0);
     let mut slot = Slot::new(4);
     let wakeup = ThreadWakeup::new();
     slot.request(
@@ -346,7 +353,7 @@ fn native_bypass_uses_no_cpu_and_invalid_formats_preserve_the_live_route() {
 
 #[test]
 fn handed_off_filter_allocates_neither_on_first_processing_step_nor_steady_state() {
-    let host = migo_io::scheduler::IoScheduler::new(0);
+    let host = scheduler(0);
     for f in [
         format(44100, 48000, 2),
         format(48000, 44100, 2),
@@ -386,7 +393,7 @@ fn handed_off_filter_allocates_neither_on_first_processing_step_nor_steady_state
 
 #[test]
 fn prepared_handoff_preserves_every_library_sample_and_the_original_eof_clock() {
-    let host = migo_io::scheduler::IoScheduler::new(0);
+    let host = scheduler(0);
     for f in [
         format(44100, 48000, 1),
         format(48000, 44100, 2),
@@ -439,7 +446,7 @@ fn prepared_handoff_preserves_every_library_sample_and_the_original_eof_clock() 
 
 #[test]
 fn publication_wakes_the_owner_and_pending_polls_do_not_construct_filters() {
-    let host = migo_io::scheduler::IoScheduler::new(0);
+    let host = scheduler(0);
     let mut slot = Slot::new(8);
     let wakeup = ThreadWakeup::new();
     let (hook, started, release) = hold_layer(1);
@@ -474,7 +481,7 @@ fn publication_wakes_the_owner_and_pending_polls_do_not_construct_filters() {
 #[test]
 fn completed_and_taken_results_observe_host_close_before_render_use() {
     let expected = EngineError::from(PoolError::Closed).code;
-    let host = migo_io::scheduler::IoScheduler::new(0);
+    let host = scheduler(0);
     let mut slot = Slot::new(9);
     slot.request(
         format(44100, 48000, 2),
@@ -491,7 +498,7 @@ fn completed_and_taken_results_observe_host_close_before_render_use() {
         "completed result crossed host close before acceptance"
     );
 
-    let second = migo_io::scheduler::IoScheduler::new(1);
+    let second = scheduler(1);
     let mut slot = Slot::new(9);
     let mut ready = prepared(&mut slot, &second, format(44100, 48000, 2));
     second.close();

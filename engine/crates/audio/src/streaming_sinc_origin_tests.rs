@@ -270,8 +270,11 @@ fn shortened_input_cannot_finish_an_absolute_window_or_succeed_after_cancellatio
 #[tokio::test]
 async fn original_cpu_cancellation_really_frees_absolute_window_capacity() {
     use std::sync::Arc;
-    let host = migo_io::scheduler::IoScheduler::new(1051);
-    let peer = migo_io::scheduler::IoScheduler::new(1052);
+    // Three workers: the fewest with two CPU-heavy slots, so the peer's job runs
+    // beside the held step on any machine (on two cores the shared executor has
+    // one, and the peer would wait for the release it precedes).
+    let host = migo_io::scheduler::IoScheduler::isolated_for_admission_probe(1051, 3, u64::MAX);
+    let peer = host.peer_for_admission_probe(1052);
     let owner = crate::off_worker::OffWorker::new(None::<Stream>, host.audio_cpu());
     let (owner, watches) = owner
         .with(|slot| {
