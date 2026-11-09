@@ -28,7 +28,19 @@ impl PlatformDetails for OpenHarmony {
 
         builder.target_os_and_default_cpu(&config.target.system);
 
-        builder.cflags(extra_skia_cflags());
+        let mut extra_skia_cflags = extra_skia_cflags();
+
+        // zlib's ARM CRC32 code enables its extensions per function with
+        // target("arch=armv8-a+aes+crc"), which clang before 16 ignores (the SDK
+        // ships 15), so its CRC and PMULL intrinsics fail instruction selection.
+        // Skia sets no -march of its own on arm64, so this is the default
+        // baseline plus the two extensions; only those intrinsics emit them,
+        // and zlib uses them after a runtime CPU check.
+        if config.target.architecture == "aarch64" {
+            extra_skia_cflags.push("-march=armv8-a+crc+aes".to_string());
+        }
+
+        builder.cflags(extra_skia_cflags);
     }
 
     fn bindgen_args(&self, target: &Target, builder: &mut BindgenArgsBuilder) {
