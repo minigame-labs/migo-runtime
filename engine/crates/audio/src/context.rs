@@ -882,19 +882,10 @@ impl AudioContext {
     pub(crate) fn set_wave_shaper_curve(
         &mut self,
         node_id: AudioNodeId,
-        mut curve: Option<Vec<f32>>,
-    ) -> bool {
-        self.try_set_wave_shaper_curve(node_id, &mut curve)
-    }
-
-    /// Keep incoming storage with its delivery until replacement is admitted.
-    pub(crate) fn try_set_wave_shaper_curve(
-        &mut self,
-        node_id: AudioNodeId,
-        curve: &mut Option<Vec<f32>>,
+        curve: Option<Vec<f32>>,
     ) -> bool {
         self.with_node_typed::<crate::nodes::WaveShaperNode, _>(node_id, |node| {
-            node.set_curve(curve.take());
+            node.set_curve(curve);
             true
         })
         .unwrap_or(false)
@@ -1131,14 +1122,14 @@ impl AudioContext {
         false
     }
 
-    /// Prepare a BufferSource SRC candidate before changing its timeline. A
-    /// rejected event keeps the old node state and retires only the candidate.
+    /// Prepare a BufferSource SRC candidate before changing its timeline: a
+    /// candidate that cannot be prepared leaves the node as it was.
     fn update_node_param(
         &mut self,
         node_id: AudioNodeId,
         name: &str,
         value: Option<f32>,
-        update: impl FnOnce(&mut crate::param::AudioParamTimeline) -> EngineResult<()>,
+        update: impl FnOnce(&mut crate::param::AudioParamTimeline),
     ) -> bool {
         let now = self.current_time();
         let Some(node) = self.nodes.get_mut(&node_id) else {
@@ -1155,9 +1146,7 @@ impl AudioContext {
         let Some(param) = node.get_param_mut(name) else {
             return false;
         };
-        if update(param).is_err() {
-            return false;
-        }
+        update(param);
         if let Some(source) = node.as_any_mut().downcast_mut::<BufferSourceNode>() {
             source.install_rate(prepared);
         }
@@ -1168,7 +1157,7 @@ impl AudioContext {
     pub fn set_node_param(&mut self, node_id: AudioNodeId, param_name: &str, value: f32) -> bool {
         let now = self.current_time();
         self.update_node_param(node_id, param_name, Some(value), |param| {
-            param.try_set_value_now(value, now)
+            param.set_value_now(value, now)
         })
     }
 
@@ -1181,9 +1170,8 @@ impl AudioContext {
     ) -> bool {
         let now = self.current_time();
         self.update_node_param(node_id, param_name, None, |param| {
-            param.try_set_value_at_time(value, time)?;
+            param.set_value_at_time(value, time);
             param.gc_events(now);
-            Ok(())
         })
     }
 
@@ -1196,9 +1184,8 @@ impl AudioContext {
     ) -> bool {
         let now = self.current_time();
         self.update_node_param(node_id, param_name, None, |param| {
-            param.try_linear_ramp_to_value_at_time(value, end_time)?;
+            param.linear_ramp_to_value_at_time(value, end_time);
             param.gc_events(now);
-            Ok(())
         })
     }
 
@@ -1211,9 +1198,8 @@ impl AudioContext {
     ) -> bool {
         let now = self.current_time();
         self.update_node_param(node_id, param_name, None, |param| {
-            param.try_exponential_ramp_to_value_at_time(value, end_time)?;
+            param.exponential_ramp_to_value_at_time(value, end_time);
             param.gc_events(now);
-            Ok(())
         })
     }
 
@@ -1227,9 +1213,8 @@ impl AudioContext {
     ) -> bool {
         let now = self.current_time();
         self.update_node_param(node_id, param_name, None, |param| {
-            param.try_set_target_at_time(target, start_time, time_constant)?;
+            param.set_target_at_time(target, start_time, time_constant);
             param.gc_events(now);
-            Ok(())
         })
     }
 
@@ -1267,16 +1252,6 @@ impl AudioContext {
         dst: AudioNodeId,
         dst_input: u32,
     ) {
-        let _ = self.try_connect_ports(src, src_output, dst, dst_input);
-    }
-
-    pub(crate) fn try_connect_ports(
-        &mut self,
-        src: AudioNodeId,
-        src_output: u32,
-        dst: AudioNodeId,
-        dst_input: u32,
-    ) -> EngineResult<bool> {
         let duplicate = self.connections.iter().any(|c| {
             c.src == src && c.dst == dst && c.src_output == src_output && c.dst_input == dst_input
         });
@@ -1294,7 +1269,6 @@ impl AudioContext {
             self.graph_dirty = true;
             self.device_controls_pending = true;
         }
-        Ok(!duplicate)
     }
 
     pub fn disconnect(&mut self, node_id: AudioNodeId, dst: Option<AudioNodeId>) {
