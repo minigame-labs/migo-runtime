@@ -34,6 +34,15 @@ symbols="$(nm -g --defined-only "$LIB" 2>/dev/null \
       in_binding && $2 == "T" && $3 !~ /^\?/ { print $3 }
     ' | LC_ALL=C sort -u)"
 count="$(printf '%s\n' "$symbols" | grep -c .)"
+
+# Named with ICU's major version, so read from the vendored crate rather than
+# written here: an ICU bump renames it.
+icu_sources=("$ROOT"/engine/third_party/v8-*/src/icu.rs)
+(( ${#icu_sources[@]} == 1 )) && [[ -f "${icu_sources[0]}" ]] \
+  || { printf 'expected one vendored v8 crate, found: %s\n' "${icu_sources[*]}" >&2; exit 1; }
+icu_entry="$(grep -oE 'fn udata_setCommonData_[0-9]+' "${icu_sources[0]}" | sed 's/^fn //' | sort -u)"
+[[ "$icu_entry" =~ ^udata_setCommonData_[0-9]+$ ]] \
+  || { printf 'cannot read the ICU data entry point from %s\n' "${icu_sources[0]}" >&2; exit 1; }
 # A plausibility floor, not an exact pin: upstream may add bindings, but a jump
 # to near-zero means nm read the wrong file or the filter stopped matching.
 (( count >= 700 )) || { printf 'only %s exports found; refusing to write\n' "$count" >&2; exit 1; }
@@ -51,6 +60,12 @@ count="$(printf '%s\n' "$symbols" | grep -c .)"
   # archive the list above is read from.
   printf '    v8__register_host_callback\n'
   printf '    v8__host_callbacks_ready\n'
+  # The ICU data entry point the v8 crate calls itself (src/icu.rs, behind
+  # set_common_data_NN): ICU's own function, not binding.cc's, so the scan above
+  # does not see it. V8 is built with ICU's stub data (icu_use_stub_data), so
+  # every isolate needs it, and a DLL without it fails the consumer's link with
+  # one unresolved udata_setCommonData_NN.
+  printf '    %s\n' "$icu_entry"
 } > "$OUT"
 
-printf 'wrote %s (%s exports + 2 registration entry points)\n' "$OUT" "$count"
+printf 'wrote %s (%s exports + 2 registration entry points + %s)\n' "$OUT" "$count" "$icu_entry"

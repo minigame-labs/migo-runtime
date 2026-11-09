@@ -1,6 +1,6 @@
 {
   "schema": "migo-v8-component-manifest/v1",
-  "component_id": "97fc0f3ce1a45a5eb0f39687d2d4be73e5b13fbff771a0e68b11dcf616fe1dc5",
+  "component_id": "086641ee15c62aa4b5e3056291870ebc0f4fc9e75d92d9e1cecd970666da43bf",
   "target": {
     "triple": "aarch64-pc-windows-msvc",
     "os": "windows",
@@ -41,7 +41,7 @@
     "patches": []
   },
   "hashes": {
-    "archive": "1ec302112510c659cdab35626a16897451d308ead4de514c44fd8d418a2311f4",
+    "archive": "7f766f21e68b00fe099abcd882410e0d1fa0958fdf04f889fe0f92df631995d7",
     "rust_binding": "af84ba6e5d780de3cc15c60c6dcf15e204a00d367da042f1c0c01748d68f87d7"
   },
   "provenance": {

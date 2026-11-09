@@ -1,6 +1,6 @@
 {
   "schema": "migo-v8-component-manifest/v1",
-  "component_id": "df79c3df9eeee56f7891b450704188da39bdc44a8639da996b39d090cf99bbe3",
+  "component_id": "cad43d78e7815b7eb96a58c40b03a0274f425e94b5f50f639601e76a27b6b5ba",
   "target": {
     "triple": "x86_64-pc-windows-msvc",
     "os": "windows",
@@ -42,13 +42,13 @@
     "patches": []
   },
   "hashes": {
-    "archive": "26b7bc86770397ebfa7fbbdee7dd965e54374164b22c6f7074fe153c5c734717",
+    "archive": "3c7d4df86381c4d606d4535888bf6bd48fa6618ca7a4dd427a845d8ecbb0e972",
     "rust_binding": "af84ba6e5d780de3cc15c60c6dcf15e204a00d367da042f1c0c01748d68f87d7"
   },
   "provenance": {
     "source_revision": "5c15a6995c9bb4bacd3e341b59fff32c909c80bf",
     "build_recipe": "scripts/build-v8-windows.sh",
-    "build_recipe_sha256": "4bc2bc20c7c4096487791e60d243f041abd176e0576d0bc83a3d8e98e30bf001",
+    "build_recipe_sha256": "194a201385b697f9853b3ad36ee5c7e0321a467e2da0cb969cf907cefb615cf7",
     "licenses": [
       "BSD-3-Clause",
       "MIT"

@@ -857,3 +857,4 @@ EXPORTS
     v8_inspector__V8StackTrace__DELETE
     v8__register_host_callback
     v8__host_callbacks_ready
+    udata_setCommonData_77
