@@ -27,6 +27,7 @@
 //! serialized response is capped before it reaches JS.
 
 use std::cell::RefCell;
+use std::future::Future;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -144,56 +145,60 @@ fn scheduler_and_paths(
     (get_scheduler(&st), game_paths(&st))
 }
 
+// Each awaited call takes its place in the store's line when JS makes it, not when
+// its future is first polled (see `storage::run_in_line`): these are plain
+// functions that return the future, so the line sees calls in the order JS made
+// them.
+
 #[op2(async(lazy), fast)]
 #[string]
-pub async fn op_storage_get_async(
+pub fn op_storage_get_async(
     state: Rc<RefCell<OpState>>,
     #[string] key: String,
-) -> Result<String, StorageError> {
+) -> impl Future<Output = Result<String, StorageError>> {
     let (scheduler, paths) = scheduler_and_paths(&state);
-    storage::get(scheduler, paths.as_deref(), key)
-        .await
-        .map_err(storage_err)
+    let read = storage::get(scheduler, paths.as_deref(), key);
+    async move { read.await.map_err(storage_err) }
 }
 
 #[op2(async(lazy), fast)]
-pub async fn op_storage_set_async(
+pub fn op_storage_set_async(
     state: Rc<RefCell<OpState>>,
     #[string] key: String,
     #[string] value: String,
-) -> Result<(), StorageError> {
+) -> impl Future<Output = Result<(), StorageError>> {
     let (scheduler, paths) = scheduler_and_paths(&state);
-    storage::set(scheduler, paths.as_deref(), key, value)
-        .await
-        .map_err(storage_err)
+    let write = storage::set(scheduler, paths.as_deref(), key, value);
+    async move { write.await.map_err(storage_err) }
 }
 
 #[op2(async(lazy), fast)]
-pub async fn op_storage_remove_async(
+pub fn op_storage_remove_async(
     state: Rc<RefCell<OpState>>,
     #[string] key: String,
-) -> Result<(), StorageError> {
+) -> impl Future<Output = Result<(), StorageError>> {
     let (scheduler, paths) = scheduler_and_paths(&state);
-    storage::remove(scheduler, paths.as_deref(), key)
-        .await
-        .map_err(storage_err)
+    let write = storage::remove(scheduler, paths.as_deref(), key);
+    async move { write.await.map_err(storage_err) }
 }
 
 #[op2(async(lazy), fast)]
-pub async fn op_storage_clear_async(state: Rc<RefCell<OpState>>) -> Result<(), StorageError> {
+pub fn op_storage_clear_async(
+    state: Rc<RefCell<OpState>>,
+) -> impl Future<Output = Result<(), StorageError>> {
     let (scheduler, paths) = scheduler_and_paths(&state);
-    storage::clear(scheduler, paths.as_deref())
-        .await
-        .map_err(storage_err)
+    let write = storage::clear(scheduler, paths.as_deref());
+    async move { write.await.map_err(storage_err) }
 }
 
 #[op2(async(lazy), fast)]
 #[string]
-pub async fn op_storage_info_async(state: Rc<RefCell<OpState>>) -> Result<String, StorageError> {
+pub fn op_storage_info_async(
+    state: Rc<RefCell<OpState>>,
+) -> impl Future<Output = Result<String, StorageError>> {
     let (scheduler, paths) = scheduler_and_paths(&state);
-    storage::info(scheduler, paths.as_deref())
-        .await
-        .map_err(storage_err)
+    let info = storage::info(scheduler, paths.as_deref());
+    async move { info.await.map_err(storage_err) }
 }
 
 // ==================== Buffer URL Ops ====================

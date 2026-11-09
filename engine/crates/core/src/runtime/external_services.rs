@@ -1300,11 +1300,10 @@ impl ServiceContext {
             id::op_storage_get_async => {
                 let [key] = exactly(op, args)?;
                 let (scheduler, key) = (self.scheduler()?, string(op, 0, key)?);
-                Box::pin(async move {
-                    migo_services::storage::get(scheduler, paths.as_deref(), key)
-                        .await
-                        .map(OwnedValue::Str)
-                })
+                // In line behind the writes asked for before it, from here: see
+                // `storage::run_in_line`.
+                let read = migo_services::storage::get(scheduler, paths.as_deref(), key);
+                Box::pin(async move { read.await.map(OwnedValue::Str) })
             }
             id::op_storage_set_async => {
                 let [key, value] = exactly(op, args)?;
@@ -1313,9 +1312,9 @@ impl ServiceContext {
                     string(op, 0, key)?,
                     string(op, 1, value)?,
                 );
-                // The write takes its place among the store's writes here, while the
-                // calls are handled in the order they arrived, not when the spawned
-                // task is first polled: see `storage::run_mutate`.
+                // The write takes its place in the store's line here, while the calls
+                // are handled in the order they arrived, not when the spawned task is
+                // first polled: see `storage::run_in_line`.
                 let write = migo_services::storage::set(scheduler, paths.as_deref(), key, value);
                 Box::pin(async move { write.await.map(|()| OwnedValue::Null) })
             }
@@ -1334,11 +1333,8 @@ impl ServiceContext {
             id::op_storage_info_async => {
                 let [] = exactly(op, args)?;
                 let scheduler = self.scheduler()?;
-                Box::pin(async move {
-                    migo_services::storage::info(scheduler, paths.as_deref())
-                        .await
-                        .map(OwnedValue::Str)
-                })
+                let info = migo_services::storage::info(scheduler, paths.as_deref());
+                Box::pin(async move { info.await.map(OwnedValue::Str) })
             }
             file if super::service_fs::is_async(file) => {
                 return super::service_fs::call_async(self.fs_env()?, file, args);
