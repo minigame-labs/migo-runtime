@@ -1,6 +1,6 @@
 {
   "schema": "migo-v8-component-manifest/v1",
-  "component_id": "2a85cc638945c9a6476bde49823c457804db03876ce5ca7e9858d969b94ee00b",
+  "component_id": "cc342044f53973cb4b0181b752f57fd6bb6669835ed9b2980d628a030cb68ee5",
   "target": {
     "triple": "aarch64-unknown-linux-ohos",
     "os": "linux",
@@ -15,29 +15,35 @@
     }
   },
   "toolchain": {
-    "rustc": "rustc 1.89.0 (29483883e 2025-08-04) | binary: rustc | commit-hash: 29483883eed69d5fb4db01964cdf2af4d86e9cb2 | commit-date: 2025-08-04 | host: x86_64-unknown-linux-gnu | release: 1.89.0 | LLVM version: 20.1.7",
-    "compiler": "clang version 22.0.0git (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project bd1bd178f8e3770b296f9b042bef1d45bd736e51) | Target: aarch64-unknown-linux-ohos | Thread model: posix | InstalledDir: ${RUSTY_V8_SRC}/third_party/llvm-build/Release+Asserts/bin",
+    "rustc": "rustc 1.91.0 (f8297e351 2025-10-28) | binary: rustc | commit-hash: f8297e351a40c1439a467bbbb6879088047f50b3 | commit-date: 2025-10-28 | host: x86_64-unknown-linux-gnu | release: 1.91.0 | LLVM version: 21.1.2",
+    "compiler": "clang version 23.0.0git (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 20b6ec66967ac2a8f932863c1abf251e5b17a843) | Target: aarch64-unknown-linux-ohos | Thread model: posix | InstalledDir: ${RUSTY_V8_SRC}/third_party/llvm-build/Release+Asserts/bin",
     "sdk": "OpenHarmony native SDK 5.1.0.107; API 18 sysroot; oh-uni-package.json sha256=16cac01a0f3829a89353e7117e823da2a5d4f3be1e6c3250024409f39f85f987",
-    "linker": "LLD 22.0.0 (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project bd1bd178f8e3770b296f9b042bef1d45bd736e51) (compatible with GNU linkers)"
+    "linker": "LLD 23.0.0 (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 20b6ec66967ac2a8f932863c1abf251e5b17a843) (compatible with GNU linkers)"
   },
   "runtime": {
     "backend": "v8",
-    "rusty_v8_version": "145.0.0",
-    "rusty_v8_revision": "e6a88b35dd3d7f2849a0df33a71d338701c55316",
-    "v8_revision": "8defb67673c5483ae56258a2de01b07e947dc921",
+    "rusty_v8_version": "150.4.0",
+    "rusty_v8_revision": "5c15a6995c9bb4bacd3e341b59fff32c909c80bf",
+    "v8_revision": "ac1e23989121713ca642f6650b34deff7b686896",
     "normalized_gn_args": [
       "chrome_pgo_phase=0",
       "custom_toolchain=//build/toolchain/ohos:clang_arm64",
       "exclude_unwind_tables=true",
       "host_toolchain=//build/toolchain/linux:clang_x64",
+      "icu_copy_icudata_to_root_build_dir=true",
+      "icu_use_data_file=true",
+      "icu_use_stub_data=true",
       "is_cfi=false",
       "ohos_clang_wrapper_dir=${OHOS_NDK_HOME}/.migo-v8-wrappers",
       "ohos_sdk_native=${OHOS_NDK_HOME}/native",
+      "rusty_v8_enable_simdutf=true",
       "treat_warnings_as_errors=false",
       "use_allocator_shim=false",
       "use_glib=false",
       "use_partition_alloc_as_malloc=false",
       "use_thin_lto=false",
+      "v8_depend_on_icu_data_file=true",
+      "v8_enable_pointer_compression=false",
       "v8_enable_sandbox=false",
       "v8_monolithic=true",
       "v8_monolithic_for_shared_library=true",
@@ -62,19 +68,23 @@
         "sha256": "db22ae84cd9d44e85189dffe68e37316ebda107c6e0ff6771bc482cd3de16549"
       },
       {
+        "id": "bindgen-clang22-lock",
+        "sha256": "c886d224043ffd4c033dbee9269c2cc9134974d1070636f9f075aac8a5eb0bea"
+      },
+      {
         "id": "migo-prebuilt-binding",
         "sha256": "db9f843bb8a3d9b9c86c5ae87272a33efacd32a238a00f576d052a82a54b3389"
       }
     ]
   },
   "hashes": {
-    "archive": "7b6f9d052b8742856f89fd7213c402b610c60ea130369ab50ddac5b6cb903361",
-    "rust_binding": "47369bfb3ee9a7e6e0f451ae20242595d5a7f0b3afcc0b9447e4f99ff174686a"
+    "archive": "c143237d7f4a83d07585b1924b454b888d4895b539f62c4a8ed78d7009ba3dd8",
+    "rust_binding": "4077e0b8c79fb932c2cc6223602cb69af562a9b2a9cd6c49e241032ff606ff8c"
   },
   "provenance": {
-    "source_revision": "e6a88b35dd3d7f2849a0df33a71d338701c55316",
+    "source_revision": "5c15a6995c9bb4bacd3e341b59fff32c909c80bf",
     "build_recipe": "scripts/build-v8-ohos.sh",
-    "build_recipe_sha256": "0a4e019a30ace3dfb8eb9cdf2937970e0de8ed3bc10887177052264ab09dccb9",
+    "build_recipe_sha256": "3ff1309b04063258317cf643436fec8ce86bd41d8e6e0d7aa4234ea13834c9eb",
     "licenses": [
       "BSD-3-Clause",
       "MIT"
