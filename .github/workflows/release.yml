@@ -1165,7 +1165,7 @@ jobs:
         run: bash scripts/fetch-v8-archives.sh
 
       - name: Setup Java
-        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           distribution: temurin
           java-version: "17"
@@ -1448,7 +1448,7 @@ jobs:
           python-version: "3.11"
 
       - name: Setup Java for the external host application
-        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           distribution: temurin
           java-version: "17"
@@ -2184,7 +2184,7 @@ jobs:
       # report is a workflow artifact, power metrics are internal), leaving a single
       # pattern that must match.
       - name: Publish GitHub Release assets
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
         with:
           files: dist/release/*
           fail_on_unmatched_files: true
