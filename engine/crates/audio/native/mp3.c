@@ -1,11 +1,13 @@
-/* Upstream minimp3 + minimp3_ex (engine/third_party/minimp3-afb604c, unmodified),
- * compiled here so the MP3 source (streams and whole files alike) can use
- * mp3dec_ex's pull reader: callback IO, LAME/Xing gapless trimming and
- * sample-exact seeking.
+/* Upstream minimp3 + minimp3_ex (engine/third_party/minimp3-afb604c, unmodified).
+ *
+ * The product MP3 source (src/mp3_source.rs) drives the frame decoder itself
+ * through the migo_mp3_frame_* calls and minimp3_ex's own static helpers at
+ * the end of this file, so it starts and seeks without minimp3_ex's whole
+ * input buffer or whole-stream index. The mp3dec_ex calls (migo_mp3_open...)
+ * remain as that source's test oracle (src/mp3_ex_oracle.rs).
  *
  * Every public minimp3 symbol is renamed so this copy can share an image with
- * any other minimp3 a dependency links. Rust sees only the migo_mp3_* calls
- * below; mp3dec_ex_t stays opaque to it. */
+ * any other minimp3 a dependency links. */
 #define MINIMP3_NO_STDIO
 #define MINIMP3_IMPLEMENTATION
 #define mp3dec_init migo_minimp3_init
@@ -81,4 +83,94 @@ size_t migo_mp3_read(void *dec, int16_t *buffer, size_t samples)
 int migo_mp3_last_error(const void *dec)
 {
     return ((const mp3dec_ex_t *)dec)->last_error;
+}
+
+/* ---- The frame decoder and minimp3_ex's own static helpers, for the pull
+ * source in mp3_source.rs: it keeps the input window, the frame index and
+ * the trimming itself, and calls exactly what mp3dec_ex calls for each step,
+ * so its PCM and seek positions are mp3dec_ex's. */
+
+void *migo_mp3_frame_new(void)
+{
+    mp3dec_t *dec = (mp3dec_t *)calloc(1, sizeof(mp3dec_t));
+    if (dec)
+        mp3dec_init(dec);
+    return dec;
+}
+
+void migo_mp3_frame_free(void *dec)
+{
+    free(dec);
+}
+
+void migo_mp3_frame_reset(void *dec)
+{
+    mp3dec_init((mp3dec_t *)dec);
+}
+
+/* Decode (or, with a NULL `pcm`, only locate) the next frame in `buf`. */
+int migo_mp3_frame_decode(void *dec, const uint8_t *buf, int len, int16_t *pcm, mp3dec_frame_info_t *info)
+{
+    return mp3dec_decode_frame((mp3dec_t *)dec, buf, len, pcm, info);
+}
+
+/* The next frame as mp3dec_iterate_cb finds it: its offset in `buf`, and
+ * its size (0 when none is complete in `len` bytes). */
+int migo_mp3_find_frame(const uint8_t *buf, int len, int *frame_size)
+{
+    int free_format_bytes = 0;
+    *frame_size = 0;
+    return mp3d_find_frame(buf, len, &free_format_bytes, frame_size);
+}
+
+int migo_mp3_frame_samples(const uint8_t *hdr)
+{
+    return (int)hdr_frame_samples(hdr);
+}
+
+int migo_mp3_frame_layer(const uint8_t *hdr)
+{
+    return 4 - HDR_GET_LAYER(hdr);
+}
+
+int migo_mp3_frame_channels(const uint8_t *hdr)
+{
+    return HDR_IS_MONO(hdr) ? 1 : 2;
+}
+
+int migo_mp3_frame_hz(const uint8_t *hdr)
+{
+    return (int)hdr_sample_rate_hz(hdr);
+}
+
+/* mp3dec_check_vbrtag: 1 with frames/delay/padding for a Xing/Info (LAME)
+ * frame, -1 for a tag without a frame count, 0 for an audio frame. */
+int migo_mp3_vbr_tag(const uint8_t *frame, int size, uint32_t *frames, int *delay, int *padding)
+{
+    return mp3dec_check_vbrtag(frame, size, frames, delay, padding);
+}
+
+size_t migo_mp3_id3v2_size(const uint8_t *buf, size_t len)
+{
+    return mp3dec_skip_id3v2(buf, len);
+}
+
+/* Drop a trailing ID3v1 / APE tag from the last `*len` bytes of a stream. */
+void migo_mp3_trim_id3v1(const uint8_t *buf, size_t *len)
+{
+    mp3dec_skip_id3v1(buf, len);
+}
+
+/* Main-data bytes a Layer III frame holds after its side info (what a seek
+ * counts toward the bit reservoir), or -1 when the side info is corrupt. */
+int migo_mp3_main_data_bytes(const uint8_t *frame, int size)
+{
+    bs_t bs[1];
+    L3_gr_info_t gr_info[4];
+    bs_init(bs, frame + HDR_SIZE, size - HDR_SIZE);
+    if (HDR_IS_CRC(frame))
+        get_bits(bs, 16);
+    if (L3_read_side_info(bs, gr_info, frame) < 0)
+        return -1;
+    return (bs->limit - bs->pos) / 8;
 }
