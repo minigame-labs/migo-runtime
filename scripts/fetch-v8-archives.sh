@@ -21,14 +21,10 @@
 # cannot be checked would make this a plain transport wearing a verification
 # comment.
 #
-# `aarch64-linux-ohos` was absent for that same reason and no longer is: it was
-# built and sealed on 2026-08-10 (component_id 2a85cc63…), so it now has
-# something to be verified against and is listed. Note what it means for the two
-# modes, which differ here: `--check` verifies the local archive against its
-# committed manifest and passes, while a *download* of this target has nowhere to
-# come from until the archive is published as a release asset. That is a true
-# report of the state rather than a gap -- the fetch fails naming the missing
-# asset instead of the target being silently unknown.
+# A target whose manifest is committed but whose archive is not yet a release
+# asset is still listed: `--check` verifies a local archive against the manifest,
+# and a download fails naming the missing asset instead of the target being
+# silently unknown. That is a true report of the state rather than a gap.
 #
 # `x86_64-pc-windows-msvc` is the same shape with one difference: the build
 # yields a DLL plus its import library, not a single .a, so it is not
