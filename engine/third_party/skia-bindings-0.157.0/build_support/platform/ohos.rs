@@ -84,7 +84,11 @@ pub fn additional_clang_args(target: &str, target_arch: &str) -> Vec<String> {
 }
 
 pub fn extra_skia_cflags() -> Vec<String> {
-    vec!["-D__MUSL__".to_string()]
+    // The OpenHarmony SDK's clang/libc++ 15 keeps its finished ranges algorithms
+    // behind -fexperimental-library, and Skia's C++20 sources call them
+    // (SkSVGDevice.cpp: std::ranges::find). The flag only exposes header
+    // templates, and C sources accept it without a warning.
+    vec!["-D__MUSL__".to_string(), "-fexperimental-library".to_string()]
 }
 
 pub fn link_libraries(features: &Features) -> Vec<&str> {
