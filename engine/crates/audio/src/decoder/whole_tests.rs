@@ -217,8 +217,23 @@ fn every_format_decodes_to_its_frozen_independent_reference() {
     ] {
         let audio = crate::decoder::decode(encoded).unwrap();
         assert_eq!(audio.samples.len(), frozen.len(), "{name}: length");
+        // The references were decoded on x86_64, where they are bit exact.
+        // minimp3's NEON synthesis orders its float sums differently from the
+        // SSE one, so on aarch64 a few samples in ten thousand round to the
+        // neighbouring 16-bit value (measured on a device: 219 of 960274 for
+        // `music`, all one step). Bit-exactness against minimp3 itself on the
+        // running architecture is the oracle tests' job (mp3_source_tests).
+        let step = if cfg!(target_arch = "x86_64") {
+            0.0
+        } else {
+            1.0 / 32768.0
+        };
         assert!(
-            audio.samples == frozen,
+            audio
+                .samples
+                .iter()
+                .zip(&frozen)
+                .all(|(a, b)| (a - b).abs() <= step),
             "{name}: PCM differs from the original decoder"
         );
     }

@@ -7,8 +7,6 @@
 //! and cpal has no OHAudio support, not because anything about the buffering differs.
 
 use shared::channel::{AudioNotifier, ThreadWakeup};
-#[cfg(test)]
-use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
