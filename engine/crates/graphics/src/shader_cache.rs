@@ -10,8 +10,11 @@
 use glow::HasContext;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::time::{Duration, SystemTime};
 use tracing::{debug, trace};
 
 /// A normalized snapshot of every input that affects a program link.
@@ -83,6 +86,8 @@ impl ShaderCache {
                 debug!("Shader cache: driver or validation mode changed, clearing cache");
                 clear_dir(&cache_dir);
                 std::fs::write(&key_path, &driver_key).ok();
+            } else {
+                remove_abandoned_temp_files(&cache_dir, SystemTime::now());
             }
         }
 
@@ -202,11 +207,8 @@ fn spawn_persist_worker(cache_dir: PathBuf) -> SyncSender<PersistJob> {
 
 fn persist_loop(rx: Receiver<PersistJob>, cache_dir: PathBuf) {
     while let Ok((path, data)) = rx.recv() {
-        let tmp = path.with_extension("tmp");
-        let result = std::fs::write(&tmp, &data).and_then(|()| std::fs::rename(&tmp, &path));
-        if let Err(error) = result {
+        if let Err(error) = persist(&path, &data) {
             debug!("Shader cache write failed: {error}");
-            let _ = std::fs::remove_file(&tmp);
         } else {
             trace!(
                 "Shader cache saved: {} ({} bytes)",
@@ -214,6 +216,64 @@ fn persist_loop(rx: Receiver<PersistJob>, cache_dir: PathBuf) {
                 data.len()
             );
             enforce_cache_limits(&cache_dir, MAX_ENTRIES, MAX_CACHE_BYTES);
+        }
+    }
+}
+
+/// Publish `data` as `path`, whole or not at all.
+///
+/// Every engine in a process has its own cache and worker over the same
+/// directory, so two of them can save one program at once: each write gets its
+/// own temporary file, created exclusively, and only a complete one is renamed
+/// into place. The bytes are synced before the rename, so a power loss leaves the
+/// whole binary or no entry -- never a truncated one, which the next launch would
+/// hand to a driver that may not check it.
+fn persist(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    let tmp = temp_path_for(path);
+    let result = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .and_then(|mut file| {
+            file.write_all(data)?;
+            file.sync_all()
+        })
+        .and_then(|()| std::fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// A temporary name for one write of `path`, unique to this process and this
+/// write. Its extension is `tmp`, so neither `load` nor the entry limits see it.
+fn temp_path_for(path: &Path) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    path.with_extension(format!("{}.{id}.tmp", std::process::id()))
+}
+
+/// How old a temporary file must be before it counts as abandoned: a write and its
+/// rename take milliseconds, so this never removes one another engine is writing.
+const ABANDONED_TEMP_AGE: Duration = Duration::from_secs(60);
+
+/// Remove the temporary files of writes a crash interrupted. Their names are
+/// unique per write, so nothing else would ever replace or remove them.
+fn remove_abandoned_temp_files(dir: &Path, now: SystemTime) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("tmp") {
+            continue;
+        }
+        let abandoned = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|modified| {
+                now.duration_since(modified)
+                    .is_ok_and(|age| age >= ABANDONED_TEMP_AGE)
+            });
+        if abandoned {
+            std::fs::remove_file(path).ok();
         }
     }
 }
@@ -688,18 +748,83 @@ mod tests {
     }
 
     #[test]
-    fn persistence_uses_atomic_temp_rename() {
+    fn a_persisted_entry_holds_the_whole_payload_and_leaves_no_temporary_file() {
+        let dir = make_test_dir("persist");
+        let path = dir.join("0123456789abcdef.bin");
+        persist(&path, b"first").unwrap();
+        persist(&path, b"second, longer").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second, longer");
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            names,
+            ["0123456789abcdef.bin"],
+            "a temporary file outlived its write"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_writes_of_one_entry_never_share_a_temporary_file() {
+        let path = Path::new("/cache/0123456789abcdef.bin");
+        let (a, b) = (temp_path_for(path), temp_path_for(path));
+        assert_ne!(
+            a, b,
+            "concurrent saves of one program would interleave bytes"
+        );
+        for tmp in [&a, &b] {
+            assert_eq!(
+                tmp.parent(),
+                path.parent(),
+                "a rename must not cross directories"
+            );
+            assert_eq!(tmp.extension().and_then(|e| e.to_str()), Some("tmp"));
+        }
+    }
+
+    #[test]
+    fn persistence_syncs_the_bytes_before_publishing_the_name() {
+        // A power loss after an unsynced rename can publish a truncated binary.
         const SOURCE: &str = include_str!("shader_cache.rs");
-        let start = SOURCE
-            .find("fn persist_loop")
-            .expect("persistence worker exists");
-        let end = SOURCE[start..]
-            .find("fn enforce_cache_limits")
-            .map(|offset| start + offset)
-            .expect("cache limits follow persistence worker");
-        let worker = &SOURCE[start..end];
-        assert!(worker.contains("with_extension(\"tmp\")"));
-        assert!(worker.contains("std::fs::rename"));
+        let start = SOURCE.find("fn persist(").expect("persistence exists");
+        let body = &SOURCE[start..start + SOURCE[start..].find("\n}\n").unwrap()];
+        let sync = body.find("sync_all").expect("the payload is synced");
+        let rename = body
+            .find("std::fs::rename")
+            .expect("the payload is renamed");
+        assert!(
+            sync < rename,
+            "the name is published before the bytes are durable"
+        );
+    }
+
+    #[test]
+    fn startup_removes_abandoned_temporary_files_and_spares_ones_being_written() {
+        let dir = make_test_dir("abandoned");
+        let old = dir.join("aaaaaaaaaaaaaaaa.1.0.tmp");
+        let fresh = dir.join("bbbbbbbbbbbbbbbb.1.1.tmp");
+        let entry = dir.join("cccccccccccccccc.bin");
+        for path in [&old, &fresh, &entry] {
+            std::fs::write(path, b"x").unwrap();
+        }
+        let written = std::fs::metadata(&old).unwrap().modified().unwrap();
+        remove_abandoned_temp_files(&dir, written + ABANDONED_TEMP_AGE / 2);
+        assert!(
+            old.exists() && fresh.exists(),
+            "a write in progress was removed"
+        );
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(written - ABANDONED_TEMP_AGE)
+            .unwrap();
+        remove_abandoned_temp_files(&dir, written + ABANDONED_TEMP_AGE / 2);
+        assert!(!old.exists(), "a crash leftover survived startup");
+        assert!(fresh.exists() && entry.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
