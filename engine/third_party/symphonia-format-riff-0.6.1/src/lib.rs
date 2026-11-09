@@ -25,6 +25,3 @@ mod wave;
 pub use aiff::AiffReader;
 #[cfg(feature = "wav")]
 pub use wave::WavReader;
-
-#[cfg(feature = "streaming")]
-pub use wave::streaming;

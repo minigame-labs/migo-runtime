@@ -216,10 +216,90 @@ impl LogicalStream {
                 .expect("prev_page_info unconditionally assigned above");
             prev_page.end_ts = Some(page_end_ts);
 
-            let is_single_page_stream = page.header.is_last_page && (is_init_page || self.is_single_page_stream());
-            stamp_page_packets(self.packets.iter_mut().skip(num_prev_packets),
-                prev_page_info.and_then(|prev| prev.end_ts), page_end_ts, is_single_page_stream,
-                total_pkt_dur, total_pkt_discard)?;
+            // Compute the page's start timestamp.
+            let page_start_ts = if let Some(ts) = prev_page_info.and_then(|prev| prev.end_ts) {
+                // The previous page is known and it has a valid end timestamp. Use it as this
+                // page's start timestamp.
+                ts
+            }
+            else {
+                let is_single_page_stream =
+                    page.header.is_last_page && (is_init_page || self.is_single_page_stream());
+
+                // The lower-bound for the page's start timestamp.
+                let page_start_ts_raw = page_end_ts.saturating_sub(total_pkt_dur);
+
+                if is_single_page_stream {
+                    // In a single-page stream that begins at t = 0, the page end timestamp is the
+                    // exact length of valid (no delay or padding) frames. Therefore, the page start
+                    // timestamp is known to be equal to -delay frames. All additional frames are
+                    // padding.
+                    //
+                    // If the stream does not start at t = 0, then it is not possible to determine
+                    // whether frames should be discarded from the start or the end of the stream.
+                    // Therefore, we assume t = 0 for the remainder.
+                    let total_dur_no_padding =
+                        match total_pkt_discard.checked_add((page_end_ts.get() as u64).into()) {
+                            Some(v) => v,
+                            None => return decode_error("ogg: duration overflow"),
+                        };
+
+                    if total_pkt_dur >= total_dur_no_padding {
+                        // The total packet duration is >= delay + valid (assuming t = 0) frames,
+                        // the extra frames must be padding.
+                        //
+                        // If the assumption the stream begins at t = 0 is false, then the following
+                        // misbehaviour will occur:
+                        //
+                        // If the encoder set t < 0 to discard additional frames at the start of the
+                        // stream, then the additional frames will be discard from the end, not the
+                        // beginning.
+                        //
+                        // If the encoder set t > 0 to indicate the media begins later, then no
+                        // padding frames will get discarded.
+                        Timestamp::from(-(total_pkt_discard.get() as i64))
+                    }
+                    else {
+                        // Stream starts at t > 0.
+                        page_start_ts_raw
+                    }
+                }
+                else {
+                    // In a multi-page stream, all pages other than the last have no padding.
+                    // Therefore, the naive calculation is always valid because the total packet
+                    // duration would only include valid or discarded frames.
+                    //
+                    // For the last page, this calculation fails because the total packet duration
+                    // includes the padding and it is not possible to know how many frames are
+                    // valid. If the end bound is known, the correct page start timestamp can be
+                    // found.
+                    page_start_ts_raw
+                }
+            };
+
+            let mut next_pkt_pts = page_start_ts;
+
+            for packet in self.packets.iter_mut().skip(num_prev_packets) {
+                packet.pts = next_pkt_pts;
+
+                // The packet's duration is populated with the packet's decoded duration (includes
+                // delay and padding). Calculate the next packet's PTS. This is also the end PTS of
+                // the current packet.
+                next_pkt_pts = next_pkt_pts.saturating_add(packet.dur);
+
+                // Remove the start trim from the packet's duration. The start trim was populated
+                // earlier.
+                packet.dur = packet.dur.saturating_sub(packet.trim_start);
+
+                // If the end of the current packet exceeds the page end, trim the end. Don't trim
+                // more frames than available.
+                if next_pkt_pts > page_end_ts {
+                    packet.trim_end = page_end_ts.abs_delta(next_pkt_pts).min(packet.dur);
+                }
+
+                // Remove the end trim from the packet's duration.
+                packet.dur = packet.dur.saturating_sub(packet.trim_end);
+            }
         }
 
         Ok(side_data)
@@ -537,93 +617,4 @@ impl LogicalStream {
 
         Ok(())
     }
-}
-
-/// Apply the existing granule/priming/padding policy to packet metadata.
-/// Payload ownership does not change the audio timeline.
-pub(crate) fn stamp_page_packets<'a>(packets: impl IntoIterator<Item = &'a mut Packet>,
-    prev_end_ts: Option<Timestamp>, page_end_ts: Timestamp, is_single_page_stream: bool,
-    total_pkt_dur: Duration, total_pkt_discard: Duration) -> Result<()> {
-    // Compute the page's start timestamp.
-    let page_start_ts = if let Some(ts) = prev_end_ts {
-        // The previous page is known and it has a valid end timestamp. Use it as this
-        // page's start timestamp.
-        ts
-    }
-    else {
-        // The lower-bound for the page's start timestamp.
-        let page_start_ts_raw = page_end_ts.saturating_sub(total_pkt_dur);
-
-        if is_single_page_stream {
-            // In a single-page stream that begins at t = 0, the page end timestamp is the
-            // exact length of valid (no delay or padding) frames. Therefore, the page start
-            // timestamp is known to be equal to -delay frames. All additional frames are
-            // padding.
-            //
-            // If the stream does not start at t = 0, then it is not possible to determine
-            // whether frames should be discarded from the start or the end of the stream.
-            // Therefore, we assume t = 0 for the remainder.
-            let total_dur_no_padding =
-                match total_pkt_discard.checked_add((page_end_ts.get() as u64).into()) {
-                    Some(v) => v,
-                    None => return decode_error("ogg: duration overflow"),
-                };
-
-            if total_pkt_dur >= total_dur_no_padding {
-                // The total packet duration is >= delay + valid (assuming t = 0) frames,
-                // the extra frames must be padding.
-                //
-                // If the assumption the stream begins at t = 0 is false, then the following
-                // misbehaviour will occur:
-                //
-                // If the encoder set t < 0 to discard additional frames at the start of the
-                // stream, then the additional frames will be discard from the end, not the
-                // beginning.
-                //
-                // If the encoder set t > 0 to indicate the media begins later, then no
-                // padding frames will get discarded.
-                Timestamp::from(-(total_pkt_discard.get() as i64))
-            }
-            else {
-                // Stream starts at t > 0.
-                page_start_ts_raw
-            }
-        }
-        else {
-            // In a multi-page stream, all pages other than the last have no padding.
-            // Therefore, the naive calculation is always valid because the total packet
-            // duration would only include valid or discarded frames.
-            //
-            // For the last page, this calculation fails because the total packet duration
-            // includes the padding and it is not possible to know how many frames are
-            // valid. If the end bound is known, the correct page start timestamp can be
-            // found.
-            page_start_ts_raw
-        }
-    };
-
-    let mut next_pkt_pts = page_start_ts;
-
-    for packet in packets {
-        packet.pts = next_pkt_pts;
-
-        // The packet's duration is populated with the packet's decoded duration (includes
-        // delay and padding). Calculate the next packet's PTS. This is also the end PTS of
-        // the current packet.
-        next_pkt_pts = next_pkt_pts.saturating_add(packet.dur);
-
-        // Remove the start trim from the packet's duration. The start trim was populated
-        // earlier.
-        packet.dur = packet.dur.saturating_sub(packet.trim_start);
-
-        // If the end of the current packet exceeds the page end, trim the end. Don't trim
-        // more frames than available.
-        if next_pkt_pts > page_end_ts {
-            packet.trim_end = page_end_ts.abs_delta(next_pkt_pts).min(packet.dur);
-        }
-
-        // Remove the end trim from the packet's duration.
-        packet.dur = packet.dur.saturating_sub(packet.trim_end);
-    }
-    Ok(())
 }

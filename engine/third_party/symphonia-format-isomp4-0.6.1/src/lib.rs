@@ -124,6 +124,3 @@ mod streaming_index_boundary_contracts {
         assert!(table.find_timing_for_sample(u32::MAX).is_none());
     }
 }
-
-#[cfg(feature="streaming")]
-pub mod streaming;

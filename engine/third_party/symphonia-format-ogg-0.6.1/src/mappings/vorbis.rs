@@ -108,10 +108,6 @@ impl PacketParser for VorbisPacketParser {
 }
 
 pub fn detect(serial: u32, buf: &[u8]) -> Result<Option<Box<dyn Mapper>>> {
-    Ok(detect_typed(serial, buf)?.map(|mapper| Box::new(mapper) as Box<dyn Mapper>))
-}
-
-pub(crate) fn detect_typed(serial: u32, buf: &[u8]) -> Result<Option<VorbisMapper>> {
     // The identification header packet must be the correct size.
     if buf.len() != VORBIS_IDENTIFICATION_HEADER_SIZE {
         return Ok(None);
@@ -140,21 +136,19 @@ pub(crate) fn detect_typed(serial: u32, buf: &[u8]) -> Result<Option<VorbisMappe
 
     track.with_codec_params(CodecParameters::Audio(codec_params));
 
-    track.with_time_base(symphonia_core::units::TimeBase::from_recip(std::num::NonZero::new(ident.sample_rate).expect("ident sample rate is nonzero")));
-
     // Instantiate the Vorbis mapper.
-    let mapper = VorbisMapper {
+    let mapper = Box::new(VorbisMapper {
         metadata_options: Default::default(),
         track,
         ident,
         parser: None,
         has_setup_header: false,
-    };
+    });
 
     Ok(Some(mapper))
 }
 
-pub(crate) struct VorbisMapper {
+struct VorbisMapper {
     metadata_options: symphonia_core::meta::MetadataOptions,
     track: Track,
     ident: IdentHeader,
@@ -163,12 +157,6 @@ pub(crate) struct VorbisMapper {
 }
 
 impl Mapper for VorbisMapper {
-    #[cfg(feature = "streaming")]
-    fn is_discardable_prefix(&self, packet: &[u8]) -> bool {
-        self.metadata_options.is_disabled() && packet.len() >= 7
-            && packet[0] == VORBIS_PACKET_TYPE_COMMENT && &packet[1..7] == VORBIS_HEADER_PACKET_SIGNATURE
-    }
-
     fn set_metadata_options(&mut self, options: symphonia_core::meta::MetadataOptions) {
         self.metadata_options = options;
     }
@@ -271,8 +259,6 @@ impl Mapper for VorbisMapper {
                         .expect("codec params always available if mapper is instantiated")
                         .audio_mut()
                         .expect("codec params are always audio if mapper is instantiated");
-
-                    audio_codec_params.with_max_frames_per_packet((1_u64 << self.ident.bs0_exp.max(self.ident.bs1_exp)) >> 1);
 
                     // Take the extra to extend it with the additional setup header.
                     let mut extra_data = audio_codec_params

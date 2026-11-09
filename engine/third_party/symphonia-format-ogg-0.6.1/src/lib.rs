@@ -22,6 +22,3 @@ mod page;
 mod physical;
 
 pub use demuxer::OggReader;
-
-#[cfg(feature = "streaming")]
-pub mod streaming;

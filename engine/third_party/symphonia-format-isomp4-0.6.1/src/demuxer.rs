@@ -144,17 +144,7 @@ impl TrackState {
         Ok((state, track))
     }
 
-    #[cfg(feature = "streaming")]
-    pub(crate) fn reset(&mut self) {
-        self.cur_seg = 0;
-        self.next_sample = 0;
-        self.next_sample_pos = 0;
-        self.timing_cursor = TimingCursor::default();
-        self.timing_cursor_segment = 0;
-    }
 
-    #[cfg(feature = "streaming")]
-    pub(crate) fn sample_number(&self) -> u32 { self.next_sample }
 
     /// Presentation units and AAC preroll are shared by pull and index seeks.
     pub(crate) fn seek_media_ts(&self, ts: Timestamp) -> Result<Timestamp> {

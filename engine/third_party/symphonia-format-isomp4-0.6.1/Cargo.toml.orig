@@ -21,6 +21,3 @@ symphonia-metadata = { version = "0.6.1", path = "../symphonia-metadata", defaul
 
 [lints]
 workspace = true
-
-[features]
-streaming=[]

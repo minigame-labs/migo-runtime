@@ -64,6 +64,3 @@ unwrap_used = "warn"
 level = "warn"
 priority = 0
 check-cfg = ["cfg(fuzzing)"]
-
-[features]
-streaming=[]

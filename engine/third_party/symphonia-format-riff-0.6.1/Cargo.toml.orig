@@ -14,7 +14,6 @@ rust-version.workspace = true
 version.workspace = true
 
 [features]
-streaming = ["wav"]
 default = ["aiff", "wav"]
 aiff = ["symphonia-metadata/riff-id3"]
 wav = ["symphonia-metadata/riff-info"]

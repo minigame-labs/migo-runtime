@@ -1,0 +1,506 @@
+--- symphonia-format-isomp4-0.6.1/src/atoms/stts.rs
++++ symphonia-format-isomp4-0.6.1/src/atoms/stts.rs
+@@ -22,31 +22,47 @@
+     pub total_duration: u64,
+ }
+ 
++/// Reusable state for sequential timing lookups. No per-packet allocation.
++#[derive(Default)]
++pub(crate) struct TimingCursor {
++    row: usize,
++    first_sample: u32,
++    first_ts: u64,
++    #[cfg(test)]
++    visited: usize,
++}
++
+ impl SttsAtom {
+     /// Get the timestamp and duration for the sample indicated by `sample_num`. Note, `sample_num`
+     /// is indexed relative to the `SttsAtom`. Complexity of this function in O(N).
+     pub fn find_timing_for_sample(&self, sample_num: u32) -> Option<(u64, u32)> {
+-        let mut ts = 0;
+-        let mut next_entry_first_sample: u32 = 0;
+-
+-        // The Stts atom compactly encodes a mapping between number of samples and sample duration.
+-        // Iterate through each entry until the entry containing the next sample is found. The next
+-        // packet timestamp is then the sum of the product of sample count and sample duration for
+-        // the n-1 iterated entries, plus the product of the number of consumed samples in the n-th
+-        // iterated entry and sample duration.
+-        for entry in &self.entries {
+-            next_entry_first_sample = next_entry_first_sample.checked_add(entry.sample_count)?;
+-
+-            if sample_num < next_entry_first_sample {
+-                let entry_sample_offset = sample_num - (next_entry_first_sample - entry.sample_count);
+-                ts += u64::from(entry.sample_delta) * u64::from(entry_sample_offset);
++        self.find_timing_for_sample_cached(sample_num, &mut TimingCursor::default())
++    }
+ 
++    /// Sequential queries retain a cursor instead of rescanning old entries.
++    /// Backward queries reset the cursor; this remains correct for seek/rewind.
++    pub(crate) fn find_timing_for_sample_cached(
++        &self, sample_num: u32, cursor: &mut TimingCursor,
++    ) -> Option<(u64, u32)> {
++        if sample_num < cursor.first_sample {
++            cursor.row = 0;
++            cursor.first_sample = 0;
++            cursor.first_ts = 0;
++        }
++        while let Some(entry) = self.entries.get(cursor.row) {
++            #[cfg(test)] { cursor.visited += 1; }
++            let end = cursor.first_sample.checked_add(entry.sample_count)?;
++            if sample_num < end {
++                let offset = u64::from(sample_num - cursor.first_sample);
++                let ts = cursor.first_ts.checked_add(u64::from(entry.sample_delta) * offset)?;
+                 return Some((ts, entry.sample_delta));
+             }
+-
+-            ts += u64::from(entry.sample_count) * u64::from(entry.sample_delta);
++            cursor.first_sample = end;
++            cursor.first_ts = cursor.first_ts.checked_add(
++                u64::from(entry.sample_count) * u64::from(entry.sample_delta)
++            )?;
++            cursor.row += 1;
+         }
+-
+         None
+     }
+ 
+@@ -107,3 +123,34 @@
+         Ok(SttsAtom { entries, total_duration })
+     }
+ }
++
++#[cfg(test)]
++mod cursor_contracts {
++    use super::*;
++
++    #[test]
++    fn sequential_timing_visits_entries_linearly_and_seeks_stay_correct() {
++        let rows = 4096_u32;
++        let table = SttsAtom {
++            entries: (0..rows).map(|n| SampleDurationEntry {
++                sample_count: 2, sample_delta: 1024 + (n % 2),
++            }).collect(),
++            total_duration: 0,
++        };
++        let mut cursor = TimingCursor::default();
++        let mut expected_ts = 0_u64;
++        for sample in 0..rows*2 {
++            let delta = 1024 + ((sample / 2) % 2);
++            assert_eq!(table.find_timing_for_sample_cached(sample, &mut cursor), Some((expected_ts, delta)));
++            expected_ts += u64::from(delta);
++        }
++        assert!(table.find_timing_for_sample_cached(rows*2, &mut cursor).is_none());
++        assert!(cursor.visited <= rows as usize * 3, "timing lookup rescanned old entries");
++        for sample in [0, rows*2-1, 17, 17, 16, rows, 1] {
++            let pairs = u64::from(sample / 4);
++            let mut ts = pairs * (2*1024 + 2*1025);
++            for n in (sample/4)*4..sample { ts += u64::from(1024 + ((n/2)%2)); }
++            assert_eq!(table.find_timing_for_sample_cached(sample, &mut cursor), Some((ts, 1024 + ((sample/2)%2))));
++        }
++    }
++}
+--- symphonia-format-isomp4-0.6.1/src/demuxer.rs
++++ symphonia-format-isomp4-0.6.1/src/demuxer.rs
+@@ -26,6 +26,7 @@
+ use crate::atoms::{AtomError, AtomIterator, AtomType, ReadAtom};
+ use crate::atoms::{FtypAtom, MetaAtom, MoofAtom, MoovAtom, SidxAtom, TrakAtom};
+ use crate::audio_timeline::AudioTimeline;
++use crate::atoms::stts::TimingCursor;
+ use crate::stream::*;
+ use symphonia_common::mpeg::audio::{AudioObjectType, AudioSpecificConfig};
+ use symphonia_core::codecs::audio::well_known::CODEC_ID_AAC;
+@@ -50,6 +51,8 @@
+     /// The current sample byte position relative to the start of the track.
+     next_sample_pos: u64,
+     audio_timeline: Option<AudioTimeline>,
++    timing_cursor: TimingCursor,
++    timing_cursor_segment: usize,
+ }
+ 
+ impl TrackState {
+@@ -134,38 +137,136 @@
+             next_sample: 0,
+             next_sample_pos: 0,
+             audio_timeline,
++            timing_cursor: TimingCursor::default(),
++            timing_cursor_segment: 0,
+         };
+ 
+         Ok((state, track))
+     }
++
++
++
++    /// Presentation units and AAC preroll are shared by pull and index seeks.
++    pub(crate) fn seek_media_ts(&self, ts: Timestamp) -> Result<Timestamp> {
++        if ts.is_negative() {
++            return seek_error(SeekErrorKind::OutOfRange);
++        }
++        match &self.audio_timeline {
++            Some(timeline) => timeline.seek_media_ts(ts),
++            None => Ok(ts),
++        }
++    }
++
++    /// Resolve all fallible timing/extent work before publishing a new cursor.
++    pub(crate) fn seek_sample<S: StreamSegment + ?Sized>(
++        &mut self,
++        seg: &S,
++        seg_idx: usize,
++        sample_num: u32,
++        required_ts: Timestamp,
++        object_len: Option<u64>,
++    ) -> Result<SeekedTo> {
++        let timing = seg.sample_timing(self.track_num, sample_num)?
++            .ok_or(Error::SeekError(SeekErrorKind::OutOfRange))?;
++        let actual_ts = match &self.audio_timeline {
++            Some(timeline) => timeline.presentation_ts(timing.ts)?,
++            None => Timestamp::try_from(timing.ts)
++                .map_err(|_| Error::SeekError(SeekErrorKind::OutOfRange))?,
++        };
++        let desc = seg.sample_data(self.track_num, sample_num, true)?;
++        let offset = desc.offset.ok_or(Error::SeekError(SeekErrorKind::OutOfRange))?;
++        let position = desc.base_pos.checked_add(offset)
++            .ok_or(Error::DecodeError("isomp4: seek position overflow"))?;
++        let end = position.checked_add(u64::from(desc.size))
++            .ok_or(Error::DecodeError("isomp4: seek sample end overflow"))?;
++        if object_len.is_some_and(|len| end > len) {
++            return decode_error("isomp4: seek sample exceeds object");
++        }
++        self.cur_seg = seg_idx;
++        self.next_sample = sample_num;
++        self.next_sample_pos = position;
++        self.timing_cursor = TimingCursor::default();
++        self.timing_cursor_segment = seg_idx;
++        Ok(SeekedTo { track_id: self.track_id, required_ts, actual_ts })
++    }
++
++    pub(crate) fn next_timing<S: StreamSegment + ?Sized>(
++        &mut self, seg: &S, seg_idx: usize,
++    ) -> Result<Option<SampleTiming>> {
++        if self.timing_cursor_segment != seg_idx {
++            self.timing_cursor = TimingCursor::default();
++            self.timing_cursor_segment = seg_idx;
++        }
++        seg.sample_timing_cached(self.track_num, self.next_sample, &mut self.timing_cursor)
++    }
++
++    pub(crate) fn sample_info(
++        &self, track: &Track, timing: SampleTiming, seg_idx: usize,
++    ) -> Result<Option<NextSampleInfo>> {
++        let tb = track.time_base.expect("track always created with a timebase");
++        let (ts, dur, trim_start, trim_end) = if let Some(timeline) = &self.audio_timeline {
++            let packet = timeline.packet(timing.ts, u64::from(timing.dur))?;
++            (packet.pts, packet.dur, packet.trim_start, packet.trim_end)
++        } else {
++            let ts = Timestamp::try_from(timing.ts)
++                .map_err(|_| Error::DecodeError("isomp4: sample timestamp overflow"))?;
++            (ts, Duration::from(timing.dur), Duration::ZERO, Duration::ZERO)
++        };
++        let Some(time) = tb.calc_time(ts) else { return Ok(None); };
++        Ok(Some(NextSampleInfo {
++            track_num: self.track_num, track_id: self.track_id,
++            ts, time, dur, trim_start, trim_end, seg_idx,
++        }))
++    }
++
++    pub(crate) fn consume_sample<S: StreamSegment + ?Sized>(
++        &mut self, info: &NextSampleInfo, seg: &S,
++    ) -> Result<SampleDataInfo> {
++        let desc = seg.sample_data(self.track_num, self.next_sample, false)?;
++        // A chunk-start offset is cheap and authoritative, including a chunk
++        // placed before the previous one. Otherwise keep the sequential cursor.
++        let pos = match desc.offset {
++            Some(offset) => desc.base_pos.checked_add(offset),
++            None => Some(desc.base_pos.max(self.next_sample_pos)),
++        }.ok_or(Error::DecodeError("isomp4: sample position overflow"))?;
++        let next_pos = pos.checked_add(u64::from(desc.size))
++            .ok_or(Error::DecodeError("isomp4: sample end overflow"))?;
++        let next_sample = self.next_sample.checked_add(1)
++            .ok_or(Error::DecodeError("isomp4: sample index overflow"))?;
++        self.cur_seg = info.seg_idx;
++        self.next_sample = next_sample;
++        self.next_sample_pos = next_pos;
++        Ok(SampleDataInfo {pos, len:desc.size})
++    }
++
+ }
+ 
+ /// Information regarding the next sample.
+ #[derive(Debug)]
+-struct NextSampleInfo {
++pub(crate) struct NextSampleInfo {
+     /// The track number of the next sample.
+-    track_num: usize,
++    pub(crate) track_num: usize,
+     /// The track id.
+-    track_id: u32,
++    pub(crate) track_id: u32,
+     /// The timestamp of the next sample.
+-    ts: Timestamp,
++    pub(crate) ts: Timestamp,
+     /// The timestamp expressed in seconds.
+-    time: Time,
++    pub(crate) time: Time,
+     /// The duration of the next sample.
+-    dur: Duration,
+-    trim_start: Duration,
+-    trim_end: Duration,
++    pub(crate) dur: Duration,
++    pub(crate) trim_start: Duration,
++    pub(crate) trim_end: Duration,
+     /// The segment containing the next sample.
+-    seg_idx: usize,
++    pub(crate) seg_idx: usize,
+ }
+ 
+ /// Information regarding a sample.
+ #[derive(Debug)]
+-struct SampleDataInfo {
++pub(crate) struct SampleDataInfo {
+     /// The position of the sample in the track.
+-    pos: u64,
++    pub(crate) pos: u64,
+     /// The length of the sample.
+-    len: u32,
++    pub(crate) len: u32,
+ }
+ 
+ /// A representation of time, defining a duration relative to a specific frequency
+@@ -394,99 +495,26 @@
+ 
+     /// Idempotently gets information regarding the next sample of the media stream. This function
+     /// selects the next sample with the lowest timestamp of all tracks.
+-    fn next_sample_info(&self) -> Result<Option<NextSampleInfo>> {
+-        let mut earliest = None;
+-
+-        // TODO: Consider returning samples based on lowest byte position in the track instead of
+-        // timestamp. This may be important if video tracks are ever decoded (i.e., DTS vs. PTS).
+-
+-        for (state, track) in self.track_states.iter().zip(&self.tracks) {
+-            // Get the timebase of the track used to calculate the presentation time.
+-            let tb = track.time_base.expect("track always created with a timebase");
+-
+-            // Get the next timestamp for the next sample of the current track. The next sample may
+-            // be in a future segment.
+-            for (seg_idx_delta, seg) in self.segs[state.cur_seg..].iter().enumerate() {
+-                // Try to get the timestamp for the next sample of the track from the segment.
+-                if let Some(timing) = seg.sample_timing(state.track_num, state.next_sample)? {
+-                    // Calculate the presentation time using the timestamp.
+-                    let (ts, dur, trim_start, trim_end) = if let Some(timeline) =
+-                        &state.audio_timeline
+-                    {
+-                        let packet = timeline.packet(timing.ts, u64::from(timing.dur))?;
+-                        (packet.pts, packet.dur, packet.trim_start, packet.trim_end)
+-                    } else {
+-                        let ts = Timestamp::try_from(timing.ts)
+-                            .map_err(|_| Error::DecodeError("isomp4: sample timestamp overflow"))?;
+-                        (ts, Duration::from(timing.dur), Duration::ZERO, Duration::ZERO)
+-                    };
+-
+-                    let Some(sample_time) = tb.calc_time(ts) else {
++    fn next_sample_info(&mut self) -> Result<Option<NextSampleInfo>> {
++        let mut earliest: Option<NextSampleInfo> = None;
++        for (state, track) in self.track_states.iter_mut().zip(&self.tracks) {
++            for (delta, seg) in self.segs[state.cur_seg..].iter().enumerate() {
++                if let Some(timing) = state.next_timing(&**seg, delta + state.cur_seg)? {
++                    let Some(info) = state.sample_info(track, timing, delta + state.cur_seg)? else {
+                         return Ok(None);
+                     };
+-
+-                    // Compare the presentation time of the sample from this track to other tracks,
+-                    // and select the track with the earliest presentation time.
+-                    match earliest {
+-                        Some(NextSampleInfo { time, .. }) if time <= sample_time => {
+-                            // Earliest is less than or equal to the track's next sample
+-                            // presentation time. No need to update earliest.
+-                        }
+-                        _ => {
+-                            // Earliest was either None, or greater than the track's next sample
+-                            // presentation time. Update earliest.
+-                            earliest = Some(NextSampleInfo {
+-                                track_num: state.track_num,
+-                                track_id: state.track_id,
+-                                ts,
+-                                time: sample_time,
+-                                dur,
+-                                trim_start,
+-                                trim_end,
+-                                seg_idx: seg_idx_delta + state.cur_seg,
+-                            });
+-                        }
++                    if earliest.as_ref().is_none_or(|prev| prev.time > info.time) {
++                        earliest = Some(info);
+                     }
+-
+-                    // Either the next sample of the track had the earliest presentation time seen
+-                    // thus far, or it was greater than those from other tracks, but there is no
+-                    // reason to check samples in future segments.
+                     break;
+                 }
+             }
+         }
+-
+         Ok(earliest)
+     }
+ 
+     fn consume_next_sample(&mut self, info: &NextSampleInfo) -> Result<Option<SampleDataInfo>> {
+-        // Get the track state.
+-        let track = &mut self.track_states[info.track_num];
+-
+-        // Get the segment associated with the sample.
+-        let seg = &self.segs[info.seg_idx];
+-
+-        // Get the sample data descriptor.
+-        let sample_data_desc = seg.sample_data(track.track_num, track.next_sample, false)?;
+-
+-        // The sample base position in the sample data descriptor remains constant if the sample
+-        // followed immediately after the previous sample. In this case, the track state's
+-        // next_sample_pos is the position of the current sample. If the base position has jumped,
+-        // then the base position is the position of current the sample.
+-        let pos = if sample_data_desc.base_pos > track.next_sample_pos {
+-            sample_data_desc.base_pos
+-        } else {
+-            track.next_sample_pos
+-        };
+-
+-        // Advance the track's current segment to the next sample's segment.
+-        track.cur_seg = info.seg_idx;
+-
+-        // Advance the track's next sample number and position.
+-        track.next_sample += 1;
+-        track.next_sample_pos = pos + u64::from(sample_data_desc.size);
+-
+-        Ok(Some(SampleDataInfo { pos, len: sample_data_desc.size }))
++        self.track_states[info.track_num].consume_sample(info, &*self.segs[info.seg_idx]).map(Some)
+     }
+ 
+     fn try_read_more_segments(&mut self) -> Result<bool> {
+@@ -572,17 +600,8 @@
+             sample_num: u32,
+         }
+ 
+-        // Can only seek to 0 or positive timestamps.
+-        if ts.is_negative() {
+-            return seek_error(SeekErrorKind::OutOfRange);
+-        }
+-
+         let required_ts = ts;
+-        let ts = if let Some(timeline) = &self.track_states[track_num].audio_timeline {
+-            timeline.seek_media_ts(ts)?
+-        } else {
+-            ts
+-        };
++        let ts = self.track_states[track_num].seek_media_ts(ts)?;
+         let mut seg_skip = 0;
+ 
+         let seek_loc = 'locate: loop {
+@@ -605,45 +624,15 @@
+ 
+         let seg = &self.segs[seek_loc.seg_idx];
+ 
+-        // Get the sample timing.
+-        let timing = match seg.sample_timing(track_num, seek_loc.sample_num)? {
+-            Some(t) => t,
+-            None => return seek_error(SeekErrorKind::OutOfRange),
+-        };
+-
+-        // Try to convert the sample timing to a timestamp.
+-        let actual_ts = if let Some(timeline) = &self.track_states[track_num].audio_timeline {
+-            timeline.presentation_ts(timing.ts)?
+-        } else {
+-            match Timestamp::try_from(timing.ts) {
+-                Ok(ts) => ts,
+-                _ => return seek_error(SeekErrorKind::OutOfRange),
+-            }
+-        };
+-
+-        // Get the sample information.
+-        let data_desc = seg.sample_data(track_num, seek_loc.sample_num, true)?;
+-
+-        // Update the track's next sample information to point to the seeked sample.
+-        let track = &mut self.track_states[track_num];
+-
+-        track.cur_seg = seek_loc.seg_idx;
+-        track.next_sample = seek_loc.sample_num;
+-        track.next_sample_pos = data_desc.base_pos
+-            + match data_desc.offset {
+-                Some(o) => o,
+-                None => return seek_error(SeekErrorKind::OutOfRange),
+-            };
+-
++        let result = self.track_states[track_num].seek_sample(
++            &**seg, seek_loc.seg_idx, seek_loc.sample_num, required_ts, None,
++        )?;
+         debug!(
+             "seeked track_num={} (track_id={}) to packet_ts={} (delta={})",
+-            track_num,
+-            track.track_id,
+-            actual_ts,
+-            actual_ts.saturating_delta(ts),
++            track_num, result.track_id, result.actual_ts,
++            result.actual_ts.saturating_delta(required_ts),
+         );
+-
+-        Ok(SeekedTo { track_id: track.track_id, required_ts, actual_ts })
++        Ok(result)
+     }
+ }
+ 
+--- symphonia-format-isomp4-0.6.1/src/stream.rs
++++ symphonia-format-isomp4-0.6.1/src/stream.rs
+@@ -6,6 +6,7 @@
+ // file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ use symphonia_core::errors::{Error, Result, decode_error};
+ 
++use crate::atoms::stts::TimingCursor;
+ use crate::atoms::{Co64Atom, MoofAtom, MoovAtom, StcoAtom, TrafAtom, stsz::SampleSize};
+ 
+ use std::ops::Range;
+@@ -47,6 +48,12 @@
+     /// `track_num`.
+     fn sample_timing(&self, track_num: usize, sample_num: u32) -> Result<Option<SampleTiming>>;
+ 
++    fn sample_timing_cached(
++        &self, track_num: usize, sample_num: u32, _cursor: &mut TimingCursor,
++    ) -> Result<Option<SampleTiming>> {
++        self.sample_timing(track_num, sample_num)
++    }
++
+     /// Get the sample number of the sample containing the timestamp indicated by `ts` for track
+     // `track_num`.
+     fn ts_sample(&self, track_num: usize, ts: u64) -> Result<Option<u32>>;
+@@ -374,6 +381,14 @@
+         if let Some((ts, dur)) = timing { Ok(Some(SampleTiming { ts, dur })) } else { Ok(None) }
+     }
+ 
++    fn sample_timing_cached(
++        &self, track_num: usize, sample_num: u32, cursor: &mut TimingCursor,
++    ) -> Result<Option<SampleTiming>> {
++        let table = &self.moov.traks[track_num].mdia.minf.stbl.stts;
++        Ok(table.find_timing_for_sample_cached(sample_num, cursor)
++            .map(|(ts, dur)| SampleTiming {ts, dur}))
++    }
++
+     fn ts_sample(&self, track_num: usize, ts: u64) -> Result<Option<u32>> {
+         // Get the trak atom associated with track_num.
+         debug_assert!(track_num < self.moov.traks.len());
+@@ -421,12 +436,13 @@
+             None => return decode_error("isomp4: chunk offset not found"),
+         };
+ 
++        // The first sample of a chunk has a cheap exact offset. Preserve this
++        // hint even for sequential reads, including non-monotonic chunk layouts.
++        let sample_in_chunk = sample_in_group - (chunk_in_group * group.samples_per_chunk);
++
+         // Determine the absolute sample byte position if requested by calculating the offset of
+         // the sample from the base position of the chunk.
+-        let offset = if get_offset {
+-            // Index of the sample relative to the chunk containing the sample.
+-            let sample_in_chunk = sample_in_group - (chunk_in_group * group.samples_per_chunk);
+-
++        let offset = if sample_in_chunk == 0 { Some(0) } else if get_offset {
+             // Calculat the byte offset of the sample relative to the chunk containing it.
+             let offset = match stsz.sample_sizes {
+                 SampleSize::Constant(size) => {

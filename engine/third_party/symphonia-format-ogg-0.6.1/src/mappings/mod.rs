@@ -52,9 +52,6 @@ pub trait PacketParser: Send + Sync {
 
 /// A `Mapper` implements packet-handling for a specific `Codec`.
 pub trait Mapper: Send + Sync {
-    #[cfg(feature = "streaming")]
-    fn is_discardable_prefix(&self, _packet: &[u8]) -> bool { false }
-
     /// Set once before mapping packets. Audio packets carry no metadata options.
     fn set_metadata_options(&mut self, options: symphonia_core::meta::MetadataOptions);
 
@@ -144,15 +141,3 @@ impl PacketParser for NullPacketParser {
         (Duration::ZERO, Duration::ZERO)
     }
 }
-
-#[cfg(feature = "streaming")]
-pub(crate) fn detect_vorbis(serial: u32, packet: &[u8]) -> Result<Option<VorbisMapper>> {
-    let mut mapper = vorbis::detect_typed(serial, packet)?;
-    if let Some(mapper) = mapper.as_mut() {
-        mapper.set_metadata_options(symphonia_core::meta::MetadataOptions::default().limit_total_bytes(symphonia_core::common::Limit::Maximum(0)));
-    }
-    Ok(mapper)
-}
-
-#[cfg(feature="streaming")]
-pub(crate) use vorbis::VorbisMapper;
