@@ -176,8 +176,12 @@ fn host_close_waits_for_late_native_retirement_before_publishing_error() {
 
 #[test]
 fn pool_drop_aborts_its_tasks_without_waiting_or_closing_peer_hosts() {
-    let host = migo_io::scheduler::IoScheduler::new(0);
-    let peer = migo_io::scheduler::IoScheduler::new(0);
+    // Three workers: the fewest with two CPU-heavy slots, so the peer's job runs
+    // beside the held step on any machine. The shared process executor sizes
+    // itself from the cores, and on two it has one such slot, where the peer
+    // waits for the step this test only releases after the peer answers.
+    let host = migo_io::scheduler::IoScheduler::isolated_for_admission_probe(0, 3, u64::MAX);
+    let peer = host.peer_for_admission_probe(1);
     let (mut pool, _results) = pool(&host, 1);
     let (started, release, _) = hold_first_step(&mut pool);
     let data = Arc::new(wav(8000, 4000));
