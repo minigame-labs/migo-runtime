@@ -2534,6 +2534,15 @@ impl RenderThread {
                 // RecreateOnscreen) where Java unschedules/reschedules. `Cell` so
                 // the command-handling closure can reset it via shared capture.
                 let vsync_armed = std::cell::Cell::new(false);
+                // The frame time of the last vsync this loop handled. Two requests made
+                // before the display's next frame are two callbacks for that one frame,
+                // both carrying its frame time, and a host that posts a callback per
+                // request delivers both (the C ABI's own NativeActivity host does; the
+                // request can come from this thread and from the JS thread's
+                // `op_await_next_frame`). Each used to run a frame: content got two
+                // animation frames with one timestamp -- a 0 ms step, often right after a
+                // late 33 ms one -- and a whole frame of its logic ran twice.
+                let mut last_vsync_ms = f64::NEG_INFINITY;
                 let mut surface_system = SurfaceSystem::new();
                 // The `on_resume` arm this used to carry was unreachable: the size
                 // and the "was there a surface" flag were two mappings of one
@@ -3887,6 +3896,13 @@ impl RenderThread {
                             let Ok(frame_time_ms) = vsync.try_recv() else {
                                 continue;
                             };
+                            // A frame already handled (see `last_vsync_ms`): its first
+                            // vsync ran it and armed the next one, so this one is dropped
+                            // whole -- no frame, no RAF, no arm.
+                            if frame_time_ms <= last_vsync_ms {
+                                continue;
+                            }
+                            last_vsync_ms = frame_time_ms;
                             // Choreographer VSync path (Android).
                             // The requested one-shot callback was delivered —
                             // clear the in-flight flag so demand that remains this

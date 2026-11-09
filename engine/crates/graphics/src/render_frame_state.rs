@@ -746,6 +746,39 @@ mod tests {
         );
     }
 
+    /// A host that posts a frame callback per request delivers two vsyncs with one
+    /// frame time when two requests precede the display's next frame; each ran a
+    /// frame, and content got two animation frames with one timestamp (a 0 ms step,
+    /// 4 runs in 6 on a Mate 30). The vsync branch drops a frame time it has handled
+    /// before it can signal RAF, and only then records the new one.
+    #[test]
+    fn a_vsync_for_a_frame_already_handled_runs_no_frame() {
+        let source = include_str!("render_thread.rs");
+        let branch = source
+            .split_once("Wake::Vsync => {")
+            .map(|(_, tail)| tail)
+            .expect("the render loop has a vsync branch");
+        let received = branch
+            .find("vsync.try_recv()")
+            .expect("the branch takes the frame time");
+        let dropped = branch
+            .find("if frame_time_ms <= last_vsync_ms {")
+            .expect("a frame time already handled is dropped");
+        let recorded = branch
+            .find("last_vsync_ms = frame_time_ms;")
+            .expect("the handled frame time is recorded");
+        let signalled = branch.find("signal_raf(").expect("the branch signals RAF");
+        assert!(
+            received < dropped && dropped < recorded && recorded < signalled,
+            "a repeated frame time must be dropped before anything of the frame runs"
+        );
+        let skip = &branch[dropped..recorded];
+        assert!(
+            skip.contains("continue;") && !skip.contains("arm_if_needed("),
+            "the repeat is dropped whole: its frame's first vsync already armed the next"
+        );
+    }
+
     #[test]
     fn periodic_and_pressure_cleanup_are_wired_without_a_timer() {
         let render = include_str!("render_thread.rs");
