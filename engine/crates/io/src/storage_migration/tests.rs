@@ -311,6 +311,30 @@ fn sqlite_open_refuses_a_database_symlink_before_any_schema_write() {
     assert_eq!(value(&outside), "outside");
 }
 
+/// A link above the store is the host's, not a planted one: an Android app's own data
+/// path starts with /data/user/0, a link in the app's mount namespace, and NOFOLLOW
+/// refused every open beneath it. The link at the database is still refused.
+#[cfg(unix)]
+#[test]
+fn sqlite_open_accepts_a_link_above_the_store_and_still_refuses_one_at_the_database() {
+    let root = tempfile::tempdir().unwrap();
+    let real = root.path().join("data/data/app");
+    fs::create_dir_all(&real).unwrap();
+    let alias = root.path().join("user0");
+    std::os::unix::fs::symlink(root.path().join("data/data"), &alias).unwrap();
+    let store = KvStore::open(alias.join("app/kv/storage.db"), 1024 * 1024)
+        .expect("a link in the host's own path refused the store");
+    drop(store);
+    assert!(real.join("kv/storage.db").is_file());
+
+    let outside = root.path().join("outside");
+    seed(&outside, "outside");
+    let planted = alias.join("app/kv/planted.db");
+    std::os::unix::fs::symlink(outside.join("storage.db"), &planted).unwrap();
+    assert!(KvStore::open(&planted, 1024 * 1024).is_err());
+    assert_eq!(value(&outside), "outside");
+}
+
 #[test]
 fn independent_sessions_serialize_initialization_and_share_the_migrated_store() {
     let root = tempfile::tempdir().unwrap();

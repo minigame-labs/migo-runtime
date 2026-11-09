@@ -165,6 +165,25 @@ impl KvStore {
             })?;
         }
 
+        // SQLite's NOFOLLOW refuses a symbolic link anywhere in the path, not
+        // only at the file. An Android app's own data path starts with
+        // /data/user/0, which is a link in the app's mount namespace, so every
+        // open there failed with SQLITE_CANTOPEN_SYMLINK; iOS containers sit
+        // under /var, another. Resolve the directory the host handed us, once,
+        // here: NOFOLLOW still refuses a link at the database and a directory
+        // swapped for a link after this point.
+        #[cfg(unix)]
+        let path = match (path.parent(), path.file_name()) {
+            (Some(parent), Some(name)) => std::fs::canonicalize(parent)
+                .map_err(|e| {
+                    EngineError::new(ErrorCode::IoError)
+                        .with_msg("kv: resolve directory failed")
+                        .with_detail(format!("{}: {}", parent.display(), e))
+                })?
+                .join(name),
+            _ => path,
+        };
+
         let mut conn = Connection::open_with_flags(
             &path,
             rusqlite::OpenFlags::default() | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
