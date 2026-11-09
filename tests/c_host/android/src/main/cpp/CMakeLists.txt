@@ -58,10 +58,15 @@ target_link_options(migo_c_host PRIVATE
     -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/migo_c_host.map
     -Wl,--gc-sections)
 
+# The system libraries the engine itself needs. The package branch gets them from
+# migo::migo, whose interface is cargo's native-static-libs; linking the static
+# library directly has to name them here. mediandk is AMediaCodec (the game
+# recorder's encoder and the video decoder): without it the link stops on
+# AMediaCodec_signalEndOfInputStream.
 target_link_libraries(migo_c_host
     native_app_glue
     ${MIGO_ENGINE}
-    android log EGL GLESv3 OpenSLES)
+    android log EGL GLESv3 OpenSLES mediandk)
 
 target_link_libraries(migo_c_host c++_shared)
 
