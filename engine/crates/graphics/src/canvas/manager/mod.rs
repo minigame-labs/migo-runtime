@@ -5930,6 +5930,38 @@ impl CanvasManager {
                 | crate::backend::gl::surface::gr_state_bits::RENDER_TARGET,
         );
 
+        // The blit ran on this canvas's context, and what reads the copy -- the
+        // destination of `drawImage(canvas)`, a WebGL `texImage2D(canvas)`, the
+        // frame collector -- runs on another context of the share group, whose
+        // commands are not ordered after these. On Mali the reader sampled the copy
+        // before the blit had written it and drew whatever the texture's recycled
+        // storage held: an earlier canvas's pixels, or nothing (every
+        // canvas-to-canvas draw of the conformance suite, on a Mate 30). So the copy
+        // is published only once this context's work, the blit included, is done.
+        unsafe {
+            if let Ok(fence) = self.gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0) {
+                let waited =
+                    self.gl
+                        .client_wait_sync(fence, glow::SYNC_FLUSH_COMMANDS_BIT, i32::MAX);
+                self.gl.delete_sync(fence);
+                self.snapshot_fence_waits = self.snapshot_fence_waits.saturating_add(1);
+                let status = classify_snapshot_fence(waited);
+                if status != SnapshotFenceStatus::Signalled {
+                    let message = if status == SnapshotFenceStatus::Timeout {
+                        "snapshot_canvas2d_region: post-blit fence timed out; unwritten copy suppressed"
+                    } else {
+                        "snapshot_canvas2d_region: post-blit fence failed; unwritten copy suppressed"
+                    };
+                    tracing::warn!(
+                        canvas_id = ?canvas_id,
+                        "{message} (0x{waited:04X}); no snapshot was published"
+                    );
+                    self.gl.delete_texture(dest_tex);
+                    return Err(ee(ErrorCode::RenderBackendError, message));
+                }
+            }
+        }
+
         self.canvas2d_snapshots.insert(
             snapshot_id,
             Canvas2DSnapshotEntry {
@@ -7349,6 +7381,38 @@ fn resize_is_a_no_op(
 #[cfg(test)]
 mod recovery_source_guards {
     const MGR: &str = include_str!("mod.rs");
+
+    /// A snapshot is read on another context of the share group, so the copy must be
+    /// complete before it is published: a fence after the blit, waited on, and the
+    /// copy dropped when the wait fails. On a Mate 30 (Mali) a reader without it drew
+    /// an earlier canvas's pixels, or nothing; a software renderer, where every
+    /// context runs in order, never shows it, so the order is pinned here.
+    #[test]
+    fn a_snapshot_is_published_only_after_its_blit_has_completed() {
+        let body = function_body(MGR, "pub(crate) fn snapshot_canvas2d_region_with_id(");
+        let blit = body
+            .find("self.gl.blit_framebuffer(")
+            .expect("the snapshot copies with a blit");
+        let after = &body[blit..];
+        let fence = after
+            .find("fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE")
+            .expect("no fence after the blit: another context can sample an unwritten copy");
+        let wait = after
+            .find("client_wait_sync(")
+            .expect("the post-blit fence is waited on");
+        let publish = after
+            .find("self.canvas2d_snapshots.insert(")
+            .expect("the snapshot is published");
+        assert!(
+            fence < wait && wait < publish,
+            "the copy is published before the blit is known to be done"
+        );
+        let failed = &after[wait..publish];
+        assert!(
+            failed.contains("self.gl.delete_texture(dest_tex)") && failed.contains("return Err("),
+            "a failed post-blit wait must drop the copy instead of publishing it"
+        );
+    }
 
     fn function_body<'a>(source: &'a str, signature: &str) -> &'a str {
         let start = source
