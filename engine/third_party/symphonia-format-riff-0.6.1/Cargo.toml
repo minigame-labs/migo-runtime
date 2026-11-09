@@ -44,7 +44,6 @@ repository = "https://github.com/pdeljanov/Symphonia"
 resolver = "2"
 
 [features]
-streaming = ["wav"]
 aiff = ["symphonia-metadata/riff-id3"]
 default = [
     "aiff",

@@ -21,10 +21,8 @@ REQUIRED = [
     'engine/third_party/libsamplerate-0.2.2/src/src_zoh.c',
     'engine/third_party/libsamplerate-0.2.2/src/fastest_coeffs.h',
     'scripts/testing/fixtures/libsamplerate-0.2.2-retain-history.patch',
-    'engine/third_party/symphonia-format-ogg-patches/0004-fragmented-first-page-restore.patch',
     'engine/crates/audio/src/streaming_http_vorbis_tests.rs',
     'engine/crates/audio/src/streaming_file_vorbis_tests.rs',
-    'engine/third_party/symphonia-format-ogg-patches/0003-pinned-vorbis-presentation-replay.patch',
     'engine/crates/audio/src/streaming_http_mp3_tests.rs',
     'engine/crates/audio/src/streaming_file_mp3_tests.rs',
     'engine/crates/audio/src/streaming_http_wave_tests.rs',
@@ -140,15 +138,12 @@ REQUIRED = [
     'engine/crates/audio/src/off_worker.rs',
     'engine/crates/services/src/network/http/range/interruption_tests.rs',
     'engine/crates/audio/src/stream_revision_tests.rs',
-    'engine/third_party/symphonia-format-isomp4-patches/0009-streaming-seek-source-handoff.patch',
-    'engine/third_party/symphonia-format-isomp4-patches/0008-shared-presentation-seek.patch',
     'engine/crates/audio/src/forward_seek_tests.rs',
     'engine/crates/audio/src/seek_tests.rs',
     'engine/crates/shared/src/audio_load.rs',
     'platforms/apple/WebContent/PerformancePlus/test/source-load.test.mjs',
     'engine/crates/audio/src/source_load_tests.rs',
     'engine/crates/audio/src/inner_audio.rs',
-    'engine/third_party/symphonia-core-patches/0007-defer-probed-container-construction.patch',
     'engine/Cargo.lock', 'tools/artifact-manifest/Cargo.lock',
     'engine/third_party/rustls-platform-verifier-android-0.2.0/classes.jar',
     'engine/third_party/rustls-platform-verifier-android-0.2.0/rustls-platform-verifier-0.2.0.aar',
@@ -196,21 +191,13 @@ REQUIRED = [
     'engine/crates/shared/src/vfs/file_io.rs',
     'engine/crates/shared/src/vfs/package/entry_reader.rs',
     'engine/crates/shared/src/vfs/package/entry_reader/tests.rs',
-    'engine/third_party/symphonia-format-isomp4-patches/0006-bind-pinned-stream-length.patch',
-    'engine/third_party/symphonia-format-isomp4-patches/0007-resolve-buffered-streaming-sources.patch',
     'engine/crates/services/src/network/http/range.rs',
     'engine/crates/services/src/network/http/range/stream.rs',
     'engine/crates/services/src/network/http/range/tests.rs',
-    'engine/third_party/symphonia-core-patches/0006-borrowed-slice-buffered-seek.patch',
-    'engine/third_party/symphonia-format-isomp4-patches/0004-borrowed-aac-streaming-index.patch',
-    'engine/third_party/symphonia-format-isomp4-patches/0005-borrowed-sequential-aac-packets.patch',
-    'engine/third_party/symphonia-format-ogg-patches/0002-borrowed-incremental-vorbis-framing.patch',
     'engine/third_party/symphonia-core-patches/0005-lightweight-bitstream-eof.patch',
     'engine/third_party/symphonia-codec-vorbis-patches/UPSTREAM',
     'engine/third_party/symphonia-codec-vorbis-patches/README.md',
     'engine/third_party/symphonia-codec-vorbis-patches/0001-handle-lightweight-bitstream-eof.patch',
-    'engine/third_party/symphonia-codec-aac-patches/0002-borrowed-incremental-adts-framing.patch',
-    'engine/third_party/symphonia-format-riff-patches/0002-borrowed-incremental-wave-framing.patch',
     'engine/third_party/symphonia-codec-pcm-patches/UPSTREAM',
     'engine/third_party/symphonia-codec-pcm-patches/README.md',
     'engine/third_party/symphonia-codec-pcm-patches/0001-decode-exact-pcm-packet-frames.patch',
@@ -260,6 +247,9 @@ REQUIRED.extend(['engine/crates/audio/src/streaming_http_control_tests.rs'])
 # The streaming producer over upstream pull readers (P6).
 REQUIRED.extend(['engine/third_party/minimp3-afb604c/LICENSE', 'engine/third_party/minimp3-afb604c/minimp3.h', 'engine/third_party/minimp3-afb604c/minimp3_ex.h', 'engine/crates/audio/src/stream_open.rs', 'engine/crates/audio/src/stream_producer.rs', 'engine/crates/audio/src/stream_producer_tests.rs', 'engine/crates/audio/src/pcm_source.rs', 'engine/crates/audio/src/pcm_source_tests.rs', 'engine/crates/audio/src/mp3_source.rs', 'engine/crates/audio/src/mp3_source_tests.rs', 'engine/crates/audio/src/media_source.rs', 'engine/crates/audio/src/media_source_tests.rs', 'engine/crates/audio/src/media_source_http.rs', 'engine/crates/audio/src/media_source_http_tests.rs', 'engine/crates/audio/src/test_media.rs', 'engine/crates/audio/native/mp3.c'])
 
+# Symphonia patch sets the vendor contract replays.
+REQUIRED.extend(['engine/third_party/symphonia-format-isomp4-patches/0004-pull-reader-chunk-order-timing-and-seek.patch', 'engine/third_party/symphonia-codec-aac-patches/0002-adts-reader-track-and-eof.patch', 'scripts/test-symphonia-vendor-contract.sh'])
+
 def main():
     required = REQUIRED.copy()
     # The provenance gates check every path from their verified archive + patch
@@ -293,7 +283,6 @@ for name, row in json.loads((ROOT / 'engine/third_party/rubato-sources.json').re
     REQUIRED.extend(str(p.relative_to(ROOT)) for p in sorted(folder.rglob('*')) if p.is_file())
 
 # AAC product codecs, provenance and complete immutable test inputs are source.
-REQUIRED.extend(['engine/third_party/symphonia-aac-sources.json', 'scripts/testing/generate_aac_product_fixtures.py'])
 for folder in ['engine/crates/audio/src/decoder/aac', 'engine/crates/audio/src/decoder/aac-fixtures']:
     REQUIRED.extend(str(p.relative_to(ROOT)) for p in sorted((ROOT/folder).rglob('*')) if p.is_file())
 
@@ -306,7 +295,7 @@ REQUIRED.extend(['engine/crates/audio/src/streaming_http_tests.rs'])
 
 REQUIRED.extend(['engine/crates/audio/src/streaming_range_control_tests.rs'])
 
-REQUIRED.extend(['engine/crates/audio/src/streaming_file_wave_tests.rs', 'engine/third_party/symphonia-format-riff-patches/0004-retained-pcm-source-seek.patch'])
+REQUIRED.extend(['engine/crates/audio/src/streaming_file_wave_tests.rs'])
 
 if __name__ == '__main__':
     main()

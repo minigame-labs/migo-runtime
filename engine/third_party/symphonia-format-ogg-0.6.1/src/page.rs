@@ -211,8 +211,27 @@ impl PageReader {
         // The remainder of the page will be checksummed as it is read.
         let mut crc32_reader = MonitorStream::new(reader, crc32);
 
-        // Both pull and borrowed pages share segment/packet boundaries.
-        let page_body_len = read_lacing_table(&mut crc32_reader, header.n_segments, &mut self.packet_lens)?;
+        // Read segment table.
+        let mut page_body_len = 0;
+        let mut packet_len = 0;
+
+        // TODO: Can this be transactional? A corrupt page causes the PageReader's state not
+        // to change.
+        self.packet_lens.clear();
+
+        for _ in 0..header.n_segments {
+            let seg_len = crc32_reader.read_byte()?;
+
+            page_body_len += usize::from(seg_len);
+            packet_len += u16::from(seg_len);
+
+            // A segment with a length < 255 indicates that the segment is the end of a packet.
+            // Push the packet length into the packet queue for the stream.
+            if seg_len < 255 {
+                self.packet_lens.push(packet_len);
+                packet_len = 0;
+            }
+        }
 
         self.read_page_body(&mut crc32_reader, page_body_len)?;
 
@@ -309,41 +328,4 @@ impl PageReader {
 
         Ok(())
     }
-}
-
-/// Parse the existing Ogg lacing representation, sharing complete/partial
-/// packet boundaries between streaming and ordinary readers.
-fn read_lacing_table<B: ReadBytes>(reader: &mut B, count: u8, packet_lens: &mut Vec<u16>) -> Result<usize> {
-    packet_lens.clear();
-    let (mut body_len, mut packet_len) = (0, 0_u16);
-    for _ in 0..count {
-        let segment = reader.read_byte()?;
-        body_len += usize::from(segment);
-        packet_len += u16::from(segment);
-        if segment < 255 {
-            packet_lens.push(packet_len);
-            packet_len = 0;
-        }
-    }
-    Ok(body_len)
-}
-
-/// Borrow one complete verified page. Partial input changes no retained state.
-#[cfg(feature = "streaming")]
-pub(crate) fn read_page_slice<'a>(input: &'a [u8], packet_lens: &'a mut Vec<u16>) -> Result<Option<(usize, Page<'a>)>> {
-    if input.len() < OGG_PAGE_HEADER_SIZE { return Ok(None); }
-    let header = read_page_header(&mut BufReader::new(input))?;
-    let table_end = OGG_PAGE_HEADER_SIZE + usize::from(header.n_segments);
-    if input.len() < table_end { return Ok(None); }
-    let body_len: usize = input[OGG_PAGE_HEADER_SIZE..table_end].iter().map(|v| usize::from(*v)).sum();
-    let end = table_end + body_len;
-    if input.len() < end { return Ok(None); }
-    let mut crc = Crc32::new(0);
-    crc.process_buf_bytes(&input[..22]);
-    crc.process_buf_bytes(&[0; 4]);
-    crc.process_buf_bytes(&input[26..end]);
-    if header.crc != crc.crc() { return decode_error("ogg: crc mismatch"); }
-    let parsed_len = read_lacing_table(&mut BufReader::new(&input[OGG_PAGE_HEADER_SIZE..table_end]), header.n_segments, packet_lens)?;
-    debug_assert_eq!(parsed_len, body_len);
-    Ok(Some((end, Page { header, packet_lens, page_buf: &input[table_end..end] })))
 }

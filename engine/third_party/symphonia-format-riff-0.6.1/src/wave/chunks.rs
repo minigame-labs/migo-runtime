@@ -339,7 +339,7 @@ impl WaveFormatChunk {
                 // channels.
 
                 // Fix the channel mask if it is invalid for the stated number of channels.
-                let channel_mask = fix_wave_channel_mask(channel_mask, num_channels)?;
+                let channel_mask = fix_wave_channel_mask(channel_mask, num_channels);
 
                 // Try to map the channel mask to positioned channels.
                 match Position::from_wave_channel_mask(channel_mask) {
@@ -676,59 +676,40 @@ pub fn read_info_chunk(source: &mut MediaSourceStream<'_>, len: u32) -> Result<M
 }
 
 /// Corrects a WAVE channel mask that doesn't is not valid for the stated number of channels.
-fn fix_wave_channel_mask(mut channel_mask: u32, num_channels: u16) -> Result<u32> {
-    if num_channels > u32::BITS as u16 {
-        return decode_error("wav: channel count exceeds the wave channel mask");
-    }
-    let channel_diff = i32::from(num_channels) - channel_mask.count_ones() as i32;
+fn fix_wave_channel_mask(mut channel_mask: u32, num_channels: u16) -> u32 {
+    let channel_diff = num_channels as i32 - channel_mask.count_ones() as i32;
+
     if channel_diff != 0 {
         info!("channel mask not set correctly, channel positions may be incorrect!");
     }
+
+    // Check that the number of ones in the channel mask match the number of channels.
     if channel_diff > 0 {
-        // Compute in a wider integer: zero mask + 32 channels and a highest
-        // bit at position 31 must not shift a u32 by 32. Never truncate added
-        // positions and silently return fewer channels than the header states.
+        // Too few ones in mask so add extra ones above the most significant one
         let shift = 32 - (!channel_mask).leading_ones();
-        let additions = ((1_u64 << channel_diff as u32) - 1) << shift;
-        let additions = u32::try_from(additions).map_err(|_| {
-            Error::DecodeError("wav: channel positions exceed the wave channel mask")
-        })?;
-        channel_mask |= additions;
-    } else {
-        while channel_mask.count_ones() > u32::from(num_channels) {
-            let highest_one = 31 - channel_mask.leading_zeros();
-            channel_mask &= !(1_u32 << highest_one);
+        channel_mask |= ((1 << channel_diff) - 1) << shift;
+    }
+    else {
+        // Too many ones in mask so remove the most significant extra ones
+        while channel_mask.count_ones() != num_channels as u32 {
+            let highest_one = 31 - (!channel_mask).leading_ones();
+            channel_mask &= !(1 << highest_one);
         }
     }
-    Ok(channel_mask)
+
+    channel_mask
 }
 
 #[test]
 fn test_fix_channel_mask() {
     // Too few
-    assert_eq!(fix_wave_channel_mask(0, 9).unwrap(), 0b111111111);
-    assert_eq!(fix_wave_channel_mask(0b101000, 5).unwrap(), 0b111101000);
+    assert_eq!(fix_wave_channel_mask(0, 9), 0b111111111);
+    assert_eq!(fix_wave_channel_mask(0b101000, 5), 0b111101000);
 
     // Too many
-    assert_eq!(fix_wave_channel_mask(0b1111111, 0).unwrap(), 0);
-    assert_eq!(fix_wave_channel_mask(0b101110111010, 5).unwrap(), 0b10111010);
-    assert_eq!(fix_wave_channel_mask(0xFFFFFFFF, 8).unwrap(), 0b11111111);
-}
-
-#[test]
-fn test_channel_mask_boundaries_do_not_overflow_or_truncate() {
-    let checked = std::panic::catch_unwind(|| {
-        assert_eq!(fix_wave_channel_mask(0, 32).unwrap(), u32::MAX);
-        assert_eq!(fix_wave_channel_mask(u32::MAX, 32).unwrap(), u32::MAX);
-        assert!(fix_wave_channel_mask(0, 33).is_err());
-        assert!(fix_wave_channel_mask(0, u16::MAX).is_err());
-        assert!(fix_wave_channel_mask(1 << 31, 2).is_err());
-        assert!(fix_wave_channel_mask(1 << 25, 26).is_err());
-    });
-    assert!(
-        checked.is_ok(),
-        "untrusted channel mask correction panicked"
-    );
+    assert_eq!(fix_wave_channel_mask(0b1111111, 0), 0);
+    assert_eq!(fix_wave_channel_mask(0b101110111010, 5), 0b10111010);
+    assert_eq!(fix_wave_channel_mask(0xFFFFFFFF, 8), 0b11111111);
 }
 
 /// Map a WAVE channel count to a set of channels.

@@ -1,160 +1,3 @@
---- symphonia-format-riff-0.6.1/src/common.rs
-+++ symphonia-format-riff-0.6.1/src/common.rs
-@@ -208,6 +208,8 @@
-     pub bits_per_sample: u16,
-     /// The number of bits per sample that are valid. Must be <= `bits_per_sample`.
-     pub valid_bits_per_sample: u16,
-+    /// Additional left shift for legacy right-aligned PCM in a wider slot.
-+    pub sample_shift: u16,
-     /// Channel bitmask.
-     pub channels: Channels,
-     /// Codec ID.
-@@ -448,7 +450,7 @@
-             codec_params
-                 .for_codec(pcm.codec)
-                 .with_bits_per_coded_sample(u32::from(pcm.valid_bits_per_sample))
--                .with_bits_per_sample(u32::from(pcm.valid_bits_per_sample))
-+                .with_bits_per_sample(u32::from(pcm.valid_bits_per_sample + pcm.sample_shift))
-                 .with_channels(pcm.channels);
-         }
-         FormatData::Adpcm(adpcm) => {
---- symphonia-format-riff-0.6.1/src/wave/chunks.rs
-+++ symphonia-format-riff-0.6.1/src/wave/chunks.rs
-@@ -81,33 +81,30 @@
-         // can't be supported. Since these files do exist, allow for 8/16/24/32-bit samples, but
-         // error if not a multiple of 8 or greater than 32-bits.
-         //
--        // Select the appropriate codec using bits per sample. Samples are always interleaved and
--        // little-endian encoded for the PCM format.
--        let codec = match bits_per_sample {
-+        // Block alignment gives the stored sample width. Retain the legacy
-+        // right-aligned 24-in-32 layout without treating its padding as audio.
-+        let bytes = block_align.checked_div(num_channels)
-+            .filter(|_| num_channels != 0 && block_align % num_channels == 0)
-+            .ok_or(Error::DecodeError("wav: invalid PCM block alignment"))?;
-+        let (stored_bits, sample_shift) = match (bits_per_sample, bytes) {
-+            (8, 1) | (16, 2) | (24, 3) | (32, 4) => (bits_per_sample, 0),
-+            (24, 4) => (32, 8),
-+            _ => return decode_error("wav: unsupported PCM sample storage"),
-+        };
-+        let codec = match stored_bits {
-             8 => CODEC_ID_PCM_U8,
-             16 => CODEC_ID_PCM_S16LE,
-             24 => CODEC_ID_PCM_S24LE,
-             32 => CODEC_ID_PCM_S32LE,
--            _ => {
--                return decode_error(
--                    "wav: bits per sample for fmt_pcm must be 8, 16, 24 or 32 bits",
--                );
--            }
-+            _ => unreachable!(),
-         };
- 
--        // Block align is redundant for this format, but ideally it should be set correctly. Log if
--        // it's incorrect.
--        let expected_block_align = u32::from(num_channels) * u32::from(bits_per_sample / 8);
--
--        if u32::from(block_align) != expected_block_align {
--            info!("fmt_pcm expected block align of {}, got {}", expected_block_align, block_align);
--        }
--
-         let channels = map_wave_channel_count(num_channels)?;
- 
-         Ok(FormatData::Pcm(FormatPcm {
--            bits_per_sample,
-+            bits_per_sample: stored_bits,
-             valid_bits_per_sample: bits_per_sample,
-+            sample_shift,
-             channels,
-             codec,
-         }))
-@@ -208,6 +205,9 @@
-         // The number of valid bits per sample for uncompressed PCM audio, but if the data is
-         // compressed, then this is the samples per block.
-         let valid_bits_per_sample = reader.read_u16()?;
-+        // Existing encoders sometimes leave valid-bits zero. It means the
-+        // stored width here, not a zero-precision decoder configuration.
-+        let valid_bits_per_sample = if valid_bits_per_sample == 0 { bits_per_sample } else { valid_bits_per_sample };
- 
-         // Bits per sample for extensible formats is the bits per sample as written in the stream.
-         // This must be a multiple of 8, even for compressed data formats. However, compressed data
-@@ -344,7 +344,7 @@
-                 // Try to map the channel mask to positioned channels.
-                 match Position::from_wave_channel_mask(channel_mask) {
-                     Some(positions) => Channels::Positioned(positions),
--                    _ => return unsupported_error("wav: too many channels in mask for fmt_ext"),
-+                    _ => Channels::Discrete(num_channels),
-                 }
-             }
-         };
-@@ -734,23 +734,20 @@
- /// Map a WAVE channel count to a set of channels.
- fn map_wave_channel_count(count: u16) -> Result<Channels> {
-     // There must be atleast one channel.
--    (1..)
--        .contains(&count)
--        .then(|| Position::from_count(u32::from(count)))
--        .flatten()
--        .map(Channels::Positioned)
--        .ok_or(Error::DecodeError("riff: invalid channel count"))
-+    if !(1..=32).contains(&count) { return decode_error("riff: invalid channel count"); }
-+    Ok(Position::from_count(u32::from(count)).map(Channels::Positioned)
-+        .unwrap_or(Channels::Discrete(count)))
- }
- 
- #[test]
- fn test_map_wave_channel_count() {
-     assert!(map_wave_channel_count(0).is_err());
- 
--    for i in 1..27 {
-+    for i in 1..=32 {
-         assert!(map_wave_channel_count(i).is_ok());
-     }
- 
--    for i in 27..u16::MAX {
-+    for i in 33..u16::MAX {
-         assert!(map_wave_channel_count(i).is_err());
-     }
- }
-@@ -878,3 +875,38 @@
- 
-     Ok(Channels::Custom(labels))
- }
-+
-+
-+#[test]
-+fn padded_pcm_uses_stored_width_and_existing_pcm_shift_parameters() {
-+    let format = WaveFormatChunk::read_pcm_fmt(&mut symphonia_core::io::BufReader::new(&[]), 4, 24, 1, 16).unwrap();
-+    let FormatData::Pcm(pcm) = format else { panic!("PCM format") };
-+    assert_eq!((pcm.bits_per_sample, pcm.valid_bits_per_sample, pcm.sample_shift), (32, 24, 8));
-+    assert_eq!(pcm.codec, CODEC_ID_PCM_S32LE);
-+    assert_eq!(pcm.make_packet_info().unwrap().block_size.get(), 4);
-+    let mut params = symphonia_core::codecs::audio::AudioCodecParameters::new();
-+    crate::common::append_format_params(&mut params, FormatData::Pcm(pcm), 48000);
-+    assert_eq!((params.bits_per_sample, params.bits_per_coded_sample), (Some(32), Some(24)));
-+}
-+
-+
-+#[test]
-+fn extensible_zero_valid_bits_and_unpositioned_32_channels_keep_their_width() {
-+    let mut bytes = Vec::new();
-+    bytes.extend_from_slice(&0xfffe_u16.to_le_bytes());
-+    bytes.extend_from_slice(&32_u16.to_le_bytes());
-+    bytes.extend_from_slice(&48000_u32.to_le_bytes());
-+    bytes.extend_from_slice(&(48000_u32 * 128).to_le_bytes());
-+    bytes.extend_from_slice(&128_u16.to_le_bytes());
-+    bytes.extend_from_slice(&32_u16.to_le_bytes());
-+    bytes.extend_from_slice(&22_u16.to_le_bytes());
-+    bytes.extend_from_slice(&0_u16.to_le_bytes());
-+    bytes.extend_from_slice(&0_u32.to_le_bytes());
-+    bytes.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71]);
-+    let format = WaveFormatChunk::parse(&mut symphonia_core::io::BufReader::new(&bytes), *b"fmt ", 40).unwrap();
-+    let FormatData::Extensible(ext) = format.format_data else { panic!("extensible format") };
-+    assert_eq!(ext.valid_bits_per_sample, 32);
-+    assert_eq!(ext.channels, Channels::Discrete(32));
-+    assert_eq!(ext.make_packet_info().unwrap().block_size.get(), 128);
-+    assert!(WaveFormatChunk::read_pcm_fmt(&mut symphonia_core::io::BufReader::new(&[]), 4, 16, 1, 16).is_err());
-+}
 --- symphonia-format-riff-0.6.1/src/aiff/chunks.rs
 +++ symphonia-format-riff-0.6.1/src/aiff/chunks.rs
 @@ -59,7 +59,7 @@
@@ -214,3 +57,160 @@
              bits_per_sample,
              valid_bits_per_sample: bits_per_sample,
              channels,
+--- symphonia-format-riff-0.6.1/src/common.rs
++++ symphonia-format-riff-0.6.1/src/common.rs
+@@ -203,6 +203,8 @@
+     pub bits_per_sample: u16,
+     /// The number of bits per sample that are valid. Must be <= `bits_per_sample`.
+     pub valid_bits_per_sample: u16,
++    /// Additional left shift for legacy right-aligned PCM in a wider slot.
++    pub sample_shift: u16,
+     /// Channel bitmask.
+     pub channels: Channels,
+     /// Codec ID.
+@@ -443,7 +445,7 @@
+             codec_params
+                 .for_codec(pcm.codec)
+                 .with_bits_per_coded_sample(u32::from(pcm.valid_bits_per_sample))
+-                .with_bits_per_sample(u32::from(pcm.valid_bits_per_sample))
++                .with_bits_per_sample(u32::from(pcm.valid_bits_per_sample + pcm.sample_shift))
+                 .with_channels(pcm.channels);
+         }
+         FormatData::Adpcm(adpcm) => {
+--- symphonia-format-riff-0.6.1/src/wave/chunks.rs
++++ symphonia-format-riff-0.6.1/src/wave/chunks.rs
+@@ -81,33 +81,30 @@
+         // can't be supported. Since these files do exist, allow for 8/16/24/32-bit samples, but
+         // error if not a multiple of 8 or greater than 32-bits.
+         //
+-        // Select the appropriate codec using bits per sample. Samples are always interleaved and
+-        // little-endian encoded for the PCM format.
+-        let codec = match bits_per_sample {
++        // Block alignment gives the stored sample width. Retain the legacy
++        // right-aligned 24-in-32 layout without treating its padding as audio.
++        let bytes = block_align.checked_div(num_channels)
++            .filter(|_| num_channels != 0 && block_align % num_channels == 0)
++            .ok_or(Error::DecodeError("wav: invalid PCM block alignment"))?;
++        let (stored_bits, sample_shift) = match (bits_per_sample, bytes) {
++            (8, 1) | (16, 2) | (24, 3) | (32, 4) => (bits_per_sample, 0),
++            (24, 4) => (32, 8),
++            _ => return decode_error("wav: unsupported PCM sample storage"),
++        };
++        let codec = match stored_bits {
+             8 => CODEC_ID_PCM_U8,
+             16 => CODEC_ID_PCM_S16LE,
+             24 => CODEC_ID_PCM_S24LE,
+             32 => CODEC_ID_PCM_S32LE,
+-            _ => {
+-                return decode_error(
+-                    "wav: bits per sample for fmt_pcm must be 8, 16, 24 or 32 bits",
+-                );
+-            }
++            _ => unreachable!(),
+         };
+ 
+-        // Block align is redundant for this format, but ideally it should be set correctly. Log if
+-        // it's incorrect.
+-        let expected_block_align = num_channels * (bits_per_sample / 8);
+-
+-        if block_align != expected_block_align {
+-            info!("fmt_pcm expected block align of {}, got {}", expected_block_align, block_align);
+-        }
+-
+         let channels = map_wave_channel_count(num_channels)?;
+ 
+         Ok(FormatData::Pcm(FormatPcm {
+-            bits_per_sample,
++            bits_per_sample: stored_bits,
+             valid_bits_per_sample: bits_per_sample,
++            sample_shift,
+             channels,
+             codec,
+         }))
+@@ -208,6 +205,9 @@
+         // The number of valid bits per sample for uncompressed PCM audio, but if the data is
+         // compressed, then this is the samples per block.
+         let valid_bits_per_sample = reader.read_u16()?;
++        // Existing encoders sometimes leave valid-bits zero. It means the
++        // stored width here, not a zero-precision decoder configuration.
++        let valid_bits_per_sample = if valid_bits_per_sample == 0 { bits_per_sample } else { valid_bits_per_sample };
+ 
+         // Bits per sample for extensible formats is the bits per sample as written in the stream.
+         // This must be a multiple of 8, even for compressed data formats. However, compressed data
+@@ -344,7 +344,7 @@
+                 // Try to map the channel mask to positioned channels.
+                 match Position::from_wave_channel_mask(channel_mask) {
+                     Some(positions) => Channels::Positioned(positions),
+-                    _ => return unsupported_error("wav: too many channels in mask for fmt_ext"),
++                    _ => Channels::Discrete(num_channels),
+                 }
+             }
+         };
+@@ -715,23 +715,20 @@
+ /// Map a WAVE channel count to a set of channels.
+ fn map_wave_channel_count(count: u16) -> Result<Channels> {
+     // There must be atleast one channel.
+-    (1..)
+-        .contains(&count)
+-        .then(|| Position::from_count(u32::from(count)))
+-        .flatten()
+-        .map(Channels::Positioned)
+-        .ok_or(Error::DecodeError("riff: invalid channel count"))
++    if !(1..=32).contains(&count) { return decode_error("riff: invalid channel count"); }
++    Ok(Position::from_count(u32::from(count)).map(Channels::Positioned)
++        .unwrap_or(Channels::Discrete(count)))
+ }
+ 
+ #[test]
+ fn test_map_wave_channel_count() {
+     assert!(map_wave_channel_count(0).is_err());
+ 
+-    for i in 1..27 {
++    for i in 1..=32 {
+         assert!(map_wave_channel_count(i).is_ok());
+     }
+ 
+-    for i in 27..u16::MAX {
++    for i in 33..u16::MAX {
+         assert!(map_wave_channel_count(i).is_err());
+     }
+ }
+@@ -859,3 +856,38 @@
+ 
+     Ok(Channels::Custom(labels))
+ }
++
++
++#[test]
++fn padded_pcm_uses_stored_width_and_existing_pcm_shift_parameters() {
++    let format = WaveFormatChunk::read_pcm_fmt(&mut symphonia_core::io::BufReader::new(&[]), 4, 24, 1, 16).unwrap();
++    let FormatData::Pcm(pcm) = format else { panic!("PCM format") };
++    assert_eq!((pcm.bits_per_sample, pcm.valid_bits_per_sample, pcm.sample_shift), (32, 24, 8));
++    assert_eq!(pcm.codec, CODEC_ID_PCM_S32LE);
++    assert_eq!(pcm.make_packet_info().unwrap().block_size.get(), 4);
++    let mut params = symphonia_core::codecs::audio::AudioCodecParameters::new();
++    crate::common::append_format_params(&mut params, FormatData::Pcm(pcm), 48000);
++    assert_eq!((params.bits_per_sample, params.bits_per_coded_sample), (Some(32), Some(24)));
++}
++
++
++#[test]
++fn extensible_zero_valid_bits_and_unpositioned_32_channels_keep_their_width() {
++    let mut bytes = Vec::new();
++    bytes.extend_from_slice(&0xfffe_u16.to_le_bytes());
++    bytes.extend_from_slice(&32_u16.to_le_bytes());
++    bytes.extend_from_slice(&48000_u32.to_le_bytes());
++    bytes.extend_from_slice(&(48000_u32 * 128).to_le_bytes());
++    bytes.extend_from_slice(&128_u16.to_le_bytes());
++    bytes.extend_from_slice(&32_u16.to_le_bytes());
++    bytes.extend_from_slice(&22_u16.to_le_bytes());
++    bytes.extend_from_slice(&0_u16.to_le_bytes());
++    bytes.extend_from_slice(&0_u32.to_le_bytes());
++    bytes.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71]);
++    let format = WaveFormatChunk::parse(&mut symphonia_core::io::BufReader::new(&bytes), *b"fmt ", 40).unwrap();
++    let FormatData::Extensible(ext) = format.format_data else { panic!("extensible format") };
++    assert_eq!(ext.valid_bits_per_sample, 32);
++    assert_eq!(ext.channels, Channels::Discrete(32));
++    assert_eq!(ext.make_packet_info().unwrap().block_size.get(), 128);
++    assert!(WaveFormatChunk::read_pcm_fmt(&mut symphonia_core::io::BufReader::new(&[]), 4, 16, 1, 16).is_err());
++}

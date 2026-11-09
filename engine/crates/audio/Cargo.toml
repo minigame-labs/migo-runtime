@@ -14,14 +14,14 @@ name = "audio"
 # MP3 is upstream minimp3 (mp3dec_ex), vendored unmodified and built by build.rs.
 # Vorbis uses the mature bounded Ogg packetizer and gapless decoder verified by W09.
 symphonia-core = { version = "=0.6.1", default-features = false, features = ["opt-simd"] }
-symphonia-metadata = { version = "=0.6.1", default-features = false }
-symphonia-format-ogg = { version = "=0.6.1", default-features = false, features = ["streaming"] }
+symphonia-metadata = { version = "=0.6.1", default-features = false, features = ["id3v2"] }
+symphonia-format-ogg = { version = "=0.6.1", default-features = false }
 symphonia-codec-vorbis = { version = "=0.6.1", default-features = false }
-symphonia-format-riff = { version = "=0.6.1", default-features = false, features = ["wav", "streaming"] }
+symphonia-format-riff = { version = "=0.6.1", default-features = false, features = ["wav"] }
 symphonia-codec-pcm = { version = "=0.6.1", default-features = false }
 # AAC-LC full-file jobs reuse the verified ADTS/MP4 bounded ports.
-symphonia-codec-aac = { version = "=0.6.1", default-features = false, features = ["streaming"] }
-symphonia-format-isomp4 = { version = "=0.6.1", default-features = false, features = ["streaming"] }
+symphonia-codec-aac = { version = "=0.6.1", default-features = false }
+symphonia-format-isomp4 = { version = "=0.6.1", default-features = false }
 
 # Mature band-limited whole-file sample-rate conversion; FFT stays unselected.
 rubato = { version = "=5.0.1", default-features = false }

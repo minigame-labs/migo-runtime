@@ -25,8 +25,6 @@ use crate::common::{
     append_data_params, append_format_params, next_packet, ByteOrder, ChunksReader, PacketInfo,
 };
 mod chunks;
-#[cfg(feature = "streaming")]
-pub mod streaming;
 use chunks::*;
 
 /// WAVE is actually a RIFF stream, with a "RIFF" ASCII stream marker.
@@ -60,49 +58,37 @@ pub struct WavReader<'s> {
     data_end_pos: Option<u64>,
 }
 
-/// Shared RIFF/WAVE prefix parser. Push callers first provide all 12 bytes.
-fn read_wave_header<B: ReadBytes>(reader: &mut B) -> Result<Option<u32>> {
-    // A Wave file is one large RIFF chunk, with the actual meta and audio data contained in
-    // nested chunks. Therefore, the file starts with a RIFF chunk header (chunk ID & size).
-
-    // The top-level chunk has the RIFF chunk ID. This is also the file marker.
-    let marker = reader.read_quad_bytes()?;
-
-    if marker != WAVE_STREAM_MARKER {
-        return unsupported_error("wav: missing wave riff stream marker");
-    }
-
-    // The length of the top-level RIFF chunk. Must be atleast 4 bytes.
-    let riff_len = reader.read_u32()?;
-
-    if riff_len < 4 {
-        return decode_error("wav: invalid riff length");
-    }
-
-    // The form type. Only the WAVE form is supported.
-    let riff_form = reader.read_quad_bytes()?;
-
-    if riff_form != WAVE_RIFF_FORM {
-        error!(
-            "riff form is not wave ({})",
-            String::from_utf8_lossy(&riff_form)
-        );
-
-        return unsupported_error("wav: riff form is not wave");
-    }
-
-    // When ffmpeg encodes wave to stdout the riff (parent) and data (child) chunk lengths are
-    // (2^32)-1 since the size is not known ahead of time.
-    Ok(if riff_len < u32::MAX {
-        Some(riff_len - 4)
-    } else {
-        None
-    })
-}
-
 impl<'s> WavReader<'s> {
     pub fn try_new(mut mss: MediaSourceStream<'s>, opts: FormatOptions) -> Result<Self> {
-        let riff_data_len = read_wave_header(&mut mss)?;
+        // A Wave file is one large RIFF chunk, with the actual meta and audio data contained in
+        // nested chunks. Therefore, the file starts with a RIFF chunk header (chunk ID & size).
+
+        // The top-level chunk has the RIFF chunk ID. This is also the file marker.
+        let marker = mss.read_quad_bytes()?;
+
+        if marker != WAVE_STREAM_MARKER {
+            return unsupported_error("wav: missing wave riff stream marker");
+        }
+
+        // The length of the top-level RIFF chunk. Must be atleast 4 bytes.
+        let riff_len = mss.read_u32()?;
+
+        if riff_len < 4 {
+            return decode_error("wav: invalid riff length");
+        }
+
+        // The form type. Only the WAVE form is supported.
+        let riff_form = mss.read_quad_bytes()?;
+
+        if riff_form != WAVE_RIFF_FORM {
+            error!("riff form is not wave ({})", String::from_utf8_lossy(&riff_form));
+
+            return unsupported_error("wav: riff form is not wave");
+        }
+
+        // When ffmpeg encodes wave to stdout the riff (parent) and data (child) chunk lengths are
+        // (2^32)-1 since the size is not known ahead of time.
+        let riff_data_len = if riff_len < u32::MAX { Some(riff_len - 4) } else { None };
 
         let mut riff_chunks =
             ChunksReader::<RiffWaveChunks>::new(riff_data_len, ByteOrder::LittleEndian);

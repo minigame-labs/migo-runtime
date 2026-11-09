@@ -26,6 +26,3 @@ features = ["vorbis"]
 
 [lints]
 workspace = true
-
-[features]
-streaming=[]

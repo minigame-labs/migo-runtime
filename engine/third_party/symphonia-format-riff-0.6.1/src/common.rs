@@ -16,7 +16,7 @@ use symphonia_core::codecs::audio::well_known::{
     CODEC_ID_PCM_F64BE, CODEC_ID_PCM_F64LE,
 };
 use symphonia_core::codecs::audio::{AudioCodecId, AudioCodecParameters};
-use symphonia_core::errors::{Error, Result, decode_error};
+use symphonia_core::errors::{Result, decode_error};
 use symphonia_core::formats::prelude::*;
 use symphonia_core::io::{MediaSourceStream, ReadBytes};
 
@@ -62,72 +62,67 @@ impl<T: ParseChunkTag> ChunksReader<T> {
         ChunksReader { len: len.map(u64::from), byte_order, consumed: 0, phantom: PhantomData }
     }
 
-    /// Bytes needed to read the next envelope without a partial parser call.
-    pub fn next_header_bytes(&self) -> usize {
-        if self.len.is_some_and(|len| self.consumed >= len) {
-            return 0;
-        }
-        let pad = (self.consumed & 1) as usize;
-        if self
-            .len
-            .is_some_and(|len| len - self.consumed < (8 + pad) as u64)
-        {
-            pad
-        } else {
-            8 + pad
-        }
-    }
-
-    /// Read just the envelope. The caller must consume its payload before
-    /// requesting another header; next() and the push reader share these bounds.
-    pub fn next_header<B: ReadBytes>(&mut self, reader: &mut B) -> Result<Option<([u8; 4], u32)>> {
-        if self.len.is_some_and(|len| self.consumed >= len) {
-            return Ok(None);
-        }
-        if self.consumed & 1 == 1 {
-            reader.read_u8()?;
-            self.consumed = self.consumed.checked_add(1).ok_or(Error::DecodeError("riff: chunk position overflow"))?;
-        }
-        if self.len.is_some_and(|len| len - self.consumed < 8) {
-            return Ok(None);
-        }
-        let tag = reader.read_quad_bytes()?;
-        let chunk_len = match self.byte_order {
-            ByteOrder::LittleEndian => reader.read_u32()?,
-            ByteOrder::BigEndian => reader.read_be_u32()?,
-        };
-        self.consumed = self
-            .consumed
-            .checked_add(8)
-            .ok_or(Error::DecodeError("riff: chunk position overflow"))?;
-        if self
-            .len
-            .is_some_and(|len| len - self.consumed < u64::from(chunk_len))
-        {
-            debug!("chunk length exceeds parent: {}", String::from_utf8_lossy(&tag));
-            return decode_error("riff: chunk length exceeds parent (list) chunk length");
-        }
-        self.consumed = self
-            .consumed
-            .checked_add(u64::from(chunk_len))
-            .ok_or(Error::DecodeError("riff: chunk position overflow"))?;
-        Ok(Some((tag, chunk_len)))
-    }
-
     pub fn next<B: ReadBytes>(&mut self, reader: &mut B) -> Result<Option<T>> {
+        // Loop until a chunk is recognized and returned, or the end of stream is reached.
         loop {
-            let Some((tag, chunk_len)) = self.next_header(reader)? else {
-                return Ok(None);
+            // Check if at the end of the parent chunk.
+            if let Some(len) = self.len {
+                if self.consumed >= len {
+                    return Ok(None);
+                }
+            }
+
+            // Align to the next 2-byte boundary if not currently aligned.
+            if self.consumed & 0x1 == 1 {
+                reader.read_u8()?;
+                self.consumed += 1;
+            }
+
+            // Check if there are enough bytes (8) to read a chunk header. If not, there are no more
+            // chunks to be read.
+            if let Some(len) = self.len {
+                if self.consumed + 8 > len {
+                    return Ok(None);
+                }
+            }
+
+            // Read chunk tag and length (the chunk header).
+            let tag = reader.read_quad_bytes()?;
+
+            let chunk_len = match self.byte_order {
+                ByteOrder::LittleEndian => reader.read_u32()?,
+                ByteOrder::BigEndian => reader.read_be_u32()?,
             };
+
+            self.consumed += 8;
+
+            // Check if the ChunkReader has enough unread bytes to fully read the chunk body.
+            if let Some(len) = self.len {
+                // Warning: The formulation of this conditional is critical because chunk_len is an
+                // untrusted input, it may overflow when if added to anything.
+                if len - self.consumed < u64::from(chunk_len) {
+                    debug!(
+                        "chunk length of {} exceeds parent (list) chunk length",
+                        String::from_utf8_lossy(&tag)
+                    );
+                    return decode_error("riff: chunk length exceeds parent (list) chunk length");
+                }
+            }
+
+            // The length of the chunk has been validated, so "consume" the chunk.
+            self.consumed = self.consumed.saturating_add(u64::from(chunk_len));
+
             match T::parse_tag(tag, chunk_len) {
                 Some(chunk) => return Ok(Some(chunk)),
                 None => {
+                    // As per the RIFF spec, unknown chunks are to be ignored.
                     info!(
                         "ignoring unknown chunk: tag={}, len={}.",
                         String::from_utf8_lossy(&tag),
                         chunk_len
                     );
-                    reader.ignore_bytes(u64::from(chunk_len))?;
+
+                    reader.ignore_bytes(u64::from(chunk_len))?
                 }
             }
         }

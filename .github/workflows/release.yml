@@ -324,6 +324,7 @@ jobs:
           bash scripts/test-apple-frame-channel-contract.sh
           bash scripts/test-v8-patch-application-contract.sh
           bash scripts/test-skia-bindings-vendor-contract.sh
+          bash scripts/test-symphonia-vendor-contract.sh
           bash scripts/test-gitignore-contract.sh
           bash scripts/test-deno-core-vendor-contract.sh
           bash scripts/test-ada-url-vendor-contract.sh

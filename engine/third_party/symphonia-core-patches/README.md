@@ -1,65 +1,24 @@
 # Symphonia core 0.6.1 patches
 
-Product Vorbis selects this checksum-pinned source and its existing patches.
-The other W09 codec/DSP ports remain candidates; platform/device and shipping
-profile acceptance are tracked separately from the host regression checkpoint.
+`UPSTREAM` pins the published crate. `scripts/test-symphonia-vendor-contract.sh` rebuilds the
+copy from it and these patches, applied in order, and compares byte for byte. The audio crate
+uses only the published reader and decoder APIs; these patches fix bugs, bound memory or remove
+allocations inside them.
 
-`UPSTREAM` pins the published source; product and isolated probes apply the same patches.
+`0001-consistent-packet-trim-duration.patch`: `PacketBuilder::trimmed_dur` computed the valid
+duration from the previous, usually zero, trim fields, so a packet decoding to 47 valid frames
+advertised 1152. Duration now follows the new trims, their sum is clamped to the decoded block, and
+i128 intermediates keep every i64 PTS plus u64 duration from overflowing.
 
-`PacketBuilder::trimmed_dur` computed local trim fields but calculated valid
-duration from the previous, usually zero, fields. A real MP3 packet decoded to
-47 valid frames while advertising duration 1152. The patch calculates duration
-from the new trims and clamps their sum to the decoded block length. i128
-intermediates represent every i64 PTS plus u64 duration without Timestamp
-overflow, including entirely discarded blocks and numeric endpoints.
+`0002-enforce-id3-metadata-budgets.patch`: metadata revision, encoded-frame scratch and nesting
+limits with conservative retained-storage accounting, enforced by the ID3v2 reader, in addition to
+the per-tag and per-visual limits.
 
-The actual MP3 decoder contract first reproduced the failure. Published packet
-module tests are compiled directly with the selected core units, without adding
-core's unrelated rand dev-dependency to the probe. Owned/borrowed packet cases,
-explicit trim replacement, and compiled mutations cover duration, tail clamp
-and signed overflow. The product migration and device checks remain separate.
+`0003-propagate-embedded-metadata-policy.patch`: `FormatOptions::metadata_options`, so a reader
+constructed directly (as the audio crate does) honours the same tag and picture limits as Probe.
 
-`0002-enforce-id3-metadata-budgets.patch` adds independent metadata revision,
-encoded-frame scratch and nesting limits, plus conservative retained-storage
-accounting (including capacities; identical raw/standard String Arcs counted
-once). These new limits are currently enforced by the ID3v2 reader, not claimed
-for every format. They are additive to the existing per-tag/per-visual soft
-limits. Allocator bookkeeping is outside the accounting.
+`0004-keep-profile-plane-views-on-stack.patch`: temporary planar views for the bounded channel
+profile stay on the stack instead of being allocated per decode.
 
-With `limit_total_bytes=Maximum(0)`, the external metadata probe also avoids
-storing empty revisions or chapter side data after a reader returns. Individual
-readers must still implement their own parsing/scratch policy; this probe check
-alone does not prevent allocations inside other metadata formats.
-
-`0003-propagate-embedded-metadata-policy.patch` adds explicit embedded metadata
-options to FormatOptions. Probe copies its metadata argument into that field
-before constructing a container reader. Direct callers can use the builder;
-the explicit Probe argument takes precedence. Readers must adopt the policy;
-adding the field does not imply every container now enforces every quota.
-
-`0004-keep-profile-plane-views-on-stack.patch` keeps temporary planar audio
-views for the selected bounded channel profile on the stack. The PCM decoder
-and shared streaming probes cover the change without expanding product features.
-
-`0005-lightweight-bitstream-eof.patch` uses the standard allocation-free
-UnexpectedEof error for bit exhaustion. Legal Vorbis floor/residue and MP3
-Layer3 consumers are migrated in their matching candidate patches. A real
-2200-second silent Vorbis stream exposed repeated allocation of the previous
-string-carrying error. Precise EOF classification, allocation checks, the Core
-suite and the complete codec corpus cover the change; unrelated IO errors do
-not become normal exhaustion. This remains a candidate, not a product cutover.
-
-`0006-borrowed-slice-buffered-seek.patch` makes the existing borrowed BufReader
-implement SeekBuffered over its real slice. Absolute and relative positions
-clamp to the actual buffer; even isize::MIN/u64::MAX do not overflow. This lets
-the regular MP4 atom parser read a complete bounded moov without another ring
-buffer or a payload copy. Oversized skips are checked before a usize cast.
-Core slice-position/skip tests and the actual indexed AAC decoder cover it.
-
-`0007-defer-probed-container-construction.patch` separates leading format
-identification from container-reader construction. `probe_format` returns a
-`ProbedFormat` with the registered FormatInfo and an optional `into_reader`
-continuation. Full `probe` and identification share the original scoring and
-metadata search, without a second parser. Identification does not seek to
-trailing metadata or instantiate a container whose index may require external
-IO. Callers bound source reads/seeks and metadata retention independently.
+`0005-lightweight-bitstream-eof.patch`: bit exhaustion reports the allocation-free `UnexpectedEof`
+instead of a string-carrying error; a long silent Vorbis stream allocated one per packet.

@@ -70,9 +70,3 @@ unwrap_used = "warn"
 level = "warn"
 priority = 0
 check-cfg = ["cfg(fuzzing)"]
-
-[features]
-streaming=["dep:symphonia-metadata"]
-[dependencies.symphonia-metadata]
-version="0.6.1"
-optional=true

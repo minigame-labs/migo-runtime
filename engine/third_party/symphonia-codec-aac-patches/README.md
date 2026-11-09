@@ -1,41 +1,16 @@
-> Current product: the pinned patched crate is selected for AAC-LC full-file ADTS/M4A decoding.
-> Progressive playback and the broader profiles described as candidates below remain separate.
+# Symphonia AAC 0.6.1 patches
 
-# Symphonia AAC 0.6.1 candidate patches
+`UPSTREAM` pins the published crate. `scripts/test-symphonia-vendor-contract.sh` rebuilds the
+copy from it and these patches, applied in order, and compares byte for byte. The audio crate
+uses only the published reader and decoder APIs; these patches fix bugs, bound memory or remove
+allocations inside them.
 
-`UPSTREAM` pins the published crate archive. These patches are applied only in
-the isolated W09 codec probe (`scripts/bench/audio-codecs.py --library-patches`).
-The production Cargo workspace does not select this crate or a second codec stack.
+`0001-audio-presentation-trimming.patch`: the decoder honours `AudioDecoderOptions::gapless` with
+the existing `AudioBuffer::trim`, checks trims against the decoded block, and `reset` clears the
+last output and restarts the channel-pair PNS random state, so replaying from the start is
+deterministic. Trims are in PCM frames (the MP4 patches normalize the timebase accordingly).
 
-`0001` makes the decoder honor `AudioDecoderOptions::gapless` with the existing
-`AudioBuffer::trim` implementation, checks trim conversion/sums against the actual
-decoded block, and clears output on failure through the existing error path.
-`reset` also clears the exposed last output and restarts channel-pair PNS random
-state, so replaying a stream from its beginning is deterministic.
-
-The packet trim fields must be in PCM-frame units. The companion ISOMP4 candidate
-patch normalizes its AAC track and packet timebase accordingly. Arbitrary AAC seek
-with perceptual noise substitution does not promise the identical noise waveform
-produced by decoding every earlier packet. The controlled waveform seek fixture
-disables PNS; a separate PNS fixture verifies repeated complete playback/reset.
-
-`scripts/testing/check_audio_codec_timeline.py` checks published-byte patch replay,
-the actual Cargo-selected sources, real packet/decoder behavior and compiled
-semantic mutations. Format acceptance, memory/performance and progressive MP3
-remain W09 work; passing this probe is not production or device acceptance.
-
-`0002` adds the optional `streaming` feature and a borrowed `AdtsPacketizer`.
-It uses the existing ADTS header parser and shared track/signal validation;
-Migo does not implement AAC or ADTS parsing. The supported decoder profile is
-AAC-LC mono/stereo, one raw-data block per ADTS frame. The existing CRC header
-field is parsed/skipped; this patch does not add CRC verification.
-
-Incomplete input changes no packet timing. ID3 uses the metadata library
-header/extent helper and bounded skip steps, with separate cumulative metadata
-and synchronization quotas. First complete audio frames need no lookahead,
-payloads borrow the caller input, format changes and partial frames fail.
-The pull path shares timebase/max-packet initialization and signal checks;
-it rejects a truncated final header and keeps bitrate duration estimates out
-of exact num_frames. Errors in the push state machine are terminal.
-
-The ADTS streaming path is covered by the audio crate's AAC streaming tests.
+`0002-adts-reader-track-and-eof.patch`: the ADTS reader's track carries what the decoder and the
+presentation clock need (AAC-LC only, mono or stereo, a PCM-frame timebase, 1024 frames per
+packet); a changed signal format mid-stream is refused; a header cut short by EOF is told apart
+from a clean end; a timestamp overflow is an error rather than a silent end.

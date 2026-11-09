@@ -3321,7 +3321,6 @@ dependencies = [
  "log",
  "symphonia-common",
  "symphonia-core",
- "symphonia-metadata",
 ]
 
 [[package]]
