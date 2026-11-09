@@ -1,6 +1,6 @@
 {
   "schema": "migo-v8-component-manifest/v1",
-  "component_id": "19f63547262b83d1bed2aba0edfd33f222bc784664e0cfb6238c3dfe570c9504",
+  "component_id": "97fc0f3ce1a45a5eb0f39687d2d4be73e5b13fbff771a0e68b11dcf616fe1dc5",
   "target": {
     "triple": "aarch64-pc-windows-msvc",
     "os": "windows",
@@ -15,19 +15,24 @@
     }
   },
   "toolchain": {
-    "rustc": "rustc 1.89.0 (29483883e 2025-08-04)\nbinary: rustc\ncommit-hash: 29483883eed69d5fb4db01964cdf2af4d86e9cb2\ncommit-date: 2025-08-04\nhost: x86_64-pc-windows-msvc\nrelease: 1.89.0\nLLVM version: 20.1.7",
+    "rustc": "rustc 1.91.0 (f8297e351 2025-10-28)\nbinary: rustc\ncommit-hash: f8297e351a40c1439a467bbbb6879088047f50b3\ncommit-date: 2025-10-28\nhost: x86_64-pc-windows-msvc\nrelease: 1.91.0\nLLVM version: 21.1.2",
     "compiler": "MSVC 14.44.35207 (cl.exe, arm64, cross from x64 host)",
     "sdk": "Windows SDK 10.0.26100.0",
     "linker": "MSVC link.exe 14.44.35207"
   },
   "runtime": {
     "backend": "v8",
-    "rusty_v8_version": "145.0.0",
-    "rusty_v8_revision": "0b8cfc5ae9d2507031076df2acdf61b0742a4c4e",
-    "v8_revision": "8defb67673c5483ae56258a2de01b07e947dc921",
+    "rusty_v8_version": "150.4.0",
+    "rusty_v8_revision": "5c15a6995c9bb4bacd3e341b59fff32c909c80bf",
+    "v8_revision": "ac1e23989121713ca642f6650b34deff7b686896",
     "normalized_gn_args": [
+      "icu_copy_icudata_to_root_build_dir=true",
+      "icu_use_data_file=true",
+      "icu_use_stub_data=true",
+      "rusty_v8_enable_simdutf=true",
       "use_allocator_shim=false",
       "use_partition_alloc_as_malloc=false",
+      "v8_depend_on_icu_data_file=true",
       "v8_enable_i18n_support=true",
       "v8_enable_pointer_compression=true",
       "v8_enable_sandbox=false",
@@ -36,13 +41,13 @@
     "patches": []
   },
   "hashes": {
-    "archive": "c61efee378e3a6b1a6934690e25f2cc5945918c2e088b44d95a92372055c4828",
-    "rust_binding": "1b645c73eaa10989ade387fad9e47bcdecc910b1ce19867ff132991683c3c765"
+    "archive": "1ec302112510c659cdab35626a16897451d308ead4de514c44fd8d418a2311f4",
+    "rust_binding": "af84ba6e5d780de3cc15c60c6dcf15e204a00d367da042f1c0c01748d68f87d7"
   },
   "provenance": {
-    "source_revision": "0b8cfc5ae9d2507031076df2acdf61b0742a4c4e",
+    "source_revision": "5c15a6995c9bb4bacd3e341b59fff32c909c80bf",
     "build_recipe": "scripts/build-v8-windows.sh",
-    "build_recipe_sha256": "749fdfb942b8749d1424193504469a648eec3d3f784b997ab9a3761ffc9b0c5c",
+    "build_recipe_sha256": "194a201385b697f9853b3ad36ee5c7e0321a467e2da0cb969cf907cefb615cf7",
     "licenses": [
       "BSD-3-Clause",
       "MIT"

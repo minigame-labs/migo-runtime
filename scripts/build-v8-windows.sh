@@ -205,6 +205,35 @@ check_ready() {
         fi
     fi
 
+    # The checkout pins its own Rust (rust-toolchain.toml), and the target's std has
+    # to be in that toolchain. Without it the build stops deep in cargo with
+    # "can't find crate for `core`" for every crate, far from this cause -- which is
+    # what the first aarch64 build of the 150.4 cohort did. A build installs it, as
+    # build-v8-ohos.sh does for its triples; --check only reports.
+    # The rustup is the one the batch file below reaches: %USERPROFILE%\.cargo\bin
+    # leads its PATH.
+    local channel profile rustup=""
+    channel="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' "$SRC_UNIX/rust-toolchain.toml" 2>/dev/null)"
+    profile="$(cd /mnt/c/Windows/Temp && cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')"
+    [[ -n "$profile" ]] && rustup="$(win_to_unix "$profile")/.cargo/bin/rustup.exe"
+    if [[ -z "$channel" || ! -f "$rustup" ]]; then
+        err "cannot resolve the checkout's Rust channel or %USERPROFILE%\\.cargo\\bin\\rustup.exe"
+        failures=$((failures + 1))
+    elif ! (cd /mnt/c/Windows/Temp && "$rustup" +"$channel" target list --installed 2>/dev/null) \
+            | tr -d '\r' | grep -qx "$TARGET"; then
+        if [[ "$CHECK_ONLY" == "1" ]]; then
+            err "Rust $channel has no $TARGET std; run: rustup target add --toolchain $channel $TARGET"
+            failures=$((failures + 1))
+        else
+            info "installing the $TARGET std into Rust $channel"
+            if ! (cd /mnt/c/Windows/Temp && HTTPS_PROXY="$PROXY" WSLENV="HTTPS_PROXY:${WSLENV:-}" \
+                    "$rustup" target add --toolchain "$channel" "$TARGET"); then
+                err "could not install the $TARGET std into Rust $channel"
+                failures=$((failures + 1))
+            fi
+        fi
+    fi
+
     return "$failures"
 }
 
@@ -270,39 +299,26 @@ mkdir -p "$(dirname "$BATCH_UNIX")"
 RUSTC_VERSION_FILE_WIN="C:\\migo-win-spike-tmp\\rustc-version-${TARGET}.txt"
 RUSTC_VERSION_FILE_UNIX="$(win_to_unix "$RUSTC_VERSION_FILE_WIN")"
 
-# rusty_v8's build.rs only adds clang's resource directory to the bindgen
-# arguments when target_os == "linux" (see its bindgen setup); on Windows it
-# passes -nostdinc++ with V8's vendored libc++ but no builtin headers. Bindgen
-# then mis-parses the C++ namespace nesting: the binding it emits drops the
-# enclosing scope (v8_String_WriteFlags_kNullTerminate becomes
-# WriteFlags_kNullTerminate), loses cppgc_Visitor_Key entirely and lays
-# cppgc_Visitor out as one byte. That does not fail in bindgen -- it surfaces
-# much later as a static assertion inside the generated file computing
-# `1_usize - 8_usize`, which reads like broken V8 sources.
+# The build generates the binding with bindgen, and the committed copy is the
+# reviewed reference it must equal. At 145 the binding was reused instead: bindgen
+# here then dropped C++ namespace scopes (v8_String_WriteFlags_kNullTerminate
+# became WriteFlags_kNullTerminate, cppgc_Visitor laid out as one byte), which
+# surfaced only as a static assertion computing `1_usize - 8_usize`. With
+# LIBCLANG_PATH pinned below, the 150.4 build generates the binding upstream
+# publishes for this target (src_binding_release_x86_64-pc-windows-msvc.rs at
+# v150.4.0) byte for byte except the generator line, since this tree's
+# bindgen-clang22-lock moves bindgen to 0.72.1. The V8_PREBUILT_BINDING hook
+# that reuse relied on is not in the patch set windows-v8.lock.json declares,
+# so setting it here would be a no-op that reads as a guarantee.
 #
-# The binding describes V8's C++ API, so it is fixed by the V8 revision -- which
-# windows-v8.lock.json pins and this build verifies. Reusing the committed one
-# is therefore the same artifact bindgen would produce if it parsed correctly,
-# and build-v8-linux.sh already does this for its own reason (older libclang).
-BINDING_BACKUP="$OUT_DIR/src_binding.rs"
-# The binding is arch/OS-independent (pure C++ API FFI surface, confirmed by
-# diff across every existing archive directory this session -- see
-# build-v8-linux.sh's own fallback for the same reasoning). A fresh arch's
-# output dir has no committed binding of its own yet, so fall back to the
-# x86_64 one rather than fail: bindgen still can't produce a correct one here
-# regardless of target arch.
-if [[ ! -f "$BINDING_BACKUP" && "$ARCH" != "x86_64" ]]; then
-    BINDING_BACKUP="$ENGINE_ROOT/third_party/rusty_v8/x86_64-pc-windows-msvc/src_binding.rs"
-fi
-PREBUILT_BINDING_LINE=""
-if [[ -f "$BINDING_BACKUP" ]]; then
-    PREBUILT_BINDING_LINE="set \"V8_PREBUILT_BINDING=$(wslpath -w "$BINDING_BACKUP" 2>/dev/null || echo "$BINDING_BACKUP")\""
-    info "reusing committed binding: $BINDING_BACKUP"
-else
-    err "no committed src_binding.rs at $BINDING_BACKUP"
-    err "bindgen on Windows cannot produce a correct one (see the comment above)"
+# A cohort change therefore regenerates the binding, the comparison after the
+# build refuses it, and the new one is committed deliberately after review.
+COMMITTED_BINDING="$OUT_DIR/src_binding.rs"
+[[ -f "$COMMITTED_BINDING" ]] || {
+    err "no committed src_binding.rs at $COMMITTED_BINDING"
+    err "build once, review the generated binding against upstream's for this target, and commit it"
     exit 1
-fi
+}
 
 # One definition, interpolated into the batch below and handed to the manifest
 # writer. Writing them twice would let the recorded provenance drift from the
@@ -364,7 +380,6 @@ ${NUM_JOBS_LINE}
 rem rusty_v8 resolves python via PYTHON and otherwise calls "python3"; Windows
 rem installs python.exe and no python3.exe.
 set PYTHON=${PYTHON_WIN}
-${PREBUILT_BINDING_LINE}
 
 rem With GN and NINJA set, need_gn_ninja_download() is false and the CIPD
 rem resolve call -- the one download in this build that ignores HTTPS_PROXY,
@@ -448,16 +463,14 @@ done
 mkdir -p "$OUT_DIR"
 cp "$DLL" "$OUT_DIR/rusty_v8.dll"
 cp "$IMPLIB" "$OUT_DIR/rusty_v8.dll.lib"
-# In prebuilt mode this copy is an identity: build.rs placed the committed
-# binding at $BINDING itself. Asserting that rather than trusting it, because
-# the alternative -- silently replacing the known-good binding with one bindgen
-# mis-generated -- is exactly the failure this reuse exists to prevent, and it
-# would only surface on the next build.
-if ! cmp -s "$BINDING" "$BINDING_BACKUP"; then
-    err "the build produced a binding that differs from the committed one"
-    err "  built:     $BINDING"
-    err "  committed: $BINDING_BACKUP"
-    err "refusing to overwrite it; V8_PREBUILT_BINDING did not take effect"
+# The generated binding must equal the committed one. A mis-parse like 145's, or
+# a toolchain change that moves the layout, then stops the build here instead of
+# silently replacing the reviewed binding and surfacing on the next build.
+if ! cmp -s "$BINDING" "$COMMITTED_BINDING"; then
+    err "the build generated a binding that differs from the committed one"
+    err "  generated: $BINDING"
+    err "  committed: $COMMITTED_BINDING"
+    err "if the V8 revision changed, review it against upstream's published binding for this target and commit it"
     exit 1
 fi
 cp "$BINDING" "$OUT_DIR/src_binding.rs"
