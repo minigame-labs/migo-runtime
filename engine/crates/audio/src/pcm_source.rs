@@ -28,6 +28,27 @@ pub(crate) trait PcmSource: Send {
     fn seek(&mut self, frame: u64) -> EngineResult<()>;
 }
 
+/// Bytes enough to tell the formats apart (RIFF/OggS/ftyp/ADTS/ID3/MPEG sync).
+pub(crate) const SNIFF_BYTES: usize = 16;
+
+/// Open the decoder the first bytes name. ADTS is checked before MPEG audio,
+/// whose sync word it shares.
+pub(crate) fn open(
+    source: Box<dyn MediaSource>,
+    prefix: &[u8],
+) -> EngineResult<Box<dyn PcmSource>> {
+    if let Some(container) = Container::sniff(prefix) {
+        return Ok(Box::new(Symphonia::open(source, container)?));
+    }
+    if crate::decoder::is_mp3(prefix) {
+        return Ok(Box::new(crate::mp3_source::Minimp3::open(source)?));
+    }
+    Err(EngineError::from_detail(
+        ErrorCode::InvalidArgument,
+        "not a supported audio format",
+    ))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Container {
     Wave,

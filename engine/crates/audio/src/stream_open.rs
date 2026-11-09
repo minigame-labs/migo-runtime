@@ -1,8 +1,7 @@
 //! Opening a stream's source and choosing its decoder, on the producer thread.
 use crate::media_source::AudioFileSource;
 use crate::media_source_http::HttpSource;
-use crate::mp3_source::Minimp3;
-use crate::pcm_source::{Container, PcmSource, Symphonia};
+use crate::pcm_source::PcmSource;
 use crate::stream_producer::Open;
 use crate::streaming::{HttpClient, StreamingState};
 use shared::audio_file::{AudioFile, AudioFileCancel, AudioHttpSpool, AudioSparseSpool};
@@ -10,7 +9,6 @@ use shared::error::{EngineError, EngineResult, ErrorCode};
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use symphonia_core::io::MediaSource;
 
 /// A file load the consumer answers once the stream is ready or failed; the
 /// producer records a failure's typed cause in `error` first.
@@ -19,26 +17,9 @@ pub(crate) struct Load {
     pub error: crate::stream_producer::ErrorCell,
 }
 
-/// Bytes enough to tell the formats apart (RIFF/OggS/ftyp/ADTS/ID3/MPEG sync).
-const SNIFF_BYTES: usize = 16;
 /// An HTTP body kept in memory when the session has no disk spool, or its
 /// disk quota is in use by other streams.
 const MEMORY_SPOOL_BYTES: u64 = 32 * 1024 * 1024;
-
-/// Pick the decoder from the first bytes. ADTS is checked before MPEG audio,
-/// whose sync word it shares.
-fn decoder(source: Box<dyn MediaSource>, prefix: &[u8]) -> EngineResult<Box<dyn PcmSource>> {
-    if let Some(container) = Container::sniff(prefix) {
-        return Ok(Box::new(Symphonia::open(source, container)?));
-    }
-    if crate::decoder::is_mp3(prefix) {
-        return Ok(Box::new(Minimp3::open(source)?));
-    }
-    Err(EngineError::from_detail(
-        ErrorCode::InvalidArgument,
-        "not a supported audio format",
-    ))
-}
 
 /// A control queued while the producer waits on network bytes for its
 /// current traversal: the wait is abandoned and the reader repositioned, as a
@@ -62,7 +43,7 @@ pub(crate) fn file(file: Arc<dyn AudioFile>) -> Open {
         let prefix = file.prefix().to_vec();
         let source = AudioFileSource::new(file.clone(), state.clone());
         Ok(Box::new(Revalidated {
-            inner: decoder(Box::new(source), &prefix)?,
+            inner: crate::pcm_source::open(Box::new(source), &prefix)?,
             file,
         }))
     })
@@ -140,7 +121,7 @@ pub(crate) fn http(
             Some(progress),
         )?;
         source.interrupt_with(Arc::new(Preempted(state.clone())));
-        let mut prefix = [0u8; SNIFF_BYTES];
+        let mut prefix = [0u8; crate::pcm_source::SNIFF_BYTES];
         let mut have = 0;
         while have < prefix.len() {
             match source.read(&mut prefix[have..]) {
@@ -157,7 +138,7 @@ pub(crate) fn http(
         source
             .seek(SeekFrom::Start(0))
             .map_err(|error| EngineError::from_detail(ErrorCode::IoError, error.to_string()))?;
-        decoder(Box::new(source), &prefix[..have])
+        crate::pcm_source::open(Box::new(source), &prefix[..have])
     })
 }
 

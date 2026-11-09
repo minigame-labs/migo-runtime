@@ -235,7 +235,7 @@ struct Resources {
 struct State {
     refill: RefillWindow,
     input: Option<Input>,
-    job: Option<WholeDecodeJob<Input>>,
+    job: Option<WholeDecodeJob>,
     resources: Option<Resources>,
     target: u32,
     cancel: Arc<AtomicBool>,

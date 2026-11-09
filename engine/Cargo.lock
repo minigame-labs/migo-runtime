@@ -1813,7 +1813,6 @@ dependencies = [
  "migo-io",
  "migo-services",
  "migo-shared",
- "minimp3-sys",
  "objc2-avf-audio",
  "ringbuf",
  "rubato",
@@ -2153,13 +2152,6 @@ name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
-
-[[package]]
-name = "minimp3-sys"
-version = "0.6.0"
-dependencies = [
- "cc",
-]
 
 [[package]]
 name = "miniz_oxide"

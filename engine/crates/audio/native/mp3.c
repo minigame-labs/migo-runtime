@@ -1,6 +1,7 @@
 /* Upstream minimp3 + minimp3_ex (engine/third_party/minimp3-afb604c, unmodified),
- * compiled here so the streaming decoder can use mp3dec_ex's pull reader:
- * callback IO, LAME/Xing gapless trimming and sample-exact seeking.
+ * compiled here so the MP3 source (streams and whole files alike) can use
+ * mp3dec_ex's pull reader: callback IO, LAME/Xing gapless trimming and
+ * sample-exact seeking.
  *
  * Every public minimp3 symbol is renamed so this copy can share an image with
  * any other minimp3 a dependency links. Rust sees only the migo_mp3_* calls

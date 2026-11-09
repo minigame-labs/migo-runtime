@@ -77,10 +77,6 @@ impl ResampleJob {
             },
         })
     }
-    #[cfg(test)]
-    pub(crate) fn is_preparing(&self) -> bool {
-        matches!(&self.phase,Phase::Running {pipeline,..} if pipeline.is_preparing())
-    }
     pub(crate) fn step(&mut self, cancel: &AtomicBool) -> EngineResult<bool> {
         if cancel.load(Ordering::Acquire) {
             self.phase = Phase::Cancelled;

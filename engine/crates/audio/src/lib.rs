@@ -31,7 +31,7 @@
 //!
 //! - **WebAudio API**: Supports `AudioContext`, `AudioBufferSourceNode`, `GainNode`
 //! - **InnerAudioContext**: audio player with streaming support
-//! - **Format Support**: MP3 (minimp3-sys), OGG/Vorbis, WAV/PCM and full-file AAC-LC ADTS/M4A (Symphonia)
+//! - **Format Support**: MP3 (minimp3), OGG/Vorbis, WAV/PCM and AAC-LC ADTS/M4A (Symphonia)
 //! - **Streaming**: Edge-download-edge-play for large audio files
 //! - **Caching**: LRU cache for decoded audio to avoid repeated decoding
 //! - **Resampling**: Automatic sample rate conversion for device compatibility
