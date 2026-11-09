@@ -375,11 +375,11 @@ async fn stalled_after(
 
 #[tokio::test]
 async fn a_control_preempts_a_read_the_network_does_not_answer() {
-    // WAVE through Symphonia's reader; MP3 through minimp3's callback IO,
-    // whose 128 KiB refill is what waits. A restart needs no seek index.
+    // WAVE through Symphonia's reader; MP3 through the frame source, whose
+    // input window is what waits. A restart needs no seek beyond the start.
     let wave = crate::test_media::wav(16000, 1, 16000 * 8);
     let mp3 = include_bytes!("decoder/mp3/fixtures/music.mp3");
-    for (data, prefix, scheduler) in [(&wave[..], 64 * 1024, 1094), (&mp3[..], 140 * 1024, 1096)] {
+    for (data, prefix, scheduler) in [(&wave[..], 64 * 1024, 1094), (&mp3[..], 48 * 1024, 1096)] {
         preempted(data, prefix, scheduler).await;
     }
 }
@@ -425,12 +425,12 @@ async fn preempted(data: &[u8], prefix: usize, scheduler: i32) {
 
 #[tokio::test]
 async fn a_control_whose_media_never_arrives_fails_by_its_own_deadline() {
-    // A sample-exact MP3 seek needs the frames before its target (minimp3
-    // indexes them on the first seek); a WAVE seek, by contrast, needs no
-    // media to prepare. The prefix covers minimp3's first 128 KiB fill, so
-    // the stream is open and playing when the network stops.
+    // A sample-exact MP3 seek needs the frames before its target (the frame
+    // index reaches it); a WAVE seek, by contrast, needs no media to prepare.
+    // The stream is open and playing on the first 48 KiB when the network
+    // stops, far short of 90% of the presentation.
     let data = include_bytes!("decoder/mp3/fixtures/music.mp3");
-    let (_server, mut rx, state) = stalled_after(data, 140 * 1024, 1095).await;
+    let (_server, mut rx, state) = stalled_after(data, 48 * 1024, 1095).await;
     let target = state.timeline().unwrap().output_frames() as i64 * 9 / 10;
     let deadline = Instant::now() + Duration::from_millis(500);
     let reply =

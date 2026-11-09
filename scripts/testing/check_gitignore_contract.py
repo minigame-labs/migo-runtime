@@ -247,8 +247,8 @@ REQUIRED.extend(['engine/crates/audio/src/streaming_http_control_tests.rs'])
 # The streaming producer over upstream pull readers (P6).
 REQUIRED.extend(['engine/third_party/minimp3-afb604c/LICENSE', 'engine/third_party/minimp3-afb604c/minimp3.h', 'engine/third_party/minimp3-afb604c/minimp3_ex.h', 'engine/crates/audio/src/stream_open.rs', 'engine/crates/audio/src/stream_producer.rs', 'engine/crates/audio/src/stream_producer_tests.rs', 'engine/crates/audio/src/pcm_source.rs', 'engine/crates/audio/src/pcm_source_tests.rs', 'engine/crates/audio/src/mp3_source.rs', 'engine/crates/audio/src/mp3_source_tests.rs', 'engine/crates/audio/src/media_source.rs', 'engine/crates/audio/src/media_source_tests.rs', 'engine/crates/audio/src/media_source_http.rs', 'engine/crates/audio/src/media_source_http_tests.rs', 'engine/crates/audio/src/test_media.rs', 'engine/crates/audio/native/mp3.c'])
 
-# Symphonia patch sets the vendor contract replays.
-REQUIRED.extend(['engine/third_party/symphonia-format-isomp4-patches/0004-pull-reader-chunk-order-timing-and-seek.patch', 'engine/third_party/symphonia-codec-aac-patches/0002-adts-reader-track-and-eof.patch', 'scripts/test-symphonia-vendor-contract.sh'])
+# Symphonia patch sets the vendor contract replays; the MP3 source's oracle.
+REQUIRED.extend(['engine/crates/audio/src/mp3_ex_oracle.rs', 'engine/third_party/symphonia-format-isomp4-patches/0004-pull-reader-chunk-order-timing-and-seek.patch', 'engine/third_party/symphonia-codec-aac-patches/0002-adts-reader-track-and-eof.patch', 'scripts/test-symphonia-vendor-contract.sh'])
 
 def main():
     required = REQUIRED.copy()
