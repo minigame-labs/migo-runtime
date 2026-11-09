@@ -1308,6 +1308,16 @@ jobs:
           bash scripts/test-android-snapshot-embedding-contract.sh \
             "platforms/android/dist/migo-$(cat release/VERSION)-android.aar"
 
+      # The lowest compileSdk a host may build against is a value the AAR carries,
+      # and the Android Gradle plugin's default for it moved from 1 to the library's
+      # compileSdk with AGP 9. The source lane checks the declaration; this checks the
+      # bytes a host's build reads, in both published AARs, named as above.
+      - name: Android host compileSdk floor carried by the AARs
+        run: |
+          bash scripts/test-android-sdk-levels-contract.sh \
+            --aar "platforms/android/dist/migo-$(cat release/VERSION)-android.aar" \
+            --aar "platforms/android/dist/migo-$(cat release/VERSION)-android-nojni.aar"
+
       # The C ABI package is published by this release too, so it is verified
       # here rather than only by hand. Runs per ABI: the entry-point set, the
       # standalone header compile and the find_package consumer are all
