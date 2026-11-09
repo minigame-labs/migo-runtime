@@ -48,7 +48,19 @@ fn code_mount_selection_is_pinned_before_queued_package_or_directory_open() {
             fs::write(old.join("clip"), expected).unwrap();
             mounts.swap_base(Arc::new(DirSource::try_new(old).unwrap()));
         }
-        let context = file_context(&base).with_mounts(Some(mounts.clone()));
+        let mut context = file_context(&base).with_mounts(Some(mounts.clone()));
+        // One private worker, so the blocker below holds the read in the queue
+        // until after the swap. On the shared process executor the Fs class has a
+        // slot per worker: the read ran beside the blocker, and on a loaded
+        // two-core host the first poll could find it already finished. The byte
+        // budget is the product executor's, so admission is not under test.
+        context.scheduler = Arc::new(
+            migo_io::scheduler::IoScheduler::isolated_for_admission_probe(
+                997,
+                1,
+                256 * 1024 * 1024,
+            ),
+        );
         let (start, started) = std::sync::mpsc::channel();
         let (release, blocked) = std::sync::mpsc::channel();
         let block = context
