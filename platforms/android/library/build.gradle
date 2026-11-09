@@ -134,6 +134,16 @@ android {
         // be able to move, and the behaviour audit lives with the library.
         // Raising this does NOT raise `minSdk`: see scripts/test-android-sdk-levels-contract.sh.
         targetSdk 36
+        // The lowest `compileSdk` a host may build against, written into the AAR's
+        // aar-metadata.properties. Every Android type the public API names exists
+        // by API 24 and the manifest's attributes by API 5, so the floor is the one
+        // a host meets anyway: `minSdk`. Stated because the default is not stable:
+        // AGP 8 wrote 1, AGP 9 writes the library's own `compileSdk`, and the move
+        // to AGP 9 would have shipped an AAR that refuses to build in any host still
+        // compiling against 35 -- a breaking change no line of this file asked for.
+        aarMetadata {
+            minCompileSdk = 26
+        }
         versionCode 1
         // Read from the repository's single release-version source rather than
         // restated here. This value reaches an embedder through BuildInfo.VERSION,

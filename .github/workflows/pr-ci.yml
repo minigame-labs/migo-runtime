@@ -1309,6 +1309,15 @@ jobs:
       - name: Android shipped natives are reachable
         run: bash scripts/test-android-native-deps-contract.sh
 
+      # The floor a host's build reads from the AARs just built (minCompileSdk in
+      # aar-metadata.properties): AGP 9 defaults it to the library's compileSdk, which
+      # would refuse every host still compiling against 35.
+      - name: Android host compileSdk floor carried by the AARs
+        run: |
+          bash scripts/test-android-sdk-levels-contract.sh \
+            --aar platforms/android/dist/migo-full-debug.aar \
+            --aar platforms/android/dist/migo-full-debug-nojni.aar
+
       # The SDK as a host's Gradle takes it. The AARs the step above built are staged
       # as a Maven repository and held to the publication contract, then an app that
       # depends on com.minigame-labs:migo-android by its coordinates -- and one on
