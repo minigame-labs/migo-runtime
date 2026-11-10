@@ -925,6 +925,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- On Android the motion sensors deliver at the rate content asked for: the compass five readings a second, as the
+  reference documents, and the accelerometer, gyroscope and device motion at their `interval` -- `game` about every
+  20 ms, `ui` about every 60 ms, `normal` about every 200 ms. Android takes a sampling period as a hint, and a sensor
+  the hardware already runs faster for another listener delivers at that rate: the compass answered fifty readings a
+  second on a Mate 30. Each sensor is now registered at its rate and its readings held to it by their timestamps.
 - A host that paces frames from its display has at most one frame asked of it at a time, and the frame loop can no
   longer stop with content awaiting a frame nobody asked for. The render thread and content's
   `requestAnimationFrame` asked for frames independently while the render thread kept its own note of whether it had

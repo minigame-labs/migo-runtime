@@ -21,10 +21,12 @@ import com.migo.runtime.internal.RuntimeScoped;
  * <p>
  * Interval mapping from Mini Game spec:
  * <ul>
- *   <li>"game"   = ~20ms  (SENSOR_DELAY_GAME)</li>
- *   <li>"ui"     = ~60ms  (SENSOR_DELAY_UI)</li>
- *   <li>"normal" = ~200ms (SENSOR_DELAY_NORMAL)</li>
+ *   <li>"game"   = ~20ms</li>
+ *   <li>"ui"     = ~60ms</li>
+ *   <li>"normal" = ~200ms</li>
  * </ul>
+ * Each sensor is registered at its rate and delivered at it ({@link SensorRate}, {@link SensorPacer}): Android takes
+ * the period as a hint, and a sensor running faster for another listener delivers faster than asked.
  * <p>
  * Compatible with Android API 26+.
  *
@@ -118,16 +120,18 @@ public final class DeviceSensorManager implements RuntimeScoped {
         }
         if (sensor == null) return false;
 
-        final int delay = parseInterval(interval);
+        final SensorRate rate = SensorRate.of(interval);
 
         motionListener = new SensorEventListener() {
             private final float[] rotationMatrix = new float[9];
             private final double[] angles = new double[3];
+            private final SensorPacer pacer = rate.pacer();
 
             @Override
             public void onSensorChanged(SensorEvent event) {
                 synchronized (DeviceSensorManager.this) {
                     if (motionListener != this || !motionRequest.isActive()) return;
+                    if (!pacer.admit(event.timestamp)) return;
                     SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values);
 
                     // Remap coordinate system based on display rotation for correct
@@ -145,7 +149,7 @@ public final class DeviceSensorManager implements RuntimeScoped {
             }
         };
 
-        if (!sensorManager.registerListener(motionListener, sensor, delay)) {
+        if (!sensorManager.registerListener(motionListener, sensor, rate.samplingPeriodUs)) {
             motionListener = null;
             return false;
         }
@@ -239,13 +243,16 @@ public final class DeviceSensorManager implements RuntimeScoped {
         Sensor sensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
         if (sensor == null) return false;
 
-        final int delay = parseInterval(interval);
+        final SensorRate rate = SensorRate.of(interval);
 
         gyroscopeListener = new SensorEventListener() {
+            private final SensorPacer pacer = rate.pacer();
+
             @Override
             public void onSensorChanged(SensorEvent event) {
                 synchronized (DeviceSensorManager.this) {
                     if (gyroscopeListener != this || !gyroscopeRequest.isActive()) return;
+                    if (!pacer.admit(event.timestamp)) return;
                     NativeMethods.onGyroscopeChange(
                             sessionId,
                             token.generation(),
@@ -261,7 +268,7 @@ public final class DeviceSensorManager implements RuntimeScoped {
             }
         };
 
-        if (!sensorManager.registerListener(gyroscopeListener, sensor, delay)) {
+        if (!sensorManager.registerListener(gyroscopeListener, sensor, rate.samplingPeriodUs)) {
             gyroscopeListener = null;
             return false;
         }
@@ -294,7 +301,7 @@ public final class DeviceSensorManager implements RuntimeScoped {
      * Uses TYPE_ORIENTATION sensor for simplicity (deprecated but widely supported),
      * or falls back to TYPE_MAGNETIC_FIELD + TYPE_ACCELEROMETER.
      * <p>
-     * Frequency: ~5 times/second (200ms interval, SENSOR_DELAY_NORMAL).
+     * Frequency: ~5 times/second, as the reference documents (SensorRate.NORMAL).
      */
     public synchronized boolean startCompass() {
         LifecycleRequestState.Action action = compassRequest.requestStart(Boolean.TRUE);
@@ -317,10 +324,13 @@ public final class DeviceSensorManager implements RuntimeScoped {
         Sensor orientationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ORIENTATION);
         if (orientationSensor != null) {
             compassListener = new SensorEventListener() {
+                private final SensorPacer pacer = SensorRate.NORMAL.pacer();
+
                 @Override
                 public void onSensorChanged(SensorEvent event) {
                     synchronized (DeviceSensorManager.this) {
                         if (compassListener != this || !compassRequest.isActive()) return;
+                        if (!pacer.admit(event.timestamp)) return;
                         // event.values[0] = azimuth (direction, 0-360 degrees)
                         double direction = event.values[0];
                         String accuracy = mapAccuracy(event.accuracy);
@@ -333,9 +343,9 @@ public final class DeviceSensorManager implements RuntimeScoped {
                 public void onAccuracyChanged(Sensor sensor, int accuracy) {
                 }
             };
-            // ~5 times/second = 200ms = SENSOR_DELAY_NORMAL
+            // Five readings a second, as the reference documents: registered at it, and held to it (SensorRate).
             if (!sensorManager.registerListener(
-                    compassListener, orientationSensor, SensorManager.SENSOR_DELAY_NORMAL)) {
+                    compassListener, orientationSensor, SensorRate.NORMAL.samplingPeriodUs)) {
                 compassListener = null;
                 return false;
             }
@@ -353,6 +363,8 @@ public final class DeviceSensorManager implements RuntimeScoped {
             private final float[] rotationMatrix = new float[9];
             private final float[] orientation = new float[3];
             private int currentAccuracy = SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM;
+            // Both inputs update on every reading; only what reaches content is held to five a second.
+            private final SensorPacer pacer = SensorRate.NORMAL.pacer();
 
             @Override
             public void onSensorChanged(SensorEvent event) {
@@ -365,7 +377,8 @@ public final class DeviceSensorManager implements RuntimeScoped {
                         currentAccuracy = event.accuracy;
                     }
 
-                    if (SensorManager.getRotationMatrix(rotationMatrix, null, gravity, geomagnetic)) {
+                    if (pacer.admit(event.timestamp)
+                            && SensorManager.getRotationMatrix(rotationMatrix, null, gravity, geomagnetic)) {
                         SensorManager.getOrientation(rotationMatrix, orientation);
                         double direction = Math.toDegrees(orientation[0]);
                         if (direction < 0) direction += 360.0;
@@ -388,9 +401,9 @@ public final class DeviceSensorManager implements RuntimeScoped {
         };
 
         boolean magneticRegistered = sensorManager.registerListener(
-                compassListener, magneticSensor, SensorManager.SENSOR_DELAY_NORMAL);
+                compassListener, magneticSensor, SensorRate.NORMAL.samplingPeriodUs);
         boolean accelerometerRegistered = sensorManager.registerListener(
-                compassListener, accelerometerSensor, SensorManager.SENSOR_DELAY_NORMAL);
+                compassListener, accelerometerSensor, SensorRate.NORMAL.samplingPeriodUs);
         if (!magneticRegistered || !accelerometerRegistered) {
             sensorManager.unregisterListener(compassListener);
             compassListener = null;
@@ -465,13 +478,16 @@ public final class DeviceSensorManager implements RuntimeScoped {
         Sensor sensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
         if (sensor == null) return false;
 
-        final int delay = parseInterval(interval);
+        final SensorRate rate = SensorRate.of(interval);
 
         accelerometerListener = new SensorEventListener() {
+            private final SensorPacer pacer = rate.pacer();
+
             @Override
             public void onSensorChanged(SensorEvent event) {
                 synchronized (DeviceSensorManager.this) {
                     if (accelerometerListener != this || !accelerometerRequest.isActive()) return;
+                    if (!pacer.admit(event.timestamp)) return;
                     // In g, as every host reports it: Android's m/s^2 divided by
                     // standard gravity. The axes are already the convention.
                     NativeMethods.onAccelerometerChange(
@@ -489,7 +505,7 @@ public final class DeviceSensorManager implements RuntimeScoped {
             }
         };
 
-        if (!sensorManager.registerListener(accelerometerListener, sensor, delay)) {
+        if (!sensorManager.registerListener(accelerometerListener, sensor, rate.samplingPeriodUs)) {
             accelerometerListener = null;
             return false;
         }
@@ -608,21 +624,5 @@ public final class DeviceSensorManager implements RuntimeScoped {
 
         SensorManager.remapCoordinateSystem(rotationMatrix, axisX, axisY, remappedMatrix);
         return remappedMatrix;
-    }
-
-    /**
-     * @param interval "game", "ui", or "normal" (default)
-     * @return SensorManager delay constant
-     */
-    private static int parseInterval(String interval) {
-        if (interval == null) return SensorManager.SENSOR_DELAY_NORMAL;
-        switch (interval) {
-            case "game":
-                return SensorManager.SENSOR_DELAY_GAME;
-            case "ui":
-                return SensorManager.SENSOR_DELAY_UI;
-            default:
-                return SensorManager.SENSOR_DELAY_NORMAL;
-        }
     }
 }
