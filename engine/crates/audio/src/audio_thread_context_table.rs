@@ -8,10 +8,6 @@ pub(crate) trait ContextView {
     fn contains_key(&self, id: &AudioContextId) -> bool {
         self.view().contains_key(id)
     }
-    #[cfg(test)]
-    fn values(&self) -> std::collections::hash_map::Values<'_, AudioContextId, AudioContext> {
-        self.view().values()
-    }
     fn iter(&self) -> std::collections::hash_map::Iter<'_, AudioContextId, AudioContext> {
         self.view().iter()
     }
