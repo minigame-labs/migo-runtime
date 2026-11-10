@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="migo_scan_hint">将二维码或条码放入框内，即可自动扫描</string>
+    <string name="migo_scan_album">相册</string>
+    <string name="migo_scan_no_code">未在图片中识别到二维码或条码</string>
+    <string name="migo_scan_no_camera">无法使用相机</string>
+</resources>

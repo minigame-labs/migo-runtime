@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Ids of the SDK's own views, which a UI test finds them by. -->
+<resources>
+    <item name="migo_scan_album" type="id" />
+</resources>

@@ -5,6 +5,11 @@
       "group": "org.jetbrains.kotlin",
       "artifact": "kotlin-stdlib",
       "version": "2.4.21"
+    },
+    {
+      "group": "com.google.zxing",
+      "artifact": "core",
+      "version": "3.5.3"
     }
   ],
   "bundled_jars": [
