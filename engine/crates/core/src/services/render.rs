@@ -113,7 +113,7 @@ impl RenderService {
         render_exit: std::sync::Arc<shared::render_exit::RenderExit>,
         wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
         raf_demand: shared::raf_signal::RafDemandRef,
-        request_vsync: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+        frame_request: Option<std::sync::Arc<shared::frame_request::FrameRequest>>,
         surface_control: std::sync::Arc<shared::surface::SurfaceControl>,
         report_surface_loss: std::sync::Arc<
             dyn Fn(shared::surface::PublicSurfaceGeneration, shared::surface::SurfaceLossReason)
@@ -150,7 +150,7 @@ impl RenderService {
             context_lost,
             wake,
             raf_demand,
-            request_vsync,
+            frame_request,
             std::sync::Arc::clone(&surface_control),
             report_surface_loss,
             report_surface_installed,

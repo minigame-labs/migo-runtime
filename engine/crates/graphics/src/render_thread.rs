@@ -2244,13 +2244,15 @@ impl RenderThread {
         // unconsumed timestamp, and a failed signal restores it so RAF cannot
         // freeze. Shared `Arc` survives JS soft restart with the RafReceiver.
         raf_demand: shared::raf_signal::RafDemandRef,
-        // One-shot vsync arm. `Some` on platforms with a demand-driven
-        // display clock (Android Choreographer via a native->Java route);
-        // `None` where the engine paces frames itself and in tests — that path
-        // arms its own `SoftwareFrameClock` instead of asking anyone. The render
-        // thread calls it to request exactly one more frame while demand remains;
-        // graphics stays decoupled from `platform` (it only invokes a closure).
-        request_vsync: Option<Arc<dyn Fn() + Send + Sync>>,
+        // The frame asked of the host (`shared::frame_request`). `Some` on
+        // platforms with a demand-driven display clock (Android Choreographer via
+        // a native->Java route, a C ABI host's display link); `None` where the
+        // engine paces frames itself and in tests — that path arms its own
+        // `SoftwareFrameClock` instead of asking anyone. The render thread arms it
+        // for exactly one more frame while demand remains, and clears it when the
+        // vsync arrives; content's await arms the same request. graphics stays
+        // decoupled from `platform`: the request only invokes a closure.
+        frame_request: Option<Arc<shared::frame_request::FrameRequest>>,
         // Queue-independent native-lifetime control plane. It owns the
         // generation gate, installs a dedicated must-deliver command stream, and
         // parks the initial candidate Surface -- which this thread claims once it
@@ -2515,7 +2517,7 @@ impl RenderThread {
                 let vsync: Receiver<f64> = vsync_rx.unwrap_or_else(crossbeam_channel::never);
                 // Wakes the render thread when a demand source publishes while the
                 // engine-paced clock is stopped. `never()` on external-vsync
-                // platforms, whose arm route is `request_vsync`.
+                // platforms, whose arm route is `frame_request`.
                 let frame_demand: Receiver<()> =
                     frame_demand_rx.unwrap_or_else(crossbeam_channel::never);
 
@@ -2527,13 +2529,18 @@ impl RenderThread {
                 let cleanup_cadence = DeferredCleanupCadence::new(start_time.elapsed());
                 let mut dirty = true;
                 let mut paused = false;
-                // Whether a one-shot vsync callback has been requested but not
-                // yet delivered. Suppresses redundant `request_vsync` JNI calls
-                // while a callback is already in flight; reset when a vsync is
-                // delivered or on any lifecycle edge (Pause/Resume/SurfaceDestroyed/
-                // RecreateOnscreen) where Java unschedules/reschedules. `Cell` so
-                // the command-handling closure can reset it via shared capture.
-                let vsync_armed = std::cell::Cell::new(false);
+                // Whether a frame is asked of the host and not yet answered lives
+                // in `frame_request`, shared with content's await so the host has
+                // one frame asked of it at a time. It is cleared when a vsync is
+                // delivered, and on every lifecycle edge (Pause/Resume/
+                // SurfaceDestroyed/RecreateOnscreen) where Java unschedules or
+                // reschedules, so the next arm asks again.
+                let frame_request = frame_request.as_deref();
+                let forget_frame_request = || {
+                    if let Some(request) = frame_request {
+                        request.clear();
+                    }
+                };
                 // The frame time of the last vsync this loop handled. Two requests made
                 // before the display's next frame are two callbacks for that one frame,
                 // both carrying its frame time, and a host that posts a callback per
@@ -2706,7 +2713,7 @@ impl RenderThread {
                                         } else {
                                             mark_surface_destroyed(surface_system);
                                         }
-                                        vsync_armed.set(false);
+                                        forget_frame_request();
                                         *dirty = true;
                                         info!(
                                             generation = generation.get(),
@@ -2736,7 +2743,7 @@ impl RenderThread {
                                                 == Some(PresentationDisposition::Unavailable)
                                         {
                                             mark_surface_destroyed(surface_system);
-                                            vsync_armed.set(false);
+                                            forget_frame_request();
                                         }
                                         error!(
                                             generation = generation.get(),
@@ -2882,7 +2889,7 @@ impl RenderThread {
                                 // Java stops the scheduler on pause (removing
                                 // any posted callback); clear our in-flight flag so
                                 // Resume re-arms retained demand.
-                                vsync_armed.set(false);
+                                forget_frame_request();
                                 let live_canvases = cm.canvas_count();
                                 let surface_state_before = surface_system.state();
                                 surface_system.on_pause();
@@ -2922,7 +2929,7 @@ impl RenderThread {
                                 // Clear in-flight flag so the forced first-frame
                                 // dirty below re-arms even if a stale callback was
                                 // dropped while paused.
-                                vsync_armed.set(false);
+                                forget_frame_request();
                                 let paused_ms = pause_started_at
                                     .take()
                                     .map(|t: Instant| t.elapsed().as_millis() as u64)
@@ -2957,7 +2964,7 @@ impl RenderThread {
                                 // Java clears surfaceReady (removing any posted
                                 // callback); clear our in-flight flag so a later
                                 // RecreateOnscreen re-arms retained demand.
-                                vsync_armed.set(false);
+                                forget_frame_request();
                                 info!(
                                     generation = generation.get(),
                                     paused = paused_now,
@@ -2988,7 +2995,7 @@ impl RenderThread {
                                 Ok(disposition) => {
                                     if *disposition != SurfaceReleaseDisposition::Superseded {
                                         mark_surface_destroyed(surface_system);
-                                        vsync_armed.set(false);
+                                        forget_frame_request();
                                     }
                                     info!(
                                         generation = generation.get(),
@@ -3003,7 +3010,7 @@ impl RenderThread {
                                     // the target/lease for shutdown fallback.
                                     if !render_binding.is_live() {
                                         mark_surface_destroyed(surface_system);
-                                        vsync_armed.set(false);
+                                        forget_frame_request();
                                     }
                                     error!(
                                         generation = generation.get(),
@@ -3453,7 +3460,7 @@ impl RenderThread {
                                     };
                                     if retired {
                                         mark_surface_destroyed(surface_system);
-                                        vsync_armed.set(false);
+                                        forget_frame_request();
                                     }
                                     debug_stats
                                         .swap_failures
@@ -3627,9 +3634,9 @@ impl RenderThread {
                 // Request exactly one more display frame iff demand remains
                 // (RAF waiter / dirty / outstanding upload work) and we can present.
                 // Idle, paused, or surfaceless => no arm, so the frame clock stops
-                // and there is no idle JNI flood. `vsync_armed` suppresses a
-                // redundant request while one callback is already in flight; Java's
-                // own requested/callbackPosted latch is the authoritative dedup.
+                // and there is no idle JNI flood. `frame_request` asks the host only
+                // when nothing is asked already, whoever arms it; Java's own
+                // requested/callbackPosted latch dedups behind it on Android.
                 //
                 // Platforms with no external vsync source take the engine-paced
                 // route instead, which is the same policy over a different arm: the
@@ -3658,18 +3665,17 @@ impl RenderThread {
                                 recovery_pending,
                             );
                         if has_vsync {
-                            if crate::frame_scheduler::should_arm_one_shot(
-                                has_vsync,
-                                request_vsync.is_some(),
-                                paused,
-                                surface_system.can_present(),
-                                demand,
-                                vsync_armed.get(),
-                            ) {
-                                if let Some(rv) = request_vsync.as_ref() {
-                                    rv();
-                                }
-                                vsync_armed.set(true);
+                            if let Some(request) = frame_request
+                                && crate::frame_scheduler::should_arm_one_shot(
+                                    has_vsync,
+                                    true,
+                                    paused,
+                                    surface_system.can_present(),
+                                    demand,
+                                    request.is_asked(),
+                                )
+                            {
+                                request.arm();
                             }
                         } else if crate::frame_scheduler::should_arm_engine_paced(paused, demand) {
                             frame_clock.arm(Instant::now());
@@ -3896,18 +3902,23 @@ impl RenderThread {
                             let Ok(frame_time_ms) = vsync.try_recv() else {
                                 continue;
                             };
-                            // A frame already handled (see `last_vsync_ms`): its first
-                            // vsync ran it and armed the next one, so this one is dropped
-                            // whole -- no frame, no RAF, no arm.
+                            // The vsync answers what was asked, whatever this loop
+                            // then does with it: demand that remains this frame asks
+                            // for the next one.
+                            forget_frame_request();
+                            // A frame already handled (see `last_vsync_ms`) runs no
+                            // frame and signals no RAF. It still answered the request,
+                            // and can be the only answer there is -- the one to the
+                            // frame the render thread asked for, when a host answers
+                            // two requests back to back and the second converts to a
+                            // frame time no later than the first -- so demand that
+                            // remains asks again, or the loop stops with content
+                            // awaiting a frame nobody asked for.
                             if frame_time_ms <= last_vsync_ms {
+                                arm_if_needed(warm_frames > 0, paused, dirty, needs_context_recovery, &cm, &surface_system, &mut frame_clock);
                                 continue;
                             }
                             last_vsync_ms = frame_time_ms;
-                            // Choreographer VSync path (Android).
-                            // The requested one-shot callback was delivered —
-                            // clear the in-flight flag so demand that remains this
-                            // frame can re-arm the next one.
-                            vsync_armed.set(false);
                             crate::render_diagnostics::set_render_queue_len(cmd_rx.len() as u32);
 
                             let decision = next_vsync_frame_decision(

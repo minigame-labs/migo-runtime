@@ -925,6 +925,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- A host that paces frames from its display has at most one frame asked of it at a time, and the frame loop can no
+  longer stop with content awaiting a frame nobody asked for. The render thread and content's
+  `requestAnimationFrame` asked for frames independently while the render thread kept its own note of whether it had
+  asked; a vsync it dropped as a repeat of a frame already handled also skipped clearing that note and asking again, so
+  when the dropped vsync was the answer to its own request -- a host answering two requests back to back, the second
+  converting to a frame time no later than the first -- the note stayed set and nothing asked the host again. Seen on
+  the macOS headless C ABI host on CI: two frames requested, two answered, then nothing. Both now ask through one
+  shared request that every vsync clears, and a repeat that runs no frame asks again for demand that remains.
 - On Android `stopBluetoothDevicesDiscovery` answers 10000 "not init" while the adapter is not open -- never opened,
   or closed by `closeBluetoothAdapter` -- as the reference documents and as `getBluetoothAdapterState` on the same
   adapter already did. It answered ok. The iOS and macOS SDK already refused it.
