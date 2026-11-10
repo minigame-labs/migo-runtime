@@ -768,6 +768,19 @@ export const op_share_game_recording = hostRequestWithFiles(SERVICE_OP.op_share_
 // and answers what happened: started, not supported, failed. The recording's events
 // are waited on one at a time, as content's side of the embedded runtime waits.
 
+/// Start decoder `id` on the host. Awaited, because the host first resolves the
+/// source through the game's sandbox into a file the platform can open
+/// (migo_services::host_paths, as the embedded op does); the decoder's events
+/// then reach content through the hook the embedded runtime calls.
+export function op_video_decoder_start(decoderId, requestJson) {
+  const id = smiU32(decoderId, "id");
+  const request = stringOf(requestJson, "request_json");
+  return servicesOf(engineHost()).request(SERVICE_OP.op_video_decoder_start, (w) => {
+    w.u32(id);
+    w.str(request);
+  });
+}
+
 export function op_game_recorder_start(fps, bitrateKbps, gop, durationMs) {
   const args = [
     smiU32(fps, "fps"),

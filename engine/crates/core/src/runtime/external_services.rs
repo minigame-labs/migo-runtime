@@ -330,6 +330,10 @@ pub(crate) struct ServiceContext {
     /// The events of the recording being made, for the producer's wait on
     /// them.
     recording: Mutex<Option<Arc<shared::game_recorder::RecorderEvents>>>,
+    /// Content's video decoders, decoded as the embedded ops decode them
+    /// (`shared::video_decoding`). Shared with a start that awaits its source's
+    /// export; dropped with the session, which ends every decode thread.
+    video_decoders: Arc<Mutex<shared::video_decoding::VideoDecoders>>,
 }
 
 /// A device service's refusal in the words the embedded op shows: its
@@ -358,6 +362,7 @@ impl ServiceContext {
             cursors: migo_services::cursor::CursorCopies::default(),
             renderer: RwLock::new(None),
             recording: Mutex::new(None),
+            video_decoders: Arc::default(),
         }
     }
 
@@ -561,6 +566,15 @@ impl ServiceContext {
             .and_then(Option::as_deref)
             .and_then(pick)
             .ok_or_else(|| ServiceError::generic(format!("{what}:fail not supported")))
+    }
+
+    /// The platform's video decoders, where it has them: the same accessor
+    /// the embedded ops ask.
+    fn video_decoder_service(&self) -> Option<Arc<dyn shared::services::VideoDecoderService>> {
+        self.device
+            .get()
+            .and_then(Option::as_deref)
+            .and_then(|device| device.video_decoder())
     }
 
     /// The platform's audio settings, where it has them.
@@ -779,6 +793,39 @@ impl ServiceContext {
                 Ok(OwnedValue::Bool(renderer.is_some_and(|canvas| {
                     migo_services::game_recorder::supported(&canvas)
                 })))
+            }
+            // A video decoder, answered as the embedded ops answer: whether the
+            // platform decodes at all, a frame -- its size, its times and its
+            // pixels, which cross once, as the answer -- a seek and a stop.
+            id::op_video_decoder_available => {
+                let [] = exactly(op, args)?;
+                Ok(OwnedValue::Bool(self.video_decoder_service().is_some()))
+            }
+            id::op_video_decoder_take_frame => {
+                let [decoder] = exactly(op, args)?;
+                let decoder = u32_of(op, 0, decoder)?;
+                Ok(match self.video_decoders.lock().take_frame(decoder) {
+                    Some(frame) => OwnedValue::Array(vec![
+                        OwnedValue::F64(f64::from(frame.width)),
+                        OwnedValue::F64(f64::from(frame.height)),
+                        OwnedValue::F64(frame.timing.pts_ms),
+                        OwnedValue::F64(frame.timing.dts_ms),
+                        OwnedValue::Bytes(frame.rgba),
+                    ]),
+                    None => OwnedValue::Null,
+                })
+            }
+            id::op_video_decoder_seek => {
+                let [decoder, position] = exactly(op, args)?;
+                let (decoder, position) = (u32_of(op, 0, decoder)?, f64_of(op, 1, position)?);
+                Ok(OwnedValue::Bool(
+                    self.video_decoders.lock().seek(decoder, position),
+                ))
+            }
+            id::op_video_decoder_stop => {
+                let [decoder] = exactly(op, args)?;
+                let decoder = u32_of(op, 0, decoder)?;
+                Ok(OwnedValue::Bool(self.video_decoders.lock().stop(decoder)))
             }
             id::op_storage_get => {
                 let [key] = exactly(op, args)?;
@@ -1173,6 +1220,44 @@ impl ServiceContext {
                 files,
                 args,
             )?,
+            // A video decoder starts once its source is a file the platform can
+            // open -- exported through the game's sandbox and held for the
+            // session, as the embedded op holds it -- and then decodes on its
+            // own thread; content hears `start` or `error` through the hook.
+            id::op_video_decoder_start => {
+                let [decoder, request] = exactly(op, args)?;
+                let (decoder, request) = (u32_of(op, 0, decoder)?, string(op, 1, request)?);
+                let service = self
+                    .video_decoder_service()
+                    .ok_or_else(|| ServiceError::generic("start:fail not supported"))?;
+                let sandbox = self.sandbox()?;
+                let host = self.lifecycle()?.clone();
+                let decoders = Arc::clone(&self.video_decoders);
+                Box::pin(async move {
+                    let mut request: serde_json::Value =
+                        serde_json::from_str(&request).map_err(|error| {
+                            ServiceError::generic(format!("start:fail malformed request: {error}"))
+                        })?;
+                    let files = migo_services::host_paths::VIDEO_DECODER_START;
+                    migo_services::host_paths::export_paths_for_session(
+                        &sandbox,
+                        &mut request,
+                        files.fields,
+                        files.remote,
+                    )
+                    .await?;
+                    decoders
+                        .lock()
+                        .start(
+                            decoder,
+                            service,
+                            shared::video_decoding::StartRequest::from_request(&request),
+                            host,
+                        )
+                        .map_err(|error| ServiceError::generic(format!("start:fail {error}")))?;
+                    Ok(OwnedValue::Null)
+                })
+            }
             // The game recorder: the render thread is asked as the embedded ops
             // ask it, and the recording's events are waited on here.
             id::op_game_recorder_start => {
@@ -1505,6 +1590,12 @@ impl ServiceContext {
                 self.device("gameLog.log", |device| device.game_log())?
                     .report_log(&string(op, 0, entry)?)
                     .map_err(device_error)
+            }
+            // A decoder removed for good: its thread ends without an event.
+            id::op_video_decoder_remove => {
+                let [decoder] = exactly(op, args)?;
+                self.video_decoders.lock().remove(u32_of(op, 0, decoder)?);
+                Ok(())
             }
             id::op_set_preferred_fps => {
                 let [fps] = exactly(op, args)?;
@@ -3082,6 +3173,203 @@ mod tests {
         none.bind_device(None);
         let refused = call(&none, id::op_recorder_stop).expect_err("no microphone");
         assert_eq!(refused.message, "recorderManager.stop:fail not supported");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A video decoder on this lane decodes as the embedded ops decode: the
+    /// platform's decoder opens the game's file as the path the embedded op
+    /// exports, frames come back with their size, times and pixels, a seek and
+    /// a stop are answered at once, and the decoder's events reach content
+    /// through the hook the embedded runtime calls. A platform with no decoder
+    /// says so.
+    #[test]
+    fn a_video_decoder_decodes_on_the_host_as_the_embedded_ops_decode() {
+        use shared::protocol::host_cmd::HostCommand;
+        use shared::services::{
+            FrameTiming, ServiceError as DeviceError, VideoDecoderService, VideoFrameSource,
+        };
+        struct Frames(u8);
+        impl VideoFrameSource for Frames {
+            fn size(&self) -> (u32, u32) {
+                (2, 1)
+            }
+            fn next_frame(&mut self, rgba: &mut [u8]) -> Result<Option<FrameTiming>, DeviceError> {
+                if self.0 == 10 {
+                    return Ok(None);
+                }
+                rgba.fill(self.0 + 10);
+                let pts = f64::from(self.0) * 40.0;
+                self.0 += 1;
+                Ok(Some(FrameTiming {
+                    pts_ms: pts,
+                    dts_ms: pts,
+                }))
+            }
+            fn seek(&mut self, position_ms: f64) -> Result<(), DeviceError> {
+                self.0 = (position_ms / 40.0) as u8;
+                Ok(())
+            }
+        }
+        #[derive(Default)]
+        struct Decoder(parking_lot::Mutex<Vec<String>>);
+        impl VideoDecoderService for Decoder {
+            fn open(&self, source: &str) -> Result<Box<dyn VideoFrameSource>, DeviceError> {
+                self.0.lock().push(source.to_owned());
+                Ok(Box::new(Frames(0)))
+            }
+        }
+        struct Platform(Arc<Decoder>);
+        impl shared::services::SensorServices for Platform {}
+        impl shared::services::ConnectivityServices for Platform {}
+        impl shared::services::CommerceServices for Platform {}
+        impl shared::services::SystemUtilServices for Platform {}
+        impl shared::services::MediaServices for Platform {
+            fn video_decoder(&self) -> Option<Arc<dyn VideoDecoderService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn VideoDecoderService>)
+            }
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("migo-external-decoder-{}", std::process::id()));
+        let files = root.join("files");
+        let cache = root.join("cache");
+        let installed = shared::vfs::GamePaths::new(&files, &cache, "g", 1).unwrap();
+        std::fs::create_dir_all(installed.code_dir()).unwrap();
+        std::fs::write(installed.code_dir().join("cut.mp4"), b"mp4").unwrap();
+        let decoder = Arc::new(Decoder::default());
+        let context = ServiceContext::new(files.clone(), cache.clone());
+        context.bind_session(1);
+        context.bind_device(Some(Arc::new(Platform(Arc::clone(&decoder)))));
+        context.load_content("g", "game.js").expect("mounts");
+        let (host_tx, _critical, mut host_rx) = shared::host_channel::channel(64);
+        context.bind_lifecycle(host_tx);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (sender, _commands) = shared::render_command_sender::CommandSender::new();
+        let render = RenderHandles {
+            canvas: shared::op_state::CanvasOpState::for_host(sender, 1),
+            gpu_caps: shared::device::gpu_caps::GpuCaps::new(),
+        };
+        let event = |host_rx: &mut shared::host_channel::HostCommandReceiver| {
+            let deadline = Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                match host_rx.try_recv() {
+                    Ok(HostCommand::InvokeHostHook { hook, args_json }) => {
+                        assert_eq!(hook, "_internalOnVideoDecoderEvent");
+                        let args: serde_json::Value = serde_json::from_str(&args_json).unwrap();
+                        assert_eq!(args[0], 5, "decoder 5's event");
+                        let name = args[1]["event"].as_str().unwrap().to_owned();
+                        // Frames there again after a take found none: news, in any order.
+                        if name != "bufferchange" {
+                            return name;
+                        }
+                    }
+                    Ok(other) => panic!("{other:?}"),
+                    Err(_) if Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(2))
+                    }
+                    Err(error) => panic!("no event: {error:?}"),
+                }
+            }
+        };
+        let take = |context: &ServiceContext| {
+            let deadline = Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                match context
+                    .call_sync(id::op_video_decoder_take_frame, vec![OwnedValue::U32(5)])
+                    .unwrap()
+                {
+                    OwnedValue::Array(frame) => return frame,
+                    OwnedValue::Null if Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(2))
+                    }
+                    other => panic!("no frame: {other:?}"),
+                }
+            }
+        };
+
+        assert!(matches!(
+            context.call_sync(id::op_video_decoder_available, vec![]),
+            Ok(OwnedValue::Bool(true))
+        ));
+        let start = context
+            .call_async(
+                id::op_video_decoder_start,
+                vec![
+                    OwnedValue::U32(5),
+                    OwnedValue::Str(r#"{"source":"cut.mp4","mode":1}"#.to_owned()),
+                ],
+                &render,
+            )
+            .unwrap();
+        runtime.block_on(start).expect("starts");
+        assert_eq!(event(&mut host_rx), "start");
+        assert_eq!(
+            decoder.0.lock().as_slice(),
+            [installed.code_dir().join("cut.mp4").to_str().unwrap()],
+            "the platform opens the game's file"
+        );
+        let frame = take(&context);
+        assert!(
+            matches!(
+                frame.as_slice(),
+                [
+                    OwnedValue::F64(w),
+                    OwnedValue::F64(h),
+                    OwnedValue::F64(pts),
+                    OwnedValue::F64(_),
+                    OwnedValue::Bytes(rgba),
+                ] if (*w, *h, *pts) == (2.0, 1.0, 0.0) && rgba.as_slice() == [10u8; 8]
+            ),
+            "{frame:?}"
+        );
+        assert!(matches!(
+            context.call_sync(
+                id::op_video_decoder_seek,
+                vec![OwnedValue::U32(5), OwnedValue::F64(80.0)]
+            ),
+            Ok(OwnedValue::Bool(true))
+        ));
+        assert_eq!(event(&mut host_rx), "seek");
+        assert!(matches!(take(&context).last(), Some(OwnedValue::Bytes(rgba)) if rgba[0] == 12));
+        assert!(matches!(
+            context.call_sync(id::op_video_decoder_stop, vec![OwnedValue::U32(5)]),
+            Ok(OwnedValue::Bool(true))
+        ));
+        assert_eq!(event(&mut host_rx), "stop");
+        assert!(matches!(
+            context.call_sync(id::op_video_decoder_stop, vec![OwnedValue::U32(5)]),
+            Ok(OwnedValue::Bool(false))
+        ));
+        // A removal is a command and says nothing.
+        context
+            .command(
+                id::op_video_decoder_remove,
+                vec![OwnedValue::U32(5)],
+                &render,
+            )
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(host_rx.try_recv().is_err());
+
+        let none = ServiceContext::new(files, cache);
+        none.bind_session(2);
+        none.bind_device(None);
+        assert!(matches!(
+            none.call_sync(id::op_video_decoder_available, vec![]),
+            Ok(OwnedValue::Bool(false))
+        ));
+        let refused = none
+            .call_async(
+                id::op_video_decoder_start,
+                vec![OwnedValue::U32(1), OwnedValue::Str("{}".to_owned())],
+                &render,
+            )
+            .err()
+            .expect("no decoder");
+        assert_eq!(refused.message, "start:fail not supported");
         let _ = std::fs::remove_dir_all(&root);
     }
 

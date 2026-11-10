@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `createVideoDecoder` on iOS: the video decodes on the host, with AVFoundation's asset reader -- the decoder the
+  macOS V8 lane uses, now built for every Apple platform -- and the decoding the embedded ops run: one thread per
+  decoder, by presentation time or as fast as content takes frames, a bounded buffer, and the `start`, `seek`,
+  `stop`, `ended`, `bufferchange` and `error` events through the hook the embedded runtime calls. `getFrameData`,
+  `seek` and `stop` are answered at once and `start` once the source is a file the platform can open (a package file
+  is exported through the game's sandbox and held for the session, as embedded); a frame's pixels cross from the host
+  once, as its answer. Until now `start` failed as not supported there.
 - `GameSession.getPermissionSink()` (Android): the session's `PermissionSink`, the one `requestScope` is handed. The
   `PermissionHandler` contract has always said to seed the session's standing scope decisions before the game starts
   and to report a revocation made in system settings, but a host could reach a sink only inside `requestScope`: it

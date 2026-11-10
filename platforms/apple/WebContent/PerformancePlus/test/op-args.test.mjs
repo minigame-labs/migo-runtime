@@ -49,6 +49,12 @@ function render(kind, value) {
   if (kind === "string") return JSON.stringify(value);
   if (kind === "u8_buffer") return `bytes:${hex(value)}`;
   if (kind === "u32_buffer") return `u32s:${Array.from(value).join(",")}`;
+  if (kind === "f64_buffer") {
+    return `f64s:${Array.from(value, (v) => {
+      F64[0] = v;
+      return F64_BITS[0].toString(16).padStart(16, "0");
+    }).join(",")}`;
+  }
   return String(value);
 }
 

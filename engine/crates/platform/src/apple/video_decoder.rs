@@ -1,4 +1,4 @@
-//! `createVideoDecoder` on macOS: AVFoundation's asset reader.
+//! `createVideoDecoder` on macOS and iOS: AVFoundation's asset reader.
 //!
 //! The reader decodes the video track to BGRA pixel buffers -- its decoders,
 //! VideoToolbox's hardware where there is one, and its own colour handling --

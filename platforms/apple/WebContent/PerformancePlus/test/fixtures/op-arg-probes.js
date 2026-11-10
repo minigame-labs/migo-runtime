@@ -69,6 +69,7 @@ globalThis.OP_ARG_PROBES = (() => {
     ["Uint32Array", new Uint32Array([1, 2])],
     ["Int32Array", new Int32Array([1])],
     ["Float32Array", new Float32Array([1.5])],
+    ["Float64Array", new Float64Array([1.5, -2])],
     ["DataView", new DataView(new ArrayBuffer(2))],
     ["ArrayBuffer", new ArrayBuffer(4)],
     ["resizable Uint8Array", new Uint8Array(resizable)],

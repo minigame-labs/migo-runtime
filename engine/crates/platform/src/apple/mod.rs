@@ -7,6 +7,7 @@ pub(crate) mod objc;
 #[cfg(target_vendor = "apple")]
 pub mod game_recorder;
 pub mod presenter;
-// AVFoundation's: macOS only, where the V8 lane decodes in process.
-#[cfg(target_os = "macos")]
+// AVFoundation's asset reader: decoding a video for content, on macOS and iOS
+// alike -- in process with the V8 lane, on the host for Performance+'s.
+#[cfg(target_vendor = "apple")]
 pub mod video_decoder;

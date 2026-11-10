@@ -135,12 +135,34 @@ const services = {
     commands.push({ op, args: readValues(writer.finish()) });
     if (op === SERVICE_OP.op_exit_mini_program) exitSent();
   },
+  flush() {
+    return 0n;
+  },
+};
+// The host's synchronous endpoint, as far as this test asks it: a host whose platform has no video decoder. Nothing
+// else it is asked has an answer here.
+const { OUTCOME_OK } = await import(`${root}/service.mjs`);
+const { SYNC_OP_SERVICE } = await import(`${root}/sync-mailbox.mjs`);
+const sync = {
+  call(request) {
+    if (request.operation === SYNC_OP_SERVICE) {
+      const op = new DataView(request.params.buffer, request.params.byteOffset, 4).getUint32(0, true);
+      if (op === SERVICE_OP.op_video_decoder_available) {
+        const writer = new ValueWriter(16);
+        writer.word(OUTCOME_OK);
+        writer.bool(false);
+        return writer.finish();
+      }
+    }
+    throw new Error("this test's host has no answer to that synchronous call");
+  },
 };
 bindEngineHost({
   session,
   identity,
   socketCeilingBytes: 64 * 1024,
   services,
+  sync,
   report: (message) => reports.push(message),
 });
 
@@ -327,10 +349,9 @@ if (packetDir) {
   check(!probeGl.isContextLost() && events.join() === "webglcontextlost,webglcontextrestored", "restoreContext() restored it");
 }
 
-// A video decoder where no decoder is integrated, as on this profile: start() fails as not supported, and the rest
-// answers as a decoder that is not decoding -- no frame, a seek refused, nothing to stop, removed -- without reaching
-// for decoding ops the profile does not offer. A game tidying up after a failed start threw out of remove() on an
-// iPhone.
+// A video decoder where the host's platform has none: start() fails as not supported, and the rest answers as a
+// decoder that is not decoding -- no frame, a seek refused, nothing to stop, removed -- without asking the host about
+// a decoder it never started. A game tidying up after a failed start threw out of remove() on an iPhone.
 {
   const decoder = migo.createVideoDecoder();
   const said = (promise) => promise.then((res) => res.errMsg, (err) => err.errMsg);

@@ -85,6 +85,11 @@ export function op_destroy_image(imageId) {
   return true;
 }
 
+/// Remove decoder `id` for good: a command, and its thread ends without an event.
+export function op_video_decoder_remove(decoderId) {
+  servicesOf(engineHost()).command(SERVICE_OP.op_video_decoder_remove, (w) => w.u32(smiU32(decoderId, "id")));
+}
+
 /// Clear this game's image caches: its textures, its decoded bytes, its derived
 /// disk cache.
 export function op_clear_image_cache() {

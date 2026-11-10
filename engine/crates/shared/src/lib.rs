@@ -89,6 +89,7 @@ pub mod thread_priority;
 pub mod time_origin;
 #[cfg(feature = "vfs")]
 pub mod vfs;
+pub mod video_decoding;
 pub mod yuv;
 
 #[cfg(test)]

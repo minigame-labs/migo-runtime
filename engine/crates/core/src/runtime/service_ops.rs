@@ -333,6 +333,12 @@ service_ops! {
     op_recorder_stop = 310,
     op_console = 311,
     op_inner_audio_set_start_time = 312,
+    op_video_decoder_available = 313,
+    op_video_decoder_start = 314,
+    op_video_decoder_take_frame = 315,
+    op_video_decoder_seek = 316,
+    op_video_decoder_stop = 317,
+    op_video_decoder_remove = 318,
 }
 
 /// The op's name, for a refusal a person will read.

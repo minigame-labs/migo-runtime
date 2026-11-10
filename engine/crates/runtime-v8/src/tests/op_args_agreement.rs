@@ -174,6 +174,16 @@ fn op_probe_u32_list(#[buffer(copy)] value: Vec<u32>) -> String {
     format!("u32s:{}", words.join(","))
 }
 
+#[op2]
+#[string]
+fn op_probe_f64_list(#[buffer] value: &mut [f64]) -> String {
+    let bits: Vec<String> = value
+        .iter()
+        .map(|v| format!("{:016x}", v.to_bits()))
+        .collect();
+    format!("f64s:{}", bits.join(","))
+}
+
 deno_core::extension!(
     op_arg_probes,
     ops = [
@@ -198,6 +208,7 @@ deno_core::extension!(
         op_probe_buffer,
         op_probe_option_buffer,
         op_probe_u32_list,
+        op_probe_f64_list,
     ]
 );
 
@@ -250,6 +261,7 @@ fn deno_answers() -> serde_json::Value {
                     u8_buffer: ops.op_probe_buffer,
                     option_u8_buffer: ops.op_probe_option_buffer,
                     u32_buffer: ops.op_probe_u32_list,
+                    f64_buffer: ops.op_probe_f64_list,
                   };
                   const out = {};
                   for (const [kind, op] of Object.entries(kinds)) {

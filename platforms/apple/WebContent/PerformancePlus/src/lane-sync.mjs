@@ -51,6 +51,7 @@ import {
   toU32,
   toU64,
   u32ArrayOf,
+  f64ArrayOf,
 } from "./op-args.mjs";
 import { MAX_PATH_WORDS } from "./render-opcodes.mjs";
 import { arrayBufferAnswer } from "./audio.mjs";
@@ -951,6 +952,45 @@ export function op_video_create(requestJson) {
 export function op_video_set(requestJson) {
   const request = stringOf(requestJson, "request_json");
   callService(SERVICE_OP.op_video_set, (w) => w.str(request));
+}
+
+// ---- video decoding --------------------------------------------------------------
+//
+// A decoder decodes on the host, as the embedded ops decode (shared::video_decoding),
+// with the platform's decoders: whether it has any, a frame, a seek and a stop are
+// answered at once, as the embedded ops answer them.
+
+export function op_video_decoder_available() {
+  return callService(SERVICE_OP.op_video_decoder_available);
+}
+
+/// Decoder `id`'s next frame for content, as the embedded op hands it over: its
+/// pixels -- an ArrayBuffer of their own, the one time they cross -- with
+/// `[width, height, pts, dts]` written to `meta`; empty when there is none.
+export function op_video_decoder_take_frame(decoderId, meta) {
+  const id = smiU32(decoderId, "id");
+  const times = f64ArrayOf(meta, "meta");
+  const frame = callService(SERVICE_OP.op_video_decoder_take_frame, (w) => w.u32(id));
+  if (frame === null) return new Uint8Array(0);
+  times[0] = frame[0];
+  times[1] = frame[1];
+  times[2] = frame[2];
+  times[3] = frame[3];
+  return frame[4];
+}
+
+export function op_video_decoder_seek(decoderId, positionMs) {
+  const id = smiU32(decoderId, "id");
+  const position = toF64(positionMs, "position_ms");
+  return callService(SERVICE_OP.op_video_decoder_seek, (w) => {
+    w.u32(id);
+    w.f64(position);
+  });
+}
+
+export function op_video_decoder_stop(decoderId) {
+  const id = smiU32(decoderId, "id");
+  return callService(SERVICE_OP.op_video_decoder_stop, (w) => w.u32(id));
 }
 
 /// getRecorderManager's microphone: each request answered at once, as the
