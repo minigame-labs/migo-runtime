@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `MigoAppleCamera`, the Apple SDK's camera capability, and with it `scanCode` on iOS: the SDK's own scanner, the
+  back camera's picture under a frame read by the camera's own code reading (`AVCaptureMetadataOutput`, limited to
+  the frame) and -- unless content asked for `onlyFromCamera` -- a picture from the photo library read by Vision. It
+  is answered as on Android (`result`, `scanType` by the reference's names, `charSet`, `path`, `rawData` in base64),
+  fails with `cancel` when the player closes it, and reports the camera's grant to `getAppAuthorizeSetting`. Like
+  MigoAppleLocation it is a product of its own: an app links it, passes `MigoCamera()` among its game view's
+  capabilities and declares `NSCameraUsageDescription`, which App Store review requires of any binary that uses the
+  camera. The scanner speaks English and Chinese; the SDK's package now declares a default localization for it.
+  `MigoSystemPresentation.present` is public, for a capability's own screen.
 - `createVideoDecoder` on iOS: the video decodes on the host, with AVFoundation's asset reader -- the decoder the
   macOS V8 lane uses, now built for every Apple platform -- and the decoding the embedded ops run: one thread per
   decoder, by presentation time or as fast as content takes frames, a bounded buffer, and the `start`, `seek`,

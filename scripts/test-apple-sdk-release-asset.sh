@@ -63,6 +63,9 @@ required = [
     "Sources/MigoApplePerformancePlus/MigoGameView.swift",
     "Sources/MigoMacV8/MigoGameView.swift",
     "Sources/MigoAppleLocation/MigoLocation.swift",
+    "Sources/MigoAppleCamera/MigoCamera.swift",
+    "Sources/MigoAppleCamera/Localization/en.lproj/Localizable.strings",
+    "Sources/MigoAppleCamera/Localization/zh-Hans.lproj/Localizable.strings",
 ]
 for relative in required:
     if not (package / relative).is_file():
@@ -113,6 +116,8 @@ build_product MigoApplePhotos "generic/platform=iOS"
 build_product MigoApplePhotos "platform=macOS"
 build_product MigoAppleBluetooth "generic/platform=iOS"
 build_product MigoAppleBluetooth "platform=macOS"
+build_product MigoAppleCamera "generic/platform=iOS"
+build_product MigoAppleCamera "platform=macOS"
 signed=0
 while IFS= read -r -d '' bundle; do
   copy="$WORK/signing/$(basename "$(dirname "$bundle")")/$(basename "$bundle")"

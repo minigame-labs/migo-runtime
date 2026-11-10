@@ -204,6 +204,14 @@ Bluetooth switch, and `scope.bluetooth` decided by the system's prompt. Declare
 `NSBluetoothAlwaysUsageDescription`. Pairing and setting the MTU are Android's
 and refused, as are the peripheral mode and, for now, iBeacons.
 
+`MigoAppleCamera` (`MigoCamera()`) answers `scanCode` on iOS with the SDK's own
+scanner: the back camera's picture under a frame, the code in it read by the
+camera itself, or -- unless content asked for `onlyFromCamera` -- a picture from
+the photo library read by Vision; content hears only the code, never the
+camera's picture, so no `scope.camera` is asked for. It reports the camera
+grant. Declare `NSCameraUsageDescription`; without it the scanner reads the
+photo library only.
+
 `MigoApplePhotos` (`MigoPhotoLibrary()`) saves to the photo library for
 `saveImageToPhotosAlbum` -- adding only, never reading: the pickers need no
 access -- reports the photo-library grant, and decides `scope.writePhotosAlbum`

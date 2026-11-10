@@ -1,0 +1,6 @@
+/* scanCode 的扫码界面。 */
+"scan.hint" = "将二维码或条码放入框内，即可自动扫描";
+"scan.album" = "相册";
+"scan.cancel" = "取消";
+"scan.noCode" = "未在图片中识别到二维码或条码";
+"scan.noCamera" = "无法使用相机";

@@ -150,6 +150,15 @@ view 可以接着载入下一个游戏。
 以下接口**明确拒绝，不伪造结果**：iOS 上的 `getHeapStatistics`（内容运行在 WebKit 的
 JavaScriptCore 中，它不暴露堆数据），以及启用签名校验时的动态下载分包。
 
+需要隐私授权的能力各自是一个独立产品，只有声明了用途说明的 App 才链接——App Store 审核要求二进制里用到的每一个这类 API 都有用途说明——并放进游戏视图配置的 `capabilities`：
+
+| 产品 | 回答 | 需声明 |
+| --- | --- | --- |
+| `MigoAppleLocation`（`MigoLocation()`） | `getLocation` / `getFuzzyLocation`、定位授权与开关、`scope.userLocation` | `NSLocationWhenInUseUsageDescription` |
+| `MigoAppleBluetooth`（`MigoBluetooth()`） | BLE 中心设备：适配器、扫描、连接与 GATT，`scope.bluetooth` | `NSBluetoothAlwaysUsageDescription` |
+| `MigoApplePhotos`（`MigoPhotoLibrary()`） | `saveImageToPhotosAlbum`、`scope.writePhotosAlbum` | `NSPhotoLibraryAddUsageDescription` |
+| `MigoAppleCamera`（`MigoCamera()`） | iOS 上的 `scanCode`：SDK 自带的扫码界面，后置相机，或（内容没要求 `onlyFromCamera` 时）照片库里的图片；相机授权 | `NSCameraUsageDescription` |
+
 ## 6. 验证记录
 
 - **iOS 真机**：iPhone XS Max（iOS 18.7）上游戏安装、载入、按显示时钟出帧、退出回到
