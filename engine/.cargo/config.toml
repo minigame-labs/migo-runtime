@@ -379,7 +379,8 @@ CXX_aarch64_pc_windows_msvc = "clang-cl"
 # which exports a plain `CC`/`CXX` before building -- a real environment
 # variable beats this non-forcing block, and `[env]` has no per-target form for
 # the unqualified name. If another Apple entry point appears that compiles Skia,
-# it needs the same two lines.
+# it needs the same two lines -- .github/workflows/apple-sdk.yml sets them for
+# its whole matrix job, which is how its `cargo test` steps get them.
 CC_aarch64_apple_darwin = "clang"
 CXX_aarch64_apple_darwin = "clang++"
 CC_x86_64_apple_darwin = "clang"

@@ -160,6 +160,15 @@ jobs:
     env:
       MIGO_APPLE_BUILD_ROOT: ${{ github.workspace }}/build/apple
       MIGO_APPLE_PACKAGE_ROOT: ${{ github.workspace }}/${{ matrix.package_path }}
+      # The host compiler, for every step. engine/.cargo/config.toml names a
+      # bare `CC = "clang-18"` for Linux hosts, and `[env]` has no per-target
+      # form: cc-rs is steered back to `clang` per Apple triple there, but
+      # Skia's GN build takes the bare CC. build-apple-sdk.sh exports its own;
+      # the cargo test steps below did not, and the first run that reached them
+      # with no prebuilt Skia for their profile stopped 1400 ninja steps into
+      # Skia at `/bin/sh: clang-18: command not found`.
+      CC: clang
+      CXX: clang++
 
     steps:
       - name: Checkout
