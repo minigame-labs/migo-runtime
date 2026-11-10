@@ -6,23 +6,51 @@
 
 mod lexer;
 mod preprocess;
+mod uniforms;
 mod zero_init;
 
 pub(crate) use preprocess::Environment;
+pub(crate) use uniforms::{Active, Declarations, UniformOrder, order};
 
 /// WebGL 2's default uniform-block layout, declared ahead of a GLSL ES 3.00 shader's first token.
 const STD140_DEFAULT: &str = "layout(std140) uniform; ";
 
-/// The source a driver should compile for the WebGL shader `source`: every variable it leaves without a value
-/// initialized to zero, as WebGL requires and a driver need not do (see `zero_init`). `None` when the driver can take
-/// `source` as it is -- its WebGL translator owns initialization, nothing is missing, or the shader will be refused.
-pub(crate) fn for_driver(source: &str, env: &Environment) -> Option<String> {
+/// What a driver should be given for a WebGL shader, read in one pass over it.
+pub(crate) struct ForDriver {
+    /// The source to compile: every variable it leaves without a value initialized to zero, as WebGL requires and a
+    /// driver need not do (see `zero_init`). `None` when the driver can take the shader's own -- its WebGL
+    /// translator owns initialization, nothing is missing, or the shader will be refused.
+    pub source: Option<String>,
+    /// Its uniform declarations, from which a program's uniforms are listed in WebGL's order (`uniforms`). `None`
+    /// when the driver lists them so already (ANGLE's WebGL compiler), or the shader cannot be read.
+    pub uniforms: Option<Declarations>,
+}
+
+/// What the driver should compile for the WebGL shader `source`, and what it declares about its uniforms.
+pub(crate) fn for_driver(source: &str, env: &Environment) -> ForDriver {
     // ANGLE's WebGL compiler supplies this transformation itself and rejects the
-    // implementation-reserved helper names our native-GLES workaround inserts.
+    // implementation-reserved helper names our native-GLES workaround inserts; its
+    // linker lists uniforms as a browser does, because it is a browser's.
     if env.extensions.contains("GL_ANGLE_webgl_compatibility") {
-        return None;
+        return ForDriver {
+            source: None,
+            uniforms: None,
+        };
     }
-    let preprocessed = preprocess::preprocess(source, env).ok()?;
+    let Ok(preprocessed) = preprocess::preprocess(source, env) else {
+        return ForDriver {
+            source: None,
+            uniforms: None,
+        };
+    };
+    let uniforms = Some(Declarations::read(&preprocessed.tokens));
+    ForDriver {
+        source: amended(source, &preprocessed),
+        uniforms,
+    }
+}
+
+fn amended(source: &str, preprocessed: &preprocess::Preprocessed<'_>) -> Option<String> {
     let mut edits = zero_init::edits(&preprocessed.tokens, preprocessed.version).ok()?;
     // WebGL 2 lays every uniform block out as std140: "the initial state of compilation is as if
     // `layout(std140) uniform;` were declared". GLSL ES 3.00's own default is `shared`, whose layout
@@ -71,7 +99,9 @@ mod tests {
     });
 
     fn amended(source: &str) -> String {
-        for_driver(source, &FRAGMENT).unwrap_or_else(|| source.to_owned())
+        for_driver(source, &FRAGMENT)
+            .source
+            .unwrap_or_else(|| source.to_owned())
     }
 
     fn lines(text: &str) -> usize {
@@ -240,7 +270,7 @@ mod tests {
     #[test]
     fn a_declaration_a_macro_writes_is_left_to_the_macro() {
         let source = "#define DECLARE(t, n) t n;\nDECLARE(vec3, a)\nvoid main() {}";
-        assert_eq!(for_driver(source, &FRAGMENT), None);
+        assert_eq!(for_driver(source, &FRAGMENT).source, None);
     }
 
     #[test]
@@ -252,12 +282,12 @@ mod tests {
             "precision highp float;\ninvariant gl_Position;\nvoid main() {}",
             "void main() { for (int i = 0; i < 4; ++i) { if (i > 1) break; } }",
         ] {
-            assert_eq!(for_driver(source, &FRAGMENT), None, "{source}");
+            assert_eq!(for_driver(source, &FRAGMENT).source, None, "{source}");
         }
         // A GLSL ES 3.00 shader with nothing to initialize gains only the std140 default.
         let es3 = "#version 300 es\nin vec4 p;\nout vec4 o;\nlayout(std140) uniform B { mat4 m; } b;\nvoid main() { o = p; }";
         assert_eq!(
-            for_driver(es3, &FRAGMENT).as_deref(),
+            for_driver(es3, &FRAGMENT).source.as_deref(),
             Some(
                 es3.replacen("\nin vec4 p;", "\nlayout(std140) uniform; in vec4 p;", 1)
                     .as_str()
@@ -301,20 +331,24 @@ mod tests {
             "float x;\n#version 300 es\nvoid main() {}",
             "#define A(x, y) x\nfloat q = A(1);\nfloat x;\nvoid main() {}",
         ] {
-            assert_eq!(for_driver(source, &FRAGMENT), None, "{source}");
+            assert_eq!(for_driver(source, &FRAGMENT).source, None, "{source}");
         }
     }
 
     #[test]
     fn the_driver_s_extensions_are_its_macros() {
         let source = "#ifdef GL_OES_standard_derivatives\nfloat a;\n#endif\nvoid main() {}";
-        assert_eq!(for_driver(source, &FRAGMENT), None);
+        assert_eq!(for_driver(source, &FRAGMENT).source, None);
         let extensions: HashSet<String> = ["GL_OES_standard_derivatives".to_owned()].into();
         let env = Environment {
             fragment: true,
             extensions: &extensions,
         };
-        assert!(for_driver(source, &env).is_some_and(|out| out.contains("float a = 0.0;")));
+        assert!(
+            for_driver(source, &env)
+                .source
+                .is_some_and(|out| out.contains("float a = 0.0;"))
+        );
     }
 
     #[test]
@@ -333,7 +367,7 @@ mod tests {
                 extensions: &extensions,
             };
             assert_eq!(
-                for_driver(source, &env).is_none(),
+                for_driver(source, &env).source.is_none(),
                 name == "GL_ANGLE_webgl_compatibility",
                 "{name}"
             );
@@ -490,7 +524,7 @@ mod tests {
                             "original ES{version} {name}"
                         );
                     }
-                    let prepared = for_driver(&source, &env);
+                    let prepared = for_driver(&source, &env).source;
                     let driver = prepared.as_deref().unwrap_or(&source);
                     // Macro-created declarations are an existing native-path limitation.
                     if webgl || name != "macro-declaration" {

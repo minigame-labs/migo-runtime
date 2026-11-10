@@ -925,6 +925,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- WebGL lists a program's uniforms in one order on every GPU: the default block's values, then its samplers, each in
+  the order the shaders declare them (the vertex shader's first), then the members of uniform blocks -- where the
+  samplers and blocks go is what every browser does, and the values follow their declarations too. `getActiveUniform`,
+  `getUniformIndices`, `getActiveUniforms` and a block's `UNIFORM_BLOCK_ACTIVE_UNIFORM_INDICES` agree on it. The order
+  was the driver's, and content builds on it: p5 hands out texture units in this order and binds the default texture
+  it makes on its first textured draw to the first sampler's unit. A Mali driver lists p5's `uSampler` ahead of the
+  environment maps declared before it, so that draw sampled the default texture, and `filter()` on a 2D sketch came
+  back transparent on a Mate 30.
 - On Android the motion sensors deliver at the rate content asked for: the compass five readings a second, as the
   reference documents, and the accelerometer, gyroscope and device motion at their `interval` -- `game` about every
   20 ms, `ui` about every 60 ms, `normal` about every 200 ms. Android takes a sampling period as a hint, and a sensor

@@ -87,9 +87,9 @@ mod types;
 
 pub(crate) use types::{
     BlendEquation, BlendFactors, BufferMeta, CanvasGLState, CanvasInfo, CanvasStateTable,
-    FramebufferMeta, MAX_UNIFORM_CACHE, ProgramMeta, QueryMeta, RenderbufferMeta, SamplerMeta,
-    ScissorState, ShaderMeta, Shared2DContext, SyncMeta, TextureMeta, TransformFeedbackMeta,
-    VaoMeta, VertexAttribPointerFp, ee,
+    FramebufferMeta, MAX_UNIFORM_CACHE, ProgramMeta, ProgramUniforms, QueryMeta, RenderbufferMeta,
+    SamplerMeta, ScissorState, ShaderMeta, Shared2DContext, SyncMeta, TextureMeta,
+    TransformFeedbackMeta, VaoMeta, VertexAttribPointerFp, ee,
 };
 use types::{CanvasEntry, EglContextHandle, SurfaceKind};
 pub(crate) use types::{
