@@ -1,7 +1,9 @@
 package com.migo.runtime.callback;
 
 /**
- * The channel a {@link PermissionHandler} answers on.
+ * The channel a {@link PermissionHandler} answers on, one per session: the one
+ * {@link PermissionHandler#requestScope} is handed is the one
+ * {@link com.migo.runtime.GameSession#getPermissionSink} returns.
  * <p>
  * Two separate things, because they answer different questions:
  * {@link #setScope} is the standing decision {@code migo.getSetting()} reports
@@ -23,7 +25,8 @@ public interface PermissionSink {
      * <p>
      * Call this to seed a session from your own records, and again whenever a
      * decision changes — including a revocation the user makes in system
-     * settings while the game is running. The runtime reads your latest answer
+     * settings while the game is running. Decisions set before the game starts
+     * are the ones it starts with. The runtime reads your latest answer
      * rather than a snapshot taken at start-up, so a revocation takes effect on
      * the next capability call.
      * <p>

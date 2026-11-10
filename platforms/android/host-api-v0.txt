@@ -147,6 +147,7 @@
   public com.migo.runtime.callback.NavigationHandler$NavigateRequest(java.lang.String, java.lang.String, java.util.Map<java.lang.String, java.lang.Object>, java.lang.String);
   public com.migo.runtime.callback.PaymentHandler$GameItemPaymentRequest(java.lang.String, java.lang.String, java.lang.String);
   public com.migo.runtime.callback.PaymentHandler$PaymentRequest(java.lang.String, int, java.lang.String, java.lang.String, java.lang.String, int, int, java.lang.String);
+  public com.migo.runtime.callback.PermissionSink getPermissionSink();
   public com.migo.runtime.callback.ShareHandler$FriendShareRequest(java.lang.String, java.lang.String, java.lang.String, java.lang.String, java.lang.String, java.lang.Integer);
   public com.migo.runtime.callback.ShareHandler$ImageShareRequest(java.lang.String, boolean, java.lang.String);
   public com.migo.runtime.callback.ShareHandler$RecordingShareRequest(java.lang.String, java.lang.String, java.lang.String, java.lang.String, java.lang.String, java.lang.String, long[][], double, double, boolean);

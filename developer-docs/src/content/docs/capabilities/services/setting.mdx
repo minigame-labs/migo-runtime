@@ -40,7 +40,7 @@ default void openSetting(SettingSink sink) {
 | `settleOpened(Map<String, Boolean> authSetting)` | 用户结束 UI;`authSetting` 是 scope→granted 映射,null/空均有效 |
 | `fail(int errCode, String errMsg)` | UI 无法展示 |
 
-**双写要求**:在 `settleOpened` 里报告的 scope 变化,也必须同步调 `PermissionSink#setScope` 写入持久决策。`settleOpened` 的 `authSetting` 只影响本次 `migo.openSetting()` 的回包,`setScope` 才是每次能力校验读取的来源。只写一处会让游戏刚得到授权、下一次能力检查就失败。
+**双写要求**:在 `settleOpened` 里报告的 scope 变化,也必须同步调 `PermissionSink#setScope`(会话的 sink:`GameSession#getPermissionSink()`)写入持久决策。`settleOpened` 的 `authSetting` 只影响本次 `migo.openSetting()` 的回包,`setScope` 才是每次能力校验读取的来源。只写一处会让游戏刚得到授权、下一次能力检查就失败。
 
 ## 不实现会怎样
 

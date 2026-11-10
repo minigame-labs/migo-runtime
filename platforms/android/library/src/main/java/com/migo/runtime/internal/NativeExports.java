@@ -3858,7 +3858,11 @@ public final class NativeExports {
     private static final ConcurrentHashMap<Integer, SessionPermissionSink> sPermissionSinks =
             new ConcurrentHashMap<>();
 
-    private static PermissionSink permissionSink(int sessionId) {
+    /**
+     * The session's one sink, for {@code GameSession#getPermissionSink} and every request.
+     * @hide
+     */
+    public static PermissionSink permissionSink(int sessionId) {
         SessionPermissionSink existing = sPermissionSinks.get(sessionId);
         if (existing != null) return existing;
         SessionPermissionSink created = new SessionPermissionSink(sessionId);
