@@ -18,7 +18,8 @@
   "measured": [
     {"date": "2026-11-10", "runner": "android-emulator", "bundles": ["api-spec", "audio-spec", "babylon", "ble-peripheral-spec", "camera-spec", "canvas2d", "device-spec", "easeljs", "egret", "font-generics", "fs-sandbox", "fs-spec", "game-recorder-share-spec", "game-recorder-spec", "geometry", "howler", "image", "inner-audio-spec", "intl-spec", "io-spec", "keyboard-spec", "lan-spec", "lifecycle", "lifecycle-exit", "lifecycle-launch-options", "lifecycle-restart", "location-spec", "media-spec", "network-spec", "offscreen-readback", "p5", "phaser", "phaser-canvas", "phaser-loader", "picker-spec", "pixi", "playcanvas", "readback", "recorder-spec", "resize", "robustness", "screen-fill", "screen-fill-webgl", "screen-fill-webgl2-read-none", "sensor-spec", "setting-spec", "smoothing", "spec", "state", "storage-spec", "system-info-spec", "text", "three", "three-adv", "three-loaders", "timers-spec", "ui-spec", "video-controls-spec", "video-spec", "wasm", "webgl", "webgl-buffer", "webgl-buffer-presented", "webgl-buffer-presented-stencil", "webgl-buffer-preserved", "webgl-spec", "webgl-zero-size", "worker-spec"], "runtime": "e5309757db53caf72a0bb98e7143603327dec559", "conformance": "228e01e5cf7f6ad0aa6639b8db58a47ff522752c"},
     {"date": "2026-11-11", "runner": "android", "bundles": ["api-spec", "audio-spec", "babylon", "ble-peripheral-spec", "bluetooth-spec", "camera-spec", "canvas2d", "device-spec", "easeljs", "egret", "font-generics", "fs-sandbox", "fs-spec", "game-recorder-share-spec", "game-recorder-spec", "geometry", "howler", "image", "inner-audio-spec", "intl-spec", "io-spec", "keyboard-spec", "lan-spec", "lifecycle", "lifecycle-exit", "lifecycle-launch-options", "location-spec", "media-spec", "network-spec", "offscreen-readback", "p5", "phaser", "phaser-canvas", "phaser-loader", "picker-spec", "pixi", "playcanvas", "readback", "recorder-spec", "resize", "robustness", "screen-fill", "screen-fill-webgl", "screen-fill-webgl2-read-none", "sensor-spec", "setting-spec", "smoothing", "spec", "state", "storage-spec", "system-info-spec", "text", "three", "three-adv", "three-loaders", "timers-spec", "ui-spec", "video-controls-spec", "video-spec", "wasm", "webgl", "webgl-buffer", "webgl-buffer-presented", "webgl-buffer-presented-stencil", "webgl-buffer-preserved", "webgl-spec", "webgl-zero-size"], "runtime": "4afa23d0fc17dc13f6e8173f94d3f6b16b8548e8", "conformance": "14fcdefe9d47c9eba707c2c1cf5508b08c955bd9"},
-    {"date": "2026-11-11", "runner": "android", "bundles": ["api-spec", "message-file-spec"], "runtime": "93b94f3d0edbb8a2fe2b59b6d0f8e86a912fafe0", "conformance": "3656a3eb979fb06351de9b38074d37f4974da50e"}
+    {"date": "2026-11-11", "runner": "android", "bundles": ["api-spec", "message-file-spec"], "runtime": "93b94f3d0edbb8a2fe2b59b6d0f8e86a912fafe0", "conformance": "3656a3eb979fb06351de9b38074d37f4974da50e"},
+    {"date": "2026-11-11", "runner": "android", "bundles": ["api-spec", "scan-spec"], "runtime": "159810a05ac11be74650e43218d5e337004e0bd1", "conformance": "fd9c417c9eb5edaf14c58c00d2e1ffdc1dd250d2"}
   ],
   "apis": {
     "addCard": {"status": "present"},
@@ -343,7 +344,7 @@
     "revokeBufferURL": {"status": "verified"},
     "saveFileToDisk": {"status": "present"},
     "saveImageToPhotosAlbum": {"status": "present"},
-    "scanCode": {"status": "present"},
+    "scanCode": {"status": "verified"},
     "selectGroupMembers": {"status": "present"},
     "sendGiftToFriend": {"status": "present"},
     "sendSocketMessage": {"status": "verified"},
