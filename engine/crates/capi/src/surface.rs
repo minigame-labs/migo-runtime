@@ -485,7 +485,7 @@ pub unsafe extern "C" fn migo_session_attach_surface(
             return MIGO_ERROR_INTERNAL;
         }
 
-        let (visibility, focused, deferred_loss) = {
+        let deferred_loss = {
             let Ok(mut state) = session.state.lock() else {
                 let _ = retire_surface(host);
                 if let Some(mut owner) = new_host.take()
@@ -538,32 +538,17 @@ pub unsafe extern "C" fn migo_session_attach_surface(
             *out_attachment = attachment_ptr;
             state.surface_transition_generation = None;
             state.surface_transition = SurfaceTransition::Idle;
-            (state.visibility, state.focused, deferred_loss)
+            // Tell content what the host said before the surface existed, which
+            // is the normal Android ordering -- and nothing it was told already:
+            // a surface replaced is not a show. A failure is logged where it
+            // happens and told at the next report.
+            let _ = crate::deliver_shown_locked(&mut state);
+            let _ = crate::deliver_focus_locked(&mut state);
+            deferred_loss
         };
 
         if let Some(loss) = deferred_loss {
             loss.notify();
-        }
-
-        // Deliver any visibility the host set before the surface existed,
-        // which is the normal Android ordering.
-        if let Some(visible) = visibility {
-            let command = if visible {
-                HostCommand::OnShow { options_json: None }
-            } else {
-                HostCommand::OnHide
-            };
-            if let Err(error) = migo_core::send_critical_command_to_host(host, command) {
-                tracing::error!("attach: deferred visibility failed: {error}");
-            }
-        }
-        if let Some(focused) = focused {
-            if let Err(error) = migo_core::send_critical_command_to_host(
-                host,
-                HostCommand::OnFocusChanged { focused },
-            ) {
-                tracing::error!("attach: deferred focus failed: {error}");
-            }
         }
         MIGO_OK
     })
@@ -1085,6 +1070,135 @@ mod tests {
             MIGO_OK,
         );
         status
+    }
+
+    /// The session's Host replaced by a capture of what is sent to it.
+    fn capture_host(session: *mut MigoSession) -> migo_core::CommandCapture {
+        let capture = migo_core::CommandCapture::register();
+        let join = thread::Builder::new()
+            .name("Migo-Main-capi-capture-test".to_owned())
+            .spawn(|| {})
+            .expect("spawn inert test Host");
+        unsafe { &*session }
+            .state
+            .lock()
+            .expect("SessionControl")
+            .host = Some(crate::session_engine::engine_for_test(capture.id(), join));
+        capture
+    }
+
+    /// What content was told since the last look: shown, hidden, focused, blurred.
+    fn told(capture: &mut migo_core::CommandCapture) -> Vec<&'static str> {
+        capture
+            .drain()
+            .into_iter()
+            .filter_map(|command| match command {
+                HostCommand::OnShow { .. } => Some("show"),
+                HostCommand::OnHide => Some("hide"),
+                HostCommand::OnFocusChanged { focused: true } => Some("focus"),
+                HostCommand::OnFocusChanged { focused: false } => Some("blur"),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn detach(attachment: *mut MigoSurfaceAttachment) {
+        let mut release = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { migo_surface_begin_detach(attachment, &mut release) },
+            MIGO_OK
+        );
+        assert_eq!(unsafe { migo_surface_release_destroy(release) }, MIGO_OK);
+    }
+
+    #[test]
+    fn a_trip_to_the_background_is_told_once_whatever_the_host_reports() {
+        with_session("surface-show-hide-once", |session| {
+            let (attachment, _extra) = install_active_attachment(session, false);
+            let mut capture = capture_host(session);
+            let lifecycle = |state| unsafe { crate::migo_session_set_lifecycle(session, state) };
+            let visibility =
+                |visible| unsafe { crate::migo_session_set_visibility(session, visible) };
+
+            assert_eq!(lifecycle(crate::MIGO_LIFECYCLE_RUNNING), MIGO_OK);
+            assert_eq!(visibility(1), MIGO_OK);
+            assert_eq!(told(&mut capture), ["show"]);
+            // A host reports both for one trip away -- the Apple and OpenHarmony
+            // views, the Linux host kit -- in either order: one hide.
+            assert_eq!(visibility(0), MIGO_OK);
+            assert_eq!(lifecycle(crate::MIGO_LIFECYCLE_PAUSED), MIGO_OK);
+            assert_eq!(told(&mut capture), ["hide"]);
+            // Running while still covered is not shown.
+            assert_eq!(lifecycle(crate::MIGO_LIFECYCLE_RUNNING), MIGO_OK);
+            assert!(told(&mut capture).is_empty());
+            assert_eq!(visibility(1), MIGO_OK);
+            assert_eq!(visibility(1), MIGO_OK);
+            assert_eq!(told(&mut capture), ["show"]);
+            // A host that reports only one of the two is heard as before.
+            assert_eq!(lifecycle(crate::MIGO_LIFECYCLE_PAUSED), MIGO_OK);
+            assert_eq!(lifecycle(crate::MIGO_LIFECYCLE_RUNNING), MIGO_OK);
+            assert_eq!(told(&mut capture), ["hide", "show"]);
+            detach(attachment);
+        });
+    }
+
+    #[test]
+    fn a_host_that_reports_only_visibility_is_shown_and_hidden() {
+        with_session("surface-visibility-only", |session| {
+            let (attachment, _extra) = install_active_attachment(session, false);
+            let mut capture = capture_host(session);
+            let visibility =
+                |visible| unsafe { crate::migo_session_set_visibility(session, visible) };
+            assert_eq!(visibility(1), MIGO_OK);
+            assert_eq!(visibility(0), MIGO_OK);
+            assert_eq!(visibility(0), MIGO_OK);
+            assert_eq!(visibility(1), MIGO_OK);
+            assert_eq!(told(&mut capture), ["show", "hide", "show"]);
+            detach(attachment);
+        });
+    }
+
+    #[test]
+    fn an_attach_tells_content_only_what_it_was_not_told() {
+        with_session("surface-attach-tells-once", |session| {
+            let (attachment, _extra) = install_active_attachment(session, false);
+            let mut capture = capture_host(session);
+            let session_ref = unsafe { &*session };
+            // The surface is gone while the host reports: nothing to tell yet.
+            let active = session_ref
+                .state
+                .lock()
+                .expect("SessionControl")
+                .active_attachment
+                .take();
+            assert_eq!(
+                unsafe {
+                    crate::migo_session_set_lifecycle(session, crate::MIGO_LIFECYCLE_RUNNING)
+                },
+                MIGO_OK
+            );
+            assert_eq!(
+                unsafe { crate::migo_session_set_focus(session, 1) },
+                MIGO_OK
+            );
+            assert!(told(&mut capture).is_empty());
+            // The attach that lands tells it, as migo_session_attach_surface does.
+            let mut active = active;
+            let mut deliver = || {
+                let mut state = session_ref.state.lock().expect("SessionControl");
+                if state.active_attachment.is_none() {
+                    state.active_attachment = active.take();
+                }
+                assert_eq!(crate::deliver_shown_locked(&mut state), MIGO_OK);
+                assert_eq!(crate::deliver_focus_locked(&mut state), MIGO_OK);
+            };
+            deliver();
+            assert_eq!(told(&mut capture), ["show", "focus"]);
+            // A surface replaced while shown is not a show.
+            deliver();
+            assert!(told(&mut capture).is_empty());
+            detach(attachment);
+        });
     }
 
     #[test]

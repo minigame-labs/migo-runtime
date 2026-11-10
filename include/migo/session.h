@@ -697,6 +697,13 @@ MIGO_API MigoResult MIGO_CALL migo_session_set_lifecycle(
  * covered by another app or a system overlay. Distinct from lifecycle above:
  * a Session can be RUNNING but not visible.
  *
+ * Content is shown while the Session is not PAUSED and is visible (a Session
+ * never given a visibility counts as visible), and hears onShow / onHide once
+ * each time that changes. A host may report both for one trip to the
+ * background, in either order, and content still hears one onHide and, on
+ * return, one onShow. What is reported before a surface is attached reaches
+ * content when one is; replacing a surface is not a show.
+ *
  * Returns MIGO_ERROR_INVALID_ARGUMENT if visible is neither 0 nor 1.
  */
 MIGO_API MigoResult MIGO_CALL

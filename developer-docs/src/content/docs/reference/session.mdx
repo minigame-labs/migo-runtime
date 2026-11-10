@@ -689,6 +689,10 @@ migo_session_set_visibility(MigoSession *session, uint8_t visible);
 可见性与生命周期相互独立——Session 可以处于 `RUNNING` 状态但不可见（反之亦然）。
 宿主应在窗口可见性变化时及时更新此状态，引擎可据此优化渲染策略。
 
+内容在 Session 不处于 `PAUSED` 且可见时算作显示（从未报告过可见性的 Session 视为可见），每次这一状态变化时只收到一次
+`onShow` / `onHide`。宿主一次切到后台时可以两者都报告、顺序任意，内容仍只收到一次 `onHide`，回来时一次 `onShow`。
+Surface 挂接之前报告的状态在挂接时送达内容；替换 Surface 不算一次显示。
+
 参数：
 
 | 参数 | 说明 |

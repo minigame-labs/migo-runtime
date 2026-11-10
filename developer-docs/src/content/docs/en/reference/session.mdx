@@ -668,6 +668,8 @@ migo_session_set_visibility(MigoSession *session, uint8_t visible);
 
 Notifies the engine whether the Session's content is currently visible on screen, for example because another application or a system overlay completely covers it. Visibility is independent of lifecycle: a Session can be `RUNNING` but invisible, or visible while not running. The host should update this state promptly whenever window visibility changes so the engine can optimize rendering.
 
+Content is shown while the Session is not `PAUSED` and is visible (a Session never given a visibility counts as visible), and hears `onShow` / `onHide` once each time that changes. A host may report both for one trip to the background, in either order, and content still hears one `onHide` and, on return, one `onShow`. What is reported before a surface is attached reaches content when one is; replacing a surface is not a show.
+
 Params:
 
 | Param | Notes |

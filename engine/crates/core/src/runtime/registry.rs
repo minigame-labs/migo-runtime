@@ -565,6 +565,51 @@ pub(crate) fn register_sender(
     map.insert(id, handle);
     ingress
 }
+
+/// What a test reads in place of a Host: the commands sent to [`Self::id`], in
+/// the order they were sent, for as long as it lives.
+#[cfg(feature = "test-support")]
+pub struct CommandCapture {
+    id: HostId,
+    rx: shared::host_channel::HostCommandReceiver,
+}
+
+#[cfg(feature = "test-support")]
+impl CommandCapture {
+    /// Registers in the Host registry under a fresh id, as a Host would; the
+    /// entry is removed when the capture is dropped.
+    pub fn register() -> Self {
+        let id = alloc_host_id();
+        let (tx, critical_tx, rx) = shared::host_channel::channel(16);
+        register_sender(
+            id,
+            tx,
+            critical_tx,
+            Arc::new(shared::surface::SurfaceControl::new()),
+            crate::runtime::restart_boundary::RestartBoundary::new().reader(),
+            shared::config::LogLevel::Warn,
+            None,
+        );
+        Self { id, rx }
+    }
+
+    pub fn id(&self) -> HostId {
+        self.id
+    }
+
+    /// The commands sent since the last call, oldest first.
+    pub fn drain(&mut self) -> Vec<HostCommand> {
+        std::iter::from_fn(|| self.rx.try_recv().ok()).collect()
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl Drop for CommandCapture {
+    fn drop(&mut self) {
+        unregister_sender(self.id);
+    }
+}
+
 /// Install the wake used to cancel startup evaluation. Registration itself is
 /// intentionally unchanged because it runs before the Host exists; this setter
 /// closes that construction gap before the ready handshake is published.
