@@ -5,7 +5,8 @@ contracts/runtime/minigame-api-spec.json records, for every API in contracts/run
 reference page states: how it is called (an options object with success/fail/complete, a listener, a value returned,
 an object made), whether it can be called in Promise style, the options it takes, the fields its success result,
 return value or listener argument carries -- names and types, one level of structure deep -- the authorization scope
-it needs, which of the reference's desktop and HarmonyOS clients support it, and whether it is deprecated. Facts only:
+it needs, which of the reference's clients support it -- its desktop and HarmonyOS clients, and its two phones where
+a page tells them apart -- and whether it is deprecated. Facts only:
 no description is copied.
 
 The source is the reference's local mirror, docs/minigame-reference/ (gitignored, fetched by hand; its README says
@@ -46,8 +47,9 @@ COMMENT = [
     "returns: the type the signature names, or null. params: the signature's parameters. promise: whether",
     "Promise-style calls are supported, null where the page does not say. scope: the authorization scope the call",
     "needs, by the engine's name for it. clients: what the page says of the reference's Windows, Mac and HarmonyOS",
-    "clients -- true, false, or {\"from\": version} -- absent when it says nothing; mobile: false where it says the API",
-    "is offered on its desktop clients only (its phones offer every API otherwise). options: the options object's fields other than the",
+    "clients, and of its iOS and Android apps where it tells the two phones apart -- true, false, or {\"from\": version}",
+    "-- absent when it says nothing; mobile: false where it says the API is offered on its desktop clients only (its",
+    "phones offer every API otherwise). options: the options object's fields other than the",
     "callbacks. success / result / listener: the fields of the success callback's argument, of the returned object,",
     "of the listener's argument. A field is [name, type] or [name, type, since], then an object with what else the page",
     "says of it: \"fields\", the fields of an Object it details; \"when\", that it is there only sometimes -- plugin,",
@@ -57,7 +59,7 @@ COMMENT = [
     "methods the reference documents for the class the API returns. deprecated, since: from the reference's index.",
 ]
 
-CLIENTS = {"Windows": "windows", "Mac": "mac", "鸿蒙 OS": "harmony"}
+CLIENTS = {"Windows": "windows", "Mac": "mac", "鸿蒙 OS": "harmony", "iOS": "ios", "Android": "android"}
 
 # Where a page contradicts itself about a field, the reading its own words support: (API, section, field) -> the type
 # the page's table gives, the type it means, and why. Each is held against the page: once the page says something
@@ -270,8 +272,9 @@ def spec_of(markdown: str, namespace: str, name: str, scopes: list[str]) -> dict
         found = re.search(r"需要 (scope\.[\w.]+)", note)
         if found:
             scope = scope_name(found.group(1), scopes)
-        # "<the reference's app> <client> 版：<support>"
-        found = re.match(r"^\S+ (Windows|Mac|鸿蒙 OS) 版：(.*)$", note)
+        # "<the reference's app> <client> 版：<support>": its desktop and HarmonyOS clients, and the two phones where a
+        # page tells them apart ("<app> Android 版：不支持").
+        found = re.match(r"^\S+ (Windows|Mac|鸿蒙 OS|iOS|Android) 版：(.*)$", note)
         if found:
             clients[CLIENTS[found.group(1)]] = client_support(plain(found.group(2)))
     # "仅在 Windows、Mac 端支持", "仅在 PC 端支持", "仅支持 PC 平台", "仅适用于 PC 平台": the reference offers it on its

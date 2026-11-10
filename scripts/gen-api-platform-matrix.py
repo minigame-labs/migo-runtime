@@ -671,11 +671,15 @@ def owned(need: str, host_owned: set[str]) -> bool:
 
 
 def offered(clients: dict | None, platform: str) -> bool:
-    """Whether the reference offers an API on the kind of client `platform` is held to."""
+    """Whether the reference offers an API on the kind of client `platform` is held to.
+
+    A phone is held to the reference's phones, which offer an API unless its page says they do not -- of both
+    ("mobile": false), or of the one this platform is (its Android app "不支持" is `"android": false`).
+    """
     clients = clients or {}
     for client in REFERENCE_CLIENTS[platform]:
         if client == "mobile":
-            if clients.get("mobile", True) is not False:
+            if clients.get("mobile", True) is not False and clients.get(platform, True) is not False:
                 return True
         elif clients.get(client, False) not in (False, None):
             return True

@@ -129,6 +129,10 @@ red "the Swift SDK that stops reporting the network" platforms/apple/Sources/Mig
     'text.replace("migo_session_report_network(session", "migo_session_report_network_gone(session", 1)'
 red "a capability product that stops answering its service" platforms/apple/Sources/MigoAppleLocation/MigoLocation.swift \
     'text.replace("builtIn.insert(.location)", "// builtIn.insert(.location)", 1)'
+# The reference's own phones differ where a page says so: getScreenRecordingState is "Android 版：不支持", so
+# Android owes it nothing. A matrix that forgets one phone's "no" holds that phone to the API again.
+red "a phone the reference does not offer an API on, held to it" contracts/runtime/minigame-api-spec.json \
+    'text.replace("\"clients\": {\"ios\": true, \"android\": false}, \"success\": [[\"state\"", "\"success\": [[\"state\"", 1)'
 red "an engine decoder compiled for another system" engine/crates/capi/src/host_kit.rs \
     'text.replace("#[cfg(target_vendor = \"apple\")]\n    fn video_decoder", "#[cfg(target_os = \"windows\")]\n    fn video_decoder", 1)'
 # OpenHarmony's targets are `target_os = "linux"` too: an accessor that stops
