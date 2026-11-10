@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   heard content's console only through the engine's own log or, with the debugging aids on,
   `migo_session_copy_console_logs`. The Apple SDK delivers it as `MigoEngineSession.Event.console`, writes it to the
   platform log (`dev.migo`, `content`), and the macOS `MigoGameView` gains the `.console` event the iOS one had.
+  A `switch` over the macOS view's events that names every case needs a `.console` case too.
 - `createVideo` on iOS (Performance+): the players are the host app's, as on every other platform (the video service,
   `migo/host_services.h`). The producer makes a player, or changes what it plays, through the host's synchronous
   endpoint -- answered at once, its `src` and `poster` exported through the game's sandbox as the embedded ops export

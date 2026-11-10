@@ -213,6 +213,10 @@ grep -q 'migo-swift-host-probe: debug=on' "$LAST_LOG" \
   || fail "the game did not turn the debugging aids on through the SDK's screen service"
 grep -q '\[game-view-host\] debugging panel showed the console=true' "$LAST_LOG" \
   || fail "the view's debugging panel did not show what the game wrote to its console"
+# The same line reaches the app itself, as the view's .console event at the
+# level the game wrote it (2, warn).
+grep -q '\[game-view-host\] console 2: migo-swift-host-probe: shown in the debugging panel' "$LAST_LOG" \
+  || fail "the game's console line did not reach the app as a .console event at its level"
 grep -q 'migo-swift-host-probe: compressed=16x8' "$LAST_LOG" \
   || fail "the SDK's image service did not compress the game's image"
 grep -q 'migo-swift-host-probe: previewed' "$LAST_LOG" \
