@@ -764,9 +764,17 @@ impl RendererGL {
                 }
 
                 if let Some(ph) = meta.gl_handle {
+                    // WebGL's index is the driver's in the order the program lists its uniforms in.
+                    let index = cm
+                        .programs
+                        .get_mut(&program_id)
+                        .and_then(|meta| {
+                            super::program_state::uniform_order(gl, ph, &mut meta.uniforms)
+                        })
+                        .map_or(Some(index), |order| order.driver(index));
                     unsafe {
-                        let info = gl
-                            .get_active_uniform(ph, index)
+                        let info = index
+                            .and_then(|index| gl.get_active_uniform(ph, index))
                             .map(|it| (it.name, it.size, it.utype));
                         let _ = resp.send(Ok(info));
                     }
@@ -1114,6 +1122,7 @@ impl RendererGL {
                                     attached_shaders: Vec::new(),
                                     attrib_bindings: Vec::new(),
                                     link_pending: false,
+                                    uniforms: crate::canvas::ProgramUniforms::Driver,
                                 },
                             );
                         }
@@ -1201,6 +1210,29 @@ impl RendererGL {
                 // as the `DeleteTexture` sweep below.
                 for state in cm.gl_state.values_mut() {
                     st::invalidate_program_uniforms(state, program_id);
+                }
+                // The uniforms this link lists are those of the shaders attached now, in their order, which is read
+                // from the driver when it is first asked for: with a parallel link the list is not there yet.
+                let declared = cm.programs.get(&program_id).map(|meta| {
+                    let mut stages = (None, None);
+                    for shader in &meta.attached_shaders {
+                        if let Some(shader) = cm.shaders.get(shader) {
+                            match shader.gl_shader_type {
+                                glow::VERTEX_SHADER => stages.0 = shader.uniforms.clone(),
+                                glow::FRAGMENT_SHADER => stages.1 = shader.uniforms.clone(),
+                                _ => {}
+                            }
+                        }
+                    }
+                    match stages {
+                        (Some(vertex), Some(fragment)) => {
+                            crate::canvas::ProgramUniforms::Declared(vertex, fragment)
+                        }
+                        _ => crate::canvas::ProgramUniforms::Driver,
+                    }
+                });
+                if let (Some(declared), Some(meta)) = (declared, cm.programs.get_mut(&program_id)) {
+                    meta.uniforms = declared;
                 }
                 Ok(DamageEffect::NoDamage)
             }
@@ -1363,6 +1395,7 @@ impl RendererGL {
                                     deleted: false,
                                     source_len: 0,
                                     source: None,
+                                    uniforms: None,
                                 },
                             );
                         }
@@ -1408,12 +1441,13 @@ impl RendererGL {
                         fragment: meta.gl_shader_type == glow::FRAGMENT_SHADER,
                         extensions: gl.supported_extensions(),
                     };
-                    let driver_source =
-                        crate::backend::gl::glsl::for_driver(&source, &env).unwrap_or(source);
+                    let prepared = crate::backend::gl::glsl::for_driver(&source, &env);
+                    let driver_source = prepared.source.unwrap_or(source);
                     unsafe { gl.shader_source(sh, &driver_source) };
                     // The program binary cache keys on what the driver compiled: a binary of the source as content
                     // wrote it is not this shader's.
                     meta.source = Some(driver_source);
+                    meta.uniforms = prepared.uniforms.map(std::sync::Arc::new);
                     if let Some(r) = resp {
                         r.send(Ok(()));
                     }
@@ -1839,9 +1873,18 @@ impl RendererGL {
                     | shared::protocol::render_cmd::gl_state::LINK_RESULT => {
                         // `pname` is the program's resource id; a program that is gone or never got a GL handle has
                         // nothing to say, which is the specification's INVALID_OPERATION.
-                        match cm.programs.get(&pname).and_then(|meta| meta.gl_handle) {
-                            Some(handle) => {
-                                super::program_state::answer(gl, handle, query, extra, &name)
+                        let program = cm.programs.get_mut(&pname).and_then(|meta| {
+                            let handle = meta.gl_handle?;
+                            Some((handle, meta))
+                        });
+                        match program {
+                            Some((handle, meta)) => {
+                                let order = super::program_state::uniform_order(
+                                    gl,
+                                    handle,
+                                    &mut meta.uniforms,
+                                );
+                                super::program_state::answer(gl, handle, order, query, extra, &name)
                             }
                             None => "{\"e\":1282}".to_string(),
                         }

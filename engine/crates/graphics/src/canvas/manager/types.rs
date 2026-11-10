@@ -1599,6 +1599,23 @@ pub(crate) struct ProgramMeta {
     /// or the batch ends -- see `renderergl::link_queue`. While this is set the
     /// program's binary has not been offered to the shader cache.
     pub link_pending: bool,
+    /// The order its active uniforms are listed in (`backend::gl::glsl::uniforms`).
+    pub uniforms: ProgramUniforms,
+}
+
+/// How a program's active uniforms are listed: as the driver lists them, or in WebGL's order, which is read from the
+/// driver the first time it is asked for after a link.
+#[derive(Debug)]
+pub(crate) enum ProgramUniforms {
+    /// The driver's own order: never linked, a driver that lists them as WebGL does already (ANGLE's WebGL
+    /// compiler), or a shader that could not be read.
+    Driver,
+    /// Linked from shaders with these declarations, vertex and fragment; not yet asked about.
+    Declared(
+        std::sync::Arc<crate::backend::gl::glsl::Declarations>,
+        std::sync::Arc<crate::backend::gl::glsl::Declarations>,
+    ),
+    Ordered(crate::backend::gl::glsl::UniformOrder),
 }
 
 #[derive(Debug)]
@@ -1613,6 +1630,9 @@ pub(crate) struct ShaderMeta {
     /// The source the driver compiled -- content's, with what WebGL requires written in (`backend::gl::glsl`): the
     /// program binary cache's key. `getShaderSource` answers content's own, which the facade keeps.
     pub source: Option<String>,
+    /// What that source declares about its uniforms, which a program linked from it lists them by; `None` where the
+    /// driver's order is WebGL's already, or the source could not be read.
+    pub uniforms: Option<std::sync::Arc<crate::backend::gl::glsl::Declarations>>,
 }
 
 #[derive(Debug)]

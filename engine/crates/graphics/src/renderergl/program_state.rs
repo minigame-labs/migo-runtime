@@ -11,6 +11,9 @@
 use glow::HasContext;
 use shared::protocol::render_cmd::gl_state;
 
+use crate::backend::gl::glsl::{self, UniformOrder};
+use crate::canvas::ProgramUniforms;
+
 const INVALID_ENUM: u32 = 0x0500;
 const INVALID_VALUE: u32 = 0x0501;
 const INVALID_OPERATION: u32 = 0x0502;
@@ -80,12 +83,93 @@ fn uniform_shape(ty: u32) -> Option<(UniformKind, usize)> {
         0x8B57 => (Bool, 2),            // BOOL_VEC2
         0x8B58 => (Bool, 3),            // BOOL_VEC3
         0x8B59 => (Bool, 4),            // BOOL_VEC4
-        // SAMPLER_2D, _3D, _CUBE, _2D_SHADOW, _2D_ARRAY, _2D_ARRAY_SHADOW, _CUBE_SHADOW, and the INT_ and
-        // UNSIGNED_INT_ samplers: the texture unit, an int.
-        0x8B5E | 0x8B5F | 0x8B60 | 0x8B62 | 0x8DC1 | 0x8DC4 | 0x8DC5 | 0x8DCA | 0x8DCB | 0x8DCC
-        | 0x8DCF | 0x8DD2 | 0x8DD3 | 0x8DD4 | 0x8DD7 => (Int, 1),
+        // A sampler's value is the texture unit, an int.
+        ty if is_sampler(ty) => (Int, 1),
         _ => return None,
     })
+}
+
+/// SAMPLER_2D, _3D, _CUBE, _2D_SHADOW, _2D_ARRAY, _2D_ARRAY_SHADOW, _CUBE_SHADOW, and the INT_ and UNSIGNED_INT_
+/// samplers, with `GL_OES_EGL_image_external`'s SAMPLER_EXTERNAL_OES: the types WebGL lists after the values.
+fn is_sampler(ty: u32) -> bool {
+    matches!(
+        ty,
+        0x8B5E
+            | 0x8B5F
+            | 0x8B60
+            | 0x8B62
+            | 0x8DC1
+            | 0x8DC4
+            | 0x8DC5
+            | 0x8DCA
+            | 0x8DCB
+            | 0x8DCC
+            | 0x8DCF
+            | 0x8DD2
+            | 0x8DD3
+            | 0x8DD4
+            | 0x8DD7
+            | 0x8D66
+    )
+}
+
+/// The order `program` lists its active uniforms in, for every query that takes or answers an index: `None` for the
+/// driver's own (`ProgramUniforms::Driver`, or a program that did not link). Read from the driver once per link.
+pub(super) fn uniform_order<'u>(
+    gl: &glow::Context,
+    program: glow::Program,
+    uniforms: &'u mut ProgramUniforms,
+) -> Option<&'u UniformOrder> {
+    if let ProgramUniforms::Declared(vertex, fragment) = uniforms {
+        // SAFETY: `gl` is the current context and `program` one of its programs, which the caller resolved.
+        if !unsafe { gl.get_program_link_status(program) } {
+            return None;
+        }
+        let order = read_uniform_order(gl, program, vertex, fragment);
+        *uniforms = ProgramUniforms::Ordered(order);
+    }
+    match uniforms {
+        ProgramUniforms::Ordered(order) => Some(order),
+        _ => None,
+    }
+}
+
+fn read_uniform_order(
+    gl: &glow::Context,
+    program: glow::Program,
+    vertex: &glsl::Declarations,
+    fragment: &glsl::Declarations,
+) -> UniformOrder {
+    // SAFETY: `gl` is the current context and `program` a linked program of it; every index is below its count.
+    unsafe {
+        let count = gl
+            .get_program_parameter_i32(program, glow::ACTIVE_UNIFORMS)
+            .max(0) as u32;
+        let listed: Vec<(String, u32)> = (0..count)
+            .map(|index| {
+                gl.get_active_uniform(program, index)
+                    .map_or((String::new(), 0), |uniform| (uniform.name, uniform.utype))
+            })
+            .collect();
+        // A uniform block's member has its block's index; the default block's are -1, and a context without blocks
+        // has only those.
+        let blocks = if gl.version().major >= 3 && count > 0 {
+            let indices: Vec<u32> = (0..count).collect();
+            gl.get_active_uniforms_parameter(program, &indices, UNIFORM_BLOCK_INDEX)
+        } else {
+            Vec::new()
+        };
+        let active: Vec<glsl::Active<'_>> = listed
+            .iter()
+            .enumerate()
+            .map(|(index, (name, ty))| glsl::Active {
+                name,
+                sampler: is_sampler(*ty),
+                in_block: blocks.get(index).is_some_and(|&block| block >= 0),
+            })
+            .collect();
+        glsl::order(vertex, fragment, &active)
+    }
 }
 
 /// A uniform's name without a trailing array index: `a[2]`, `a[0]` and `a` are all `a` (the driver names an array by
@@ -131,10 +215,12 @@ pub(crate) fn json_string(text: &str) -> String {
 }
 
 /// Answers `query` (one of `gl_state::ACTIVE_UNIFORM_BLOCK_NAME` and its siblings) about `program`. `extra` and `name`
-/// are the query's arguments, as `gl_state` documents them.
+/// are the query's arguments, as `gl_state` documents them. A uniform's index is WebGL's, in `order` when the program
+/// lists its uniforms in an order of its own (`uniform_order`); the driver is asked with its own.
 pub(super) fn answer(
     gl: &glow::Context,
     program: glow::Program,
+    order: Option<&UniformOrder>,
     query: u32,
     extra: u32,
     name: &str,
@@ -162,15 +248,16 @@ pub(super) fn answer(
                 }
                 // The queried pname travels as decimal text: three numbers do not fit the two a state query has.
                 let pname = name.trim().parse::<u32>().unwrap_or(0);
-                block_parameter(gl, program, extra, pname)
+                block_parameter(gl, program, order, extra, pname)
             }
             gl_state::UNIFORM_INDICES => {
                 // Names are joined by `\n`, which no identifier can contain.
                 let names: Vec<&str> = name.split('\n').collect();
                 let indices = gl.get_uniform_indices(program, &names);
-                value(array(
-                    indices.into_iter().map(|i| i.unwrap_or(INVALID_INDEX)),
-                ))
+                value(array(indices.into_iter().map(|i| {
+                    i.and_then(|driver| webgl_index(order, driver))
+                        .unwrap_or(INVALID_INDEX)
+                })))
             }
             gl_state::ACTIVE_UNIFORMS_PARAMETER => {
                 let indices: Vec<u32> = match name
@@ -185,6 +272,13 @@ pub(super) fn answer(
                 if indices.iter().any(|&i| i >= uniforms) {
                     return error(INVALID_VALUE);
                 }
+                let Some(indices) = indices
+                    .iter()
+                    .map(|&index| driver_index(order, index))
+                    .collect::<Option<Vec<u32>>>()
+                else {
+                    return error(INVALID_VALUE);
+                };
                 uniforms_parameter(gl, program, &indices, extra)
             }
             gl_state::UNIFORM_VALUE => uniform_value(gl, program, name),
@@ -235,7 +329,23 @@ fn attribute_columns(ty: u32) -> u32 {
     }
 }
 
-fn block_parameter(gl: &glow::Context, program: glow::Program, block: u32, pname: u32) -> String {
+/// The driver's index of the uniform WebGL lists at `index`.
+fn driver_index(order: Option<&UniformOrder>, index: u32) -> Option<u32> {
+    order.map_or(Some(index), |order| order.driver(index))
+}
+
+/// WebGL's index of the uniform the driver lists at `index`.
+fn webgl_index(order: Option<&UniformOrder>, index: u32) -> Option<u32> {
+    order.map_or(Some(index), |order| order.webgl(index))
+}
+
+fn block_parameter(
+    gl: &glow::Context,
+    program: glow::Program,
+    order: Option<&UniformOrder>,
+    block: u32,
+    pname: u32,
+) -> String {
     // SAFETY: `gl` is the current context and `program` a linked program of it, which `answer` checked.
     unsafe {
         match pname {
@@ -268,7 +378,9 @@ fn block_parameter(gl: &glow::Context, program: glow::Program, block: u32, pname
                         &mut indices,
                     );
                 }
-                value(array(indices.into_iter().map(|i| i as u32)))
+                value(array(indices.into_iter().map(|i| {
+                    webgl_index(order, i as u32).unwrap_or(INVALID_INDEX)
+                })))
             }
             UNIFORM_BLOCK_REFERENCED_BY_VERTEX_SHADER
             | UNIFORM_BLOCK_REFERENCED_BY_FRAGMENT_SHADER => {
