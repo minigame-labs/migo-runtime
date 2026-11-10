@@ -41,6 +41,14 @@ void requestScope(int requestId, String scope, String desc, PermissionSink sink)
 
 契约:调用到达宿主线程,sink 的所有方法在任意线程安全。会话结束后的 sink 调用被丢弃,无需与 teardown 竞速。
 
+sink 每个会话一个:`requestScope` 拿到的就是 `GameSession#getPermissionSink()` 返回的那个。不在请求里的决策——游戏启动前从自己的记录预填、用户在系统设置里撤销——都写到它上面:
+
+```java
+GameSession session = ...;                       // 例如 MigoGameActivity.onSessionCreated
+PermissionSink permissions = session.getPermissionSink();
+permissions.setScope("scope.userLocation", true); // startGame 之前写入的,就是游戏开局时的决策
+```
+
 ## 不实现会怎样
 
 引自 `PermissionHandler.java` 头注释:

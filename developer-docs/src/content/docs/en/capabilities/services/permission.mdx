@@ -41,6 +41,14 @@ void requestScope(int requestId, String scope, String desc, PermissionSink sink)
 
 Contract: calls arrive on the host thread; all `PermissionSink` methods are safe to call from any thread. Sink calls made after the session ends are discarded — there is no need to race against teardown.
 
+There is one sink per session: the one `requestScope` is handed is the one `GameSession#getPermissionSink()` returns. Decisions made outside a request — seeded from your own records before the game starts, or a permission the user revoked in system settings — go on it:
+
+```java
+GameSession session = ...;                       // e.g. in MigoGameActivity.onSessionCreated
+PermissionSink permissions = session.getPermissionSink();
+permissions.setScope("scope.userLocation", true); // set before startGame: the game starts with it
+```
+
 ## What happens without an implementation
 
 From the `PermissionHandler.java` header comment:

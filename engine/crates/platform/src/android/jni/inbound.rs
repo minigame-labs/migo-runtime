@@ -1863,10 +1863,9 @@ pub(crate) extern "system" fn updatePermission<'local>(
     granted: jni::sys::jboolean,
 ) -> jboolean {
     jni_safe!("updatePermission", env => JNI_FALSE, {
-        if host_ingress(host_id).is_err() {
-            tracing::debug!(host_id, "ignoring permission update for ended session");
-            return JNI_FALSE;
-        }
+        // No Host is asked for: a host seeds its standing decisions before the
+        // game starts, while none exists yet, and the gate holds them until the
+        // session opens. A session that ended is the gate's to refuse.
         let scope: String = match scope.mutf8_chars(env) {
             Ok(s) => s.into(),
             Err(_) => return JNI_FALSE,
@@ -1880,7 +1879,7 @@ pub(crate) extern "system" fn updatePermission<'local>(
         }) {
             Ok(()) => JNI_TRUE,
             Err(crate::android_permission_gate::UpdateError::Closed) => {
-                tracing::debug!(host_id, "ignoring permission update for closing session");
+                tracing::debug!(host_id, "ignoring permission update for an ended session");
                 JNI_FALSE
             }
             Err(crate::android_permission_gate::UpdateError::Cleanup(error)) => {

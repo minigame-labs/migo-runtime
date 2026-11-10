@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `GameSession.getPermissionSink()` (Android): the session's `PermissionSink`, the one `requestScope` is handed. The
+  `PermissionHandler` contract has always said to seed the session's standing scope decisions before the game starts
+  and to report a revocation made in system settings, but a host could reach a sink only inside `requestScope`: it
+  could seed nothing, and report a revocation only by keeping a sink from an earlier request. Decisions set before `startGame` are held until the session's permissions open and are the
+  ones the game starts with; a session closed before its game started keeps none of them.
 - `createVideo` on iOS and macOS without the app supplying players: the game views answer the video service themselves
   (`MigoVideoPlayers`), each player an `AVPlayer` over the game where content put it, with its poster until it plays,
   `objectFit`, `backgroundColor`, `autoplay`, `loop`, `muted`, `playbackRate` and `initialTime`, and the Android SDK's

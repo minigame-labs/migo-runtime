@@ -39,6 +39,11 @@ struct Hosts {
     /// Bounded by the number of sessions the process ever created.
     retired: HashSet<i32>,
     live: HashMap<i32, HostState>,
+    /// Decisions the host made for a session before it opened -- its standing
+    /// decisions seeded from its own records, which the host contract says to do
+    /// before or as the game starts, while the session's thread has not admitted
+    /// the id yet. `open` takes them as the session's first; `clear` drops them.
+    seeds: HashMap<i32, HashMap<Scope, bool>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -91,13 +96,14 @@ impl PermissionGate {
         if hosts.retired.contains(&host_id) || hosts.live.contains_key(&host_id) {
             return false;
         }
+        let scopes = hosts.seeds.remove(&host_id).unwrap_or_default();
         hosts.live.insert(
             host_id,
             Arc::new(HostControl {
                 transition: Mutex::new(()),
                 permissions: Mutex::new(HostPermissions {
                     lifecycle: Lifecycle::Active,
-                    scopes: HashMap::new(),
+                    scopes,
                     active_operations: 0,
                 }),
                 idle: Condvar::new(),
@@ -108,6 +114,12 @@ impl PermissionGate {
 
     /// Record a permission decision, and on a revocation tear the scope's
     /// resources down once nothing is still using them.
+    ///
+    /// For a session not opened yet the decision is held as a seed and becomes
+    /// one of its first at `open`: nothing can be using the scope before then, so
+    /// a refusal has nothing to tear down. Whether the session is open and holding
+    /// the seed are one step under the map's lock, the step `open` takes the seeds
+    /// in, so no decision falls between them. A cleared id refuses, as before.
     ///
     /// **`cleanup` runs with this host's transition mutex held, and must not
     /// re-enter the gate for the same host.** It is the only place in this crate
@@ -133,7 +145,21 @@ impl PermissionGate {
         granted: bool,
         cleanup: impl FnOnce() -> Result<(), E>,
     ) -> Result<(), UpdateError<E>> {
-        let host = self.host_state(host_id).ok_or(UpdateError::Closed)?;
+        let host = {
+            let mut hosts = self.hosts.lock();
+            match hosts.live.get(&host_id) {
+                Some(host) => Arc::clone(host),
+                None if hosts.retired.contains(&host_id) => return Err(UpdateError::Closed),
+                None => {
+                    hosts
+                        .seeds
+                        .entry(host_id)
+                        .or_default()
+                        .insert(scope, granted);
+                    return Ok(());
+                }
+            }
+        };
         let _transition = host.transition.lock();
         {
             let mut state = host.permissions.lock();
@@ -159,6 +185,12 @@ impl PermissionGate {
 
     fn clear_with(&self, host_id: i32, while_closing: impl FnOnce()) {
         let Some(host) = self.host_state(host_id) else {
+            // A session that never opened -- closed before its game started --
+            // keeps nothing it was seeded with, and an update arriving late is
+            // refused rather than seeding it again.
+            let mut hosts = self.hosts.lock();
+            hosts.seeds.remove(&host_id);
+            hosts.retired.insert(host_id);
             return;
         };
         let _transition = host.transition.lock();
@@ -682,5 +714,81 @@ mod tests {
         gate.clear(2000);
         assert_eq!(gate.live_host_count_for_tests(), 0);
         assert!(!gate.open(2000));
+    }
+
+    /// The host contract: seed the session's standing decisions from the host's own
+    /// records before or as the game starts. Before the session's thread opens the id
+    /// there is no `HostControl` to record them on, and every update used to be
+    /// refused as `Closed` -- which the Java side reports as a failed update and closes
+    /// the session over.
+    #[test]
+    fn a_decision_made_before_the_session_opens_is_one_of_its_first() {
+        let gate = PermissionGate::default();
+        assert_eq!(
+            gate.update(41, Scope::Camera, true, || Ok::<(), ()>(())),
+            Ok(())
+        );
+        assert_eq!(
+            gate.update(41, Scope::Record, false, || -> Result<(), ()> {
+                panic!("a refusal before the session opens has nothing to tear down")
+            }),
+            Ok(())
+        );
+        // A later decision for the same scope is the one that stands.
+        assert_eq!(
+            gate.update(41, Scope::Camera, false, || Ok::<(), ()>(())),
+            Ok(())
+        );
+        assert_eq!(gate.session(41).scope_state(Scope::Camera), None);
+
+        assert!(gate.open(41));
+        let session = gate.session(41);
+        assert_eq!(session.scope_state(Scope::Camera), Some(false));
+        assert_eq!(session.scope_state(Scope::Record), Some(false));
+        assert_eq!(session.scope_state(Scope::Bluetooth), None);
+        assert!(gate.hosts.lock().seeds.is_empty());
+    }
+
+    #[test]
+    fn a_session_closed_before_it_opens_keeps_nothing_and_refuses_later_updates() {
+        let gate = PermissionGate::default();
+        gate.update(42, Scope::Camera, true, || Ok::<(), ()>(()))
+            .expect("seeding a session that has not opened");
+        gate.clear(42);
+        assert!(gate.hosts.lock().seeds.is_empty());
+        assert_eq!(
+            gate.update(42, Scope::Camera, true, || Ok::<(), ()>(())),
+            Err(UpdateError::Closed)
+        );
+        assert!(gate.hosts.lock().seeds.is_empty());
+        assert!(!gate.open(42));
+    }
+
+    /// Whether the session is open and holding the seed are one step, the step `open`
+    /// takes the seeds in: a decision made while the session opens is either a seed it
+    /// takes or an update on the open session, never neither.
+    #[test]
+    fn no_decision_is_lost_while_the_session_opens() {
+        // Both sides released together, two thousand times, so each order happens.
+        for host_id in 3000..5000 {
+            let gate = Arc::new(PermissionGate::default());
+            let start = Arc::new(std::sync::Barrier::new(2));
+            let deciding = {
+                let (gate, start) = (Arc::clone(&gate), Arc::clone(&start));
+                thread::spawn(move || {
+                    start.wait();
+                    gate.update(host_id, Scope::Camera, true, || Ok::<(), ()>(()))
+                        .expect("a decision for a session that is opening");
+                })
+            };
+            start.wait();
+            assert!(gate.open(host_id));
+            deciding.join().expect("the deciding thread");
+            assert_eq!(
+                gate.session(host_id).scope_state(Scope::Camera),
+                Some(true),
+                "a decision made while session {host_id} opened was lost"
+            );
+        }
     }
 }

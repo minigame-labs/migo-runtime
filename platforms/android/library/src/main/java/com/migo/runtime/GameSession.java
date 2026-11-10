@@ -932,6 +932,22 @@ public final class GameSession implements Closeable {
     }
 
     /**
+     * The channel this session's standing scope decisions are set on: the same one
+     * {@link PermissionHandler#requestScope} is handed.
+     * <p>
+     * Seed it from your own records before {@link #startGame(String)} -- the decisions
+     * are the game's from its first line -- and call {@link PermissionSink#setScope}
+     * again whenever a decision changes outside a request, such as a permission the
+     * user revoked in system settings or changed on your settings screen
+     * ({@link #setSettingHandler}). Calls once the session has ended are ignored.
+     *
+     * @return this session's permission sink
+     */
+    public PermissionSink getPermissionSink() {
+        return NativeExports.permissionSink(sessionId);
+    }
+
+    /**
      * Set or clear the permission handler for this session.
      * <p>
      * You decide what the game may do. With no handler installed every scope is

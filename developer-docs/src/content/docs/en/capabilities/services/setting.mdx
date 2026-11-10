@@ -40,7 +40,7 @@ Not overriding it is a declaration that "this host has no settings page." When o
 | `settleOpened(Map<String, Boolean> authSetting)` | The user has closed the UI; `authSetting` is a scope→granted mapping; null or empty is valid. |
 | `fail(int errCode, String errMsg)` | The UI could not be displayed. |
 
-**Dual-write requirement**: any scope changes reported in `settleOpened` must also be written to `PermissionSink#setScope` as persistent decisions. The `authSetting` in `settleOpened` only affects the response for the current `migo.openSetting()` call; `setScope` is the authoritative source read on every capability check. Writing to only one side causes content to receive authorization and then fail on the very next capability check.
+**Dual-write requirement**: any scope changes reported in `settleOpened` must also be written to `PermissionSink#setScope` (the session's sink: `GameSession#getPermissionSink()`) as persistent decisions. The `authSetting` in `settleOpened` only affects the response for the current `migo.openSetting()` call; `setScope` is the authoritative source read on every capability check. Writing to only one side causes content to receive authorization and then fail on the very next capability check.
 
 ## What happens without an implementation
 

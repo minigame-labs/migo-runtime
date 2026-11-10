@@ -29,12 +29,14 @@ package com.migo.runtime.callback;
  * <h2>Contract</h2>
  * <ul>
  *   <li>Seed the session's decisions with {@link PermissionSink#setScope} —
- *       from your own records, before or as the game starts. Scopes you never
- *       set read as "not decided", which content may still ask about.</li>
+ *       from your own records, before or as the game starts, on the sink
+ *       {@link com.migo.runtime.GameSession#getPermissionSink} returns. Scopes you
+ *       never set read as "not decided", which content may still ask about.</li>
  *   <li>{@link #requestScope} must eventually answer, by calling
  *       {@link PermissionSink#resolveRequest}. Content is awaiting it.</li>
  *   <li>Call {@link PermissionSink#setScope} again whenever a decision changes
- *       — including a revocation made in system settings while the game runs.
+ *       — including a revocation made in system settings while the game runs,
+ *       when no request is there to hand you a sink.
  *       The runtime reads your latest answer, it does not cache a snapshot.</li>
  *   <li>Calls arrive on the runtime's host thread; the sink is safe from any
  *       thread, which is what you need to show a dialog and answer later.</li>
