@@ -751,8 +751,17 @@ mod tests {
     /// frame, and content got two animation frames with one timestamp (a 0 ms step,
     /// 4 runs in 6 on a Mate 30). The vsync branch drops a frame time it has handled
     /// before it can signal RAF, and only then records the new one.
+    ///
+    /// The repeat still answered what was asked, and can be the only answer: the
+    /// frame the render thread asked for, when a host answers two requests back to
+    /// back and the second's frame time converts no later than the first's. Dropped
+    /// whole -- no arm -- it left the request noted as asked forever and nothing asked
+    /// the host again, so the loop stopped with content awaiting a frame (the macOS
+    /// headless host on CI: two frames requested, two answered, sixty seconds of
+    /// nothing). So the branch clears the request before the check, and a repeat that
+    /// runs no frame arms again for demand that remains.
     #[test]
-    fn a_vsync_for_a_frame_already_handled_runs_no_frame() {
+    fn a_vsync_for_a_frame_already_handled_runs_no_frame_and_still_lets_the_next_be_asked() {
         let source = include_str!("render_thread.rs");
         let branch = source
             .split_once("Wake::Vsync => {")
@@ -761,6 +770,9 @@ mod tests {
         let received = branch
             .find("vsync.try_recv()")
             .expect("the branch takes the frame time");
+        let cleared = branch
+            .find("forget_frame_request();")
+            .expect("the vsync clears what was asked");
         let dropped = branch
             .find("if frame_time_ms <= last_vsync_ms {")
             .expect("a frame time already handled is dropped");
@@ -769,13 +781,15 @@ mod tests {
             .expect("the handled frame time is recorded");
         let signalled = branch.find("signal_raf(").expect("the branch signals RAF");
         assert!(
-            received < dropped && dropped < recorded && recorded < signalled,
-            "a repeated frame time must be dropped before anything of the frame runs"
+            received < cleared && cleared < dropped && dropped < recorded && recorded < signalled,
+            "the vsync clears the request, and a repeated frame time is dropped before anything of the frame runs"
         );
         let skip = &branch[dropped..recorded];
         assert!(
-            skip.contains("continue;") && !skip.contains("arm_if_needed("),
-            "the repeat is dropped whole: its frame's first vsync already armed the next"
+            skip.contains("arm_if_needed(")
+                && skip.contains("continue;")
+                && !skip.contains("signal_raf("),
+            "a repeat runs no frame, and arms again for demand that remains"
         );
     }
 

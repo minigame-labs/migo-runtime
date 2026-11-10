@@ -131,6 +131,10 @@ impl shared::console_log::ConsoleForward for HostConsole {
     }
 }
 
+/// What asks for the next frame: the shared `FrameRequest` with an external vsync
+/// source, the render thread's demand nudge when the engine paces frames.
+pub(crate) type FrameArm = Arc<dyn Fn() + Send + Sync>;
+
 /// Everything a session owns that does not depend on where its JavaScript runs.
 ///
 /// Fields rather than accessors: both execution modes destructure this once at
@@ -166,7 +170,7 @@ pub(crate) struct SessionShell {
     /// producer in another one.
     pub(crate) raf_rx: RafRx,
     pub(crate) raf_demand: RafDemandRef,
-    pub(crate) request_vsync: Option<Arc<dyn Fn() + Send + Sync>>,
+    pub(crate) request_vsync: Option<FrameArm>,
 
     pub(crate) backgrounded: Arc<AtomicBool>,
     pub(crate) timer_backgrounded: Arc<AtomicBool>,
@@ -280,12 +284,23 @@ impl SessionShell {
         //
         // Either way the closure keeps `graphics` decoupled from `platform`: the
         // render thread and `op_await_next_frame` only invoke `Arc<dyn Fn()>`.
+        //
+        // With an external source both of them ask through one `FrameRequest`, so
+        // the host has at most one frame asked of it: the render thread's arm and
+        // content's await of the same frame are one request and one vsync, and the
+        // render thread, which hears every vsync, is the one that clears it.
+        let frame_request = uses_external_vsync.then(|| {
+            let platform = platform.clone();
+            Arc::new(shared::frame_request::FrameRequest::new(move || {
+                platform.request_vsync(id)
+            }))
+        });
         let (frame_demand_rx, request_vsync): (
             Option<crossbeam_channel::Receiver<()>>,
-            Option<Arc<dyn Fn() + Send + Sync>>,
-        ) = if uses_external_vsync {
-            let platform = platform.clone();
-            (None, Some(Arc::new(move || platform.request_vsync(id))))
+            Option<FrameArm>,
+        ) = if let Some(request) = &frame_request {
+            let request = Arc::clone(request);
+            (None, Some(Arc::new(move || request.arm())))
         } else {
             let (nudge_tx, nudge_rx) = crossbeam_channel::bounded::<()>(1);
             (
@@ -330,7 +345,7 @@ impl SessionShell {
             // The render thread's own arm route is its clock when the engine paces
             // frames, so it is deliberately not handed the nudge: a thread nudging
             // itself is a wakeup that arms nothing.
-            uses_external_vsync.then(|| request_vsync.clone()).flatten(),
+            frame_request,
             surface_control,
             report_surface_loss,
             report_surface_installed,
