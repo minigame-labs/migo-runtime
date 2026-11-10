@@ -932,6 +932,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- On iOS `chooseMessageFile` with `type: "image"` or `"video"` picks from the photo library, where the player keeps
+  them -- as the Android SDK's `image/*` and `video/*` reach the system's photo picker -- and any other type from the
+  Files app. It opened Files for every type, which holds no photos until the player puts some there.
 - WebGL lists a program's uniforms in one order on every GPU: the default block's values, then its samplers, each in
   the order the shaders declare them (the vertex shader's first), then the members of uniform blocks -- where the
   samplers and blocks go is what every browser does, and the values follow their declarations too. `getActiveUniform`,

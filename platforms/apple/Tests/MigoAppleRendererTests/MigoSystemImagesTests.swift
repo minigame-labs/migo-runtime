@@ -215,4 +215,18 @@ final class MigoSystemImagesTests: XCTestCase {
             call(images, Method.chooseMessageFile, ["count": 5, "type": "all", "extension": ["png"]]))
         XCTAssertEqual((filtered["tempFiles"] as? [[String: Any]])?.map { $0["name"] as? String }, ["shot.png"])
     }
+
+    func testAMessageFileImageOrVideoIsChosenFromThePhotoLibraryAndAnythingElseFromTheFiles() throws {
+        let picker = FakePicker()
+        picker.files = [image("shot.png", 2, 2, .png)]
+        let images = MigoSystemImages(picker: picker, staging: root.appendingPathComponent("staging"))
+        for (type, source, kind) in [
+            ("image", MigoPickRequest.Source.library, MigoPickKind.image),
+            ("video", .library, .video), ("file", .files, .file), ("all", .files, .file),
+        ] {
+            _ = call(images, Method.chooseMessageFile, ["count": 1, "type": type])
+            XCTAssertEqual(picker.asked.last?.source, source, type)
+            XCTAssertEqual(picker.asked.last?.kinds, [kind], type)
+        }
+    }
 }

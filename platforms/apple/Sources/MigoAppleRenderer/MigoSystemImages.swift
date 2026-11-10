@@ -296,14 +296,18 @@ final class MigoSystemImages {
     private func chooseMessageFile(_ options: [String: Any], _ reply: MigoHostServiceReply) {
         let type = options["type"] as? String ?? "all"
         let extensions = Set((options["extension"] as? [Any] ?? []).compactMap { ($0 as? String)?.lowercased() })
+        // An image or a video is chosen where the player keeps them -- the photo library, where the platform has
+        // one, as the Android SDK's image/* and video/* reach the system's photo picker -- and anything else from
+        // the files.
         let kinds: Set<MigoPickKind>
+        let source: MigoPickRequest.Source
         switch type {
-        case "image": kinds = [.image]
-        case "video": kinds = [.video]
-        default: kinds = [.file]
+        case "image": (kinds, source) = ([.image], .library)
+        case "video": (kinds, source) = ([.video], .library)
+        default: (kinds, source) = ([.file], .files)
         }
         let request = MigoPickRequest(
-            count: Self.count(options["count"], default: 1), kinds: kinds, source: .files, staging: staging,
+            count: Self.count(options["count"], default: 1), kinds: kinds, source: source, staging: staging,
             extensions: extensions)
         picker.pick(request) { outcome in
             switch outcome {
