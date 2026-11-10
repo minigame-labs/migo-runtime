@@ -691,7 +691,10 @@ impl PlaybackIntents {
         self.targets[..self.len].iter().any(|target| match *target {
             PlaybackIntent::None => false,
             PlaybackIntent::All => {
-                contexts.values().any(AudioContext::has_active_sources)
+                contexts
+                    .view()
+                    .values()
+                    .any(AudioContext::has_active_sources)
                     || players.values().any(InnerAudioPlayer::is_active)
             }
             PlaybackIntent::Context(id) => contexts
