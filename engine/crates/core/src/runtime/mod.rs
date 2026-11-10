@@ -57,6 +57,8 @@ mod service_ops;
 #[cfg(all(test, feature = "embedded-v8"))]
 mod tests;
 
+#[cfg(feature = "test-support")]
+pub use registry::CommandCapture;
 pub use registry::{
     HostIngress, HostIngressSendError, host_ingress, lease_surface, lease_surface_tracked,
     lease_surface_with_resource, retire_surface, send_command_to_host,

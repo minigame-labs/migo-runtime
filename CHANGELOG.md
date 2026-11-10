@@ -919,6 +919,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- A C ABI host that reports both lifecycle and visibility -- the iOS and macOS game views, the OpenHarmony view, the
+  Linux host kit -- no longer has content hear `onHide` and `onShow` twice for one trip to the background: each of
+  `migo_session_set_lifecycle` and `migo_session_set_visibility` told content on its own, so leaving for the system's
+  settings and coming back fired both events twice. Content is shown while the Session is not PAUSED and is visible,
+  and hears once each time that changes, whichever the host reports and in either order; a surface replaced while
+  shown is no longer a second `onShow`.
 - On iOS `previewImage` and `previewMedia` no longer end the game. The preview was presented full screen, which takes
   the views below it out of the window once it is up, and the game view leaving its window is the app ending the game:
   the game was torn down under the preview and started over from its entry when it closed. It is presented over the

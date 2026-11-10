@@ -157,6 +157,9 @@ pub use frame_wire::sync::{
 pub use frame_wire::{IngressDecision, IngressOutcome};
 #[cfg(feature = "external-frames")]
 pub use migo_services::content::ModuleError;
+/// A command channel in place of a Host, for a test of what a caller sends one.
+#[cfg(feature = "test-support")]
+pub use runtime::CommandCapture;
 /// The external-frame execution. A session with no script runtime in this
 /// process, for the Apple Performance+ product.
 #[cfg(feature = "external-frames")]

@@ -258,7 +258,7 @@ struct SessionState {
     /// Dynamic physical window metrics shared with the C HostKit. Retained by
     /// the Session so detach/reattach updates the same service object.
     window_state: Option<Arc<HostWindowState>>,
-    /// Last visibility level set by the host.
+    /// Last visibility level set by the host (`migo_session_set_visibility`).
     ///
     /// Visibility is a property of the session, not of the surface, and every
     /// Android lifecycle delivers RESUME before the window arrives. Rejecting
@@ -268,6 +268,12 @@ struct SessionState {
     /// Last focus level. Like visibility, this is a Session property retained
     /// across native Surface replacement.
     focused: Option<bool>,
+    /// What content was last told: shown or hidden (see [`wanted_shown`]), and
+    /// focused or not. Content hears a change once -- a host reports both
+    /// lifecycle and visibility for one trip to the background, and an attach
+    /// is not a show -- so these are what a new report is compared with.
+    told_shown: Option<bool>,
+    told_focused: Option<bool>,
 }
 
 impl Default for SessionState {
@@ -290,6 +296,8 @@ impl Default for SessionState {
             window_state: None,
             visibility: None,
             focused: None,
+            told_shown: None,
+            told_focused: None,
         }
     }
 }
@@ -901,29 +909,74 @@ pub unsafe extern "C" fn migo_session_notify_vsync(
     })
 }
 
-fn drive_visibility_locked(state: &mut SessionState, visible: bool) -> MigoResult {
-    // Before a surface exists (including an in-progress attach/detach) there
-    // is nothing to show or hide yet, but the host is not wrong to have said
-    // so: remember it for the next completed attach.
-    let can_dispatch = state.active_attachment.is_some()
+/// Whether content is to be shown: not while the host has the session PAUSED or
+/// says it cannot be seen, and otherwise so -- once the host has said either.
+/// The two are distinct (a RUNNING session may be covered), and content hears
+/// the one state they make.
+fn wanted_shown(state: &SessionState) -> Option<bool> {
+    match (state.lifecycle, state.visibility) {
+        (LifecycleState::Created, None) => None,
+        (LifecycleState::Paused, _) => Some(false),
+        (_, visible) => Some(visible.unwrap_or(true)),
+    }
+}
+
+/// The Host to tell content through, once there is a surface to show it on.
+/// Before one exists (including an in-progress attach/detach) there is nothing
+/// to show or hide yet, but the host is not wrong to have said so: the next
+/// completed attach tells content.
+fn reachable_host(state: &SessionState) -> Option<migo_core::HostId> {
+    let attached = state.active_attachment.is_some()
         && state.surface_transition != SurfaceTransition::Detaching;
-    let Some(host) = state
+    state
         .host
         .as_ref()
-        .filter(|_| can_dispatch)
+        .filter(|_| attached)
         .map(SessionEngine::id)
-    else {
-        state.visibility = Some(visible);
-        return MIGO_OK;
-    };
-    let command = if visible {
+}
+
+fn visibility_command(shown: bool) -> HostCommand {
+    if shown {
         HostCommand::OnShow { options_json: None }
     } else {
         HostCommand::OnHide
+    }
+}
+
+/// Tells content whether it has focus, if that changed since it was last told.
+fn deliver_focus_locked(state: &mut SessionState) -> MigoResult {
+    let Some(focused) = state
+        .focused
+        .filter(|focused| state.told_focused != Some(*focused))
+    else {
+        return MIGO_OK;
     };
-    match migo_core::send_critical_command_to_host(host, command) {
+    let Some(host) = reachable_host(state) else {
+        return MIGO_OK;
+    };
+    match migo_core::send_critical_command_to_host(host, HostCommand::OnFocusChanged { focused }) {
         Ok(()) => {
-            state.visibility = Some(visible);
+            state.told_focused = Some(focused);
+            MIGO_OK
+        }
+        Err(error) => {
+            tracing::error!("focus command failed: {error}");
+            MIGO_ERROR_INTERNAL
+        }
+    }
+}
+
+/// Tells content whether it is shown, if that changed since it was last told.
+fn deliver_shown_locked(state: &mut SessionState) -> MigoResult {
+    let Some(shown) = wanted_shown(state).filter(|shown| state.told_shown != Some(*shown)) else {
+        return MIGO_OK;
+    };
+    let Some(host) = reachable_host(state) else {
+        return MIGO_OK;
+    };
+    match migo_core::send_critical_command_to_host(host, visibility_command(shown)) {
+        Ok(()) => {
+            state.told_shown = Some(shown);
             MIGO_OK
         }
         Err(error) => {
@@ -931,13 +984,6 @@ fn drive_visibility_locked(state: &mut SessionState, visible: bool) -> MigoResul
             MIGO_ERROR_INTERNAL
         }
     }
-}
-
-fn drive_visibility(session: &MigoSession, visible: bool) -> MigoResult {
-    let Ok(mut state) = session.state.lock() else {
-        return MIGO_ERROR_INTERNAL;
-    };
-    drive_visibility_locked(&mut state, visible)
 }
 
 /// # Safety
@@ -971,9 +1017,10 @@ pub unsafe extern "C" fn migo_session_set_lifecycle(
             // produce callbacks, replacing callback tokens is unsafe.
             control.callbacks_frozen = true;
         }
-        let result = drive_visibility_locked(&mut control, desired == LifecycleState::Running);
-        if result == MIGO_OK {
-            control.lifecycle = desired;
+        let was = std::mem::replace(&mut control.lifecycle, desired);
+        let result = deliver_shown_locked(&mut control);
+        if result != MIGO_OK {
+            control.lifecycle = was;
         }
         result
     })
@@ -995,7 +1042,15 @@ pub unsafe extern "C" fn migo_session_set_visibility(
             Ok(visible) => visible,
             Err(error) => return error,
         };
-        drive_visibility(&session, visible)
+        let Ok(mut state) = session.state.lock() else {
+            return MIGO_ERROR_INTERNAL;
+        };
+        let was = state.visibility.replace(visible);
+        let result = deliver_shown_locked(&mut state);
+        if result != MIGO_OK {
+            state.visibility = was;
+        }
+        result
     })
 }
 
@@ -1018,37 +1073,15 @@ pub unsafe extern "C" fn migo_session_set_focus(
         let Ok(mut state) = session.state.lock() else {
             return MIGO_ERROR_INTERNAL;
         };
-        if state.focused == Some(focused) {
-            return MIGO_OK;
-        }
-
         // No surface requirement: focus is a Session property, and Android can
         // report it before its window exists. Retain it for attach in that
         // case. It never drives show/hide, render pause, or audio pause.
-        let can_dispatch = state.active_attachment.is_some()
-            && state.surface_transition != SurfaceTransition::Detaching;
-        let Some(host) = state
-            .host
-            .as_ref()
-            .filter(|_| can_dispatch)
-            .map(SessionEngine::id)
-        else {
-            state.focused = Some(focused);
-            return MIGO_OK;
-        };
-        match migo_core::send_critical_command_to_host(
-            host,
-            HostCommand::OnFocusChanged { focused },
-        ) {
-            Ok(()) => {
-                state.focused = Some(focused);
-                MIGO_OK
-            }
-            Err(error) => {
-                tracing::error!("focus command failed: {error}");
-                MIGO_ERROR_INTERNAL
-            }
+        let was = state.focused.replace(focused);
+        let result = deliver_focus_locked(&mut state);
+        if result != MIGO_OK {
+            state.focused = was;
         }
+        result
     })
 }
 
@@ -1916,7 +1949,8 @@ mod tests {
             {
                 let state = unsafe { &*session }.state.lock().unwrap();
                 assert_eq!(state.lifecycle, LifecycleState::Paused);
-                assert_eq!(state.visibility, Some(false));
+                assert_eq!(wanted_shown(&state), Some(false));
+                assert_eq!(state.told_shown, None);
             }
 
             assert_eq!(
@@ -1927,7 +1961,7 @@ mod tests {
             {
                 let state = unsafe { &*session }.state.lock().unwrap();
                 assert_eq!(state.lifecycle, LifecycleState::Running);
-                assert_eq!(state.visibility, Some(true));
+                assert_eq!(wanted_shown(&state), Some(true));
                 assert_eq!(state.focused, Some(true));
                 assert!(state.callbacks_frozen);
             }
