@@ -925,6 +925,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- On Android `stopBluetoothDevicesDiscovery` answers 10000 "not init" while the adapter is not open -- never opened,
+  or closed by `closeBluetoothAdapter` -- as the reference documents and as `getBluetoothAdapterState` on the same
+  adapter already did. It answered ok. The iOS and macOS SDK already refused it.
 - A C ABI host that reports both lifecycle and visibility -- the iOS and macOS game views, the OpenHarmony view, the
   Linux host kit -- no longer has content hear `onHide` and `onShow` twice for one trip to the background: each of
   `migo_session_set_lifecycle` and `migo_session_set_visibility` told content on its own, so leaving for the system's

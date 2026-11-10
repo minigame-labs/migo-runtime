@@ -1161,6 +1161,10 @@ public class BluetoothManager {
     }
 
     public synchronized void stopDiscovery(JSONObject opts, Reply reply) {
+        // Content's stop, which needs the adapter open like every other call on it: once
+        // closeBluetoothAdapter has run it answers 10000 "not init", as getBluetoothAdapterState
+        // does. The adapter's own close stops a scan through stopDiscovery() below.
+        requireOpened();
         stopDiscovery();
         reply.ok();
     }
