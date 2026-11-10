@@ -171,6 +171,8 @@ view.onEvent = { event in
         if !recoverable { exit(4) }
     case .gameLog(let entry):
         say("game log: \(entry)")
+    case .console(let level, let message):
+        say("console \(level): \(message)")
     }
 }
 // Sampled on the main queue, where the view lives; the last sample before

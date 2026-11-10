@@ -62,6 +62,11 @@ import XCTest
             }
         }
 
+        /// createVideo's players, over the test's view; what they post goes nowhere.
+        private func videos() -> MigoVideoPlayers {
+            MigoVideoPlayers(stage: view) { _, _ in }
+        }
+
         private func request(_ method: UInt32, _ object: [String: Any] = [:], answered: Bool = true)
             -> MigoHostServiceRequest
         {
@@ -298,9 +303,9 @@ import XCTest
                 func handle(_ request: MigoHostServiceRequest) { handled += 1 }
             }
             let app = App()
-            let mine = MigoGameViewHostServices(app: nil, window: service())
+            let mine = MigoGameViewHostServices(app: nil, window: service(), video: videos())
             XCTAssertEqual(mine.services, MigoGameViewHostServices.services)
-            let theirs = MigoGameViewHostServices(app: app, window: service())
+            let theirs = MigoGameViewHostServices(app: app, window: service(), video: videos())
             theirs.handle(request(Method.requestPointerLock, answered: false))
             XCTAssertEqual(app.handled, 1)
             XCTAssertEqual(recorder.engaged, 0)
