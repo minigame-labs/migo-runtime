@@ -112,6 +112,9 @@ def migoReleaseVersion() {
 
 android {
     namespace 'com.migo.runtime'
+    // An AAR's resources merge into the host app's: every one the SDK ships is
+    // named migo_, so none can take the place of the app's own.
+    resourcePrefix 'migo_'
     // Compile against the same level we target: compiling against an older SDK
     // hides the very behaviour changes `targetSdk` opts into, so the two move
     // together. `minSdk` does not -- see below.

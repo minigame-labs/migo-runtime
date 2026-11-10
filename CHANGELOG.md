@@ -838,6 +838,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Changed
+- `scanCode` on Android opens the SDK's own scanner instead of handing the scan to a ZXing-compatible scanner app,
+  which few phones have (none on a Mate 30), so it failed with `no scanner app available` almost everywhere. The
+  scanner reads the back camera's picture under a frame -- a code across the frame is read as it comes, a bar code in
+  either direction -- and, unless content asked for `onlyFromCamera`, a picture from the album; it is answered with
+  the code's `result`, `scanType`, `charSet` and `rawData` in base64, and fails with `cancel` when the player backs
+  out. It uses the camera where the app declares and is granted `android.permission.CAMERA` (asking the system the
+  first time), and the album otherwise; content hears only the code, never the camera's picture, so no
+  `scope.camera` is asked for. Decoding is ZXing's core library (Apache-2.0), a new runtime dependency of the SDK:
+  the Maven publication names it, and a host that adds the AAR as a file declares `com.google.zxing:core` itself
+  (see the Android getting-started page).
 - A call that needs a scope nobody has decided asks for it, as `authorize` does, and goes ahead once the host has
   decided: granted, it runs; refused, or with no permission service to ask, it refuses as before (`auth deny: <scope>
   is not granted`). The reference's `authorize` is how content asks *in advance* -- once granted, later calls do not

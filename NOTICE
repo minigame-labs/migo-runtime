@@ -55,6 +55,7 @@ The following components are licensed under the Apache License 2.0:
 - debugid (https://github.com/mitsuhiko/debugid) - Apache-2.0
 - ring (https://github.com/briansmith/ring) - Apache-2.0 AND ISC
 - Oboe 1.11.0 (https://github.com/google/oboe) - Apache-2.0
+- ZXing core 3.5.3 (https://github.com/zxing/zxing) - Apache-2.0: the Android SDK's barcode decoding (scanCode)
 
 --------------------------------------------------------------------------------
 MPL-2.0 (Mozilla Public License 2.0)

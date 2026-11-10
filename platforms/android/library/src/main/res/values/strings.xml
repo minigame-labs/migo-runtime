@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The SDK's own screens: scanCode's scanner. A host app's resources merge with these, so every name is migo_'s. -->
+<resources>
+    <string name="migo_scan_hint">Place the code in the frame to scan it</string>
+    <string name="migo_scan_album">Album</string>
+    <string name="migo_scan_no_code">No code was found in the picture</string>
+    <string name="migo_scan_no_camera">The camera cannot be used</string>
+</resources>

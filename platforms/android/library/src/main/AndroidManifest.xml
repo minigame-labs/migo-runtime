@@ -27,6 +27,16 @@
             android:exported="false"
             android:grantUriPermissions="true" />
 
+        <!-- scanCode's scanner. It uses the camera where the host app declares
+             and is granted android.permission.CAMERA, and reads the album
+             otherwise; the SDK does not declare the permission for the app. -->
+        <activity
+            android:name=".internal.platform.ScanActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden" />
+
         <activity
             android:name=".MigoGameActivity"
             android:exported="false"

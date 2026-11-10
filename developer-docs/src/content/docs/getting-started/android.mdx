@@ -56,8 +56,13 @@ dependencies {
 ```kotlin
 dependencies {
     implementation(files("libs/migo-<version>-android.aar"))
+    // 以文件引入时不会带上 SDK 依赖的库：按该版本 contracts/android-runtime-dependencies.json 列出的版本声明。
+    implementation("org.jetbrains.kotlin:kotlin-stdlib:<version>")
+    implementation("com.google.zxing:core:<version>") // scanCode 的解码器
 }
 ```
+
+`scanCode` 打开 SDK 自带的扫码界面。app 声明了 `android.permission.CAMERA` 时用后置相机识别（首次使用时向系统申请），否则从相册图片识别；SDK 不会替 app 声明这个权限。内容只拿到玩家扫到的码，拿不到相机画面，所以不需要 `scope.camera`。
 
 不要在构建脚本或文档示例中写死某个版本号。
 

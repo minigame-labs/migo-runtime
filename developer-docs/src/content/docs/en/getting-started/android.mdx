@@ -60,8 +60,17 @@ place it in the app's `libs/` directory:
 ```kotlin
 dependencies {
     implementation(files("libs/migo-<version>-android.aar"))
+    // A file brings none of the libraries the SDK uses: declare them, at the versions the release
+    // lists in contracts/android-runtime-dependencies.json.
+    implementation("org.jetbrains.kotlin:kotlin-stdlib:<version>")
+    implementation("com.google.zxing:core:<version>") // scanCode's decoder
 }
 ```
+
+`scanCode` opens the SDK's own scanner. It reads the code with the back camera where the app declares
+`android.permission.CAMERA` (and asks the system for it the first time), and from a picture in the
+album otherwise; the SDK does not declare the permission for the app. Content hears only the code the
+player scanned, never the camera's picture, so no `scope.camera` is asked for.
 
 Do not hard-code a specific version number in build scripts or documentation examples.
 
