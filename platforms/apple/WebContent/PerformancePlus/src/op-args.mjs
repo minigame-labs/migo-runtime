@@ -290,6 +290,15 @@ export function u32ArrayOf(value, name) {
   throw new TypeError(NOT_A_VIEW);
 }
 
+/**
+ * `#[buffer]` of doubles (`&mut [f64]`): a Float64Array and nothing else.
+ * @kind f64_buffer
+ */
+export function f64ArrayOf(value, name) {
+  if (kindOf(value) === "Float64Array") return value;
+  throw new TypeError(NOT_A_VIEW);
+}
+
 /** `f64 as u64`, as a Number exact in its low 32 bits. */
 function u64Bits(value) {
   if (!(value > 0)) return 0; // NaN, zero and negatives

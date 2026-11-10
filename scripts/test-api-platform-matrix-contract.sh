@@ -130,7 +130,7 @@ red "the Swift SDK that stops reporting the network" platforms/apple/Sources/Mig
 red "a capability product that stops answering its service" platforms/apple/Sources/MigoAppleLocation/MigoLocation.swift \
     'text.replace("builtIn.insert(.location)", "// builtIn.insert(.location)", 1)'
 red "an engine decoder compiled for another system" engine/crates/capi/src/host_kit.rs \
-    'text.replace("#[cfg(target_os = \"macos\")]\n    fn video_decoder", "#[cfg(target_os = \"windows\")]\n    fn video_decoder", 1)'
+    'text.replace("#[cfg(target_vendor = \"apple\")]\n    fn video_decoder", "#[cfg(target_os = \"windows\")]\n    fn video_decoder", 1)'
 # OpenHarmony's targets are `target_os = "linux"` too: an accessor that stops
 # telling them apart claims a decoder for a platform that has none.
 red "an engine decoder that a bare Linux cfg also builds for OpenHarmony" engine/crates/capi/src/host_kit.rs \

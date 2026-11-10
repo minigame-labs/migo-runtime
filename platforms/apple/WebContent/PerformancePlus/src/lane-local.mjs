@@ -385,15 +385,6 @@ export function op_crypto_random_values(out) {
   }
 }
 
-// ---- video decoding --------------------------------------------------------------
-//
-// No decoder is integrated on this profile: createVideoDecoder's start() fails
-// as not supported rather than waiting for frames (media/03_video_decoder.js).
-
-export function op_video_decoder_available() {
-  return false;
-}
-
 // ---- counters and hints -------------------------------------------------------
 
 /**

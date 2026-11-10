@@ -259,7 +259,7 @@
       }
     },
     "host_v8_media": {
-      "reason": "Camera and photo-album surfaces are native UI and native permissions, outside the Performance+ profile; so is video decoding, which content is told this profile does not have. createVideo's players are the host app's, as embedded: making one or changing what it plays is answered at once, as the embedded ops answer, because the host resolves its src and poster through the game's sandbox into files it can open (migo_services::host_paths) and a refusal throws; taking one away is a command, and play, pause, stop, seek and full screen are commands the host answers through each method's result hook, as embedded. Choosing images, media and files is the host app's picker, reached as a command through the host-service channel; the files it hands over are taken into the session's /tmp, as in process. Compressing, previewing and saving to the album name content's files: they are awaited, because the host resolves each path through the game's sandbox into a file the app can open before it asks (migo_services::host_paths, as the embedded ops do), and a refusal fails the call. Recording the game (getGameRecorder) is the native renderer's: the host asks its render thread whether it can record (synchronously -- isFrameSupported answers at once) and to start, pause, resume, stop or abort, and the producer waits on the recording's events, which the host's render thread reports as the embedded ops'.",
+      "reason": "Camera and photo-album surfaces are native UI and native permissions, outside the Performance+ profile. A video decoder decodes on the host, with the platform's decoders and the decoding the embedded ops run (shared::video_decoding): whether the platform has one, a frame, a seek and a stop are answered at once, as the embedded ops answer -- a frame's pixels cross once, as the answer -- starting is awaited, because the host resolves the source through the game's sandbox first, and removing one is a command; the decoder's events reach content through the hook the embedded runtime calls. createVideo's players are the host app's, as embedded: making one or changing what it plays is answered at once, as the embedded ops answer, because the host resolves its src and poster through the game's sandbox into files it can open (migo_services::host_paths) and a refusal throws; taking one away is a command, and play, pause, stop, seek and full screen are commands the host answers through each method's result hook, as embedded. Choosing images, media and files is the host app's picker, reached as a command through the host-service channel; the files it hands over are taken into the session's /tmp, as in process. Compressing, previewing and saving to the album name content's files: they are awaited, because the host resolves each path through the game's sandbox into a file the app can open before it asks (migo_services::host_paths, as the embedded ops do), and a refusal fails the call. Recording the game (getGameRecorder) is the native renderer's: the host asks its render thread whether it can record (synchronously -- isFrameSupported answers at once) and to start, pause, resume, stop or abort, and the producer waits on the recording's events, which the host's render thread reports as the embedded ops'.",
       "ops": {
         "op_camera_close_frame_change": "unsupported",
         "op_camera_create": "unsupported",
@@ -285,12 +285,12 @@
         "op_preview_media": "async",
         "op_save_image_to_photos_album": "async",
         "op_video_create": "sync",
-        "op_video_decoder_available": "local",
-        "op_video_decoder_remove": "unsupported",
-        "op_video_decoder_seek": "unsupported",
-        "op_video_decoder_start": "unsupported",
-        "op_video_decoder_stop": "unsupported",
-        "op_video_decoder_take_frame": "unsupported",
+        "op_video_decoder_available": "sync",
+        "op_video_decoder_remove": "command",
+        "op_video_decoder_seek": "sync",
+        "op_video_decoder_start": "async",
+        "op_video_decoder_stop": "sync",
+        "op_video_decoder_take_frame": "sync",
         "op_video_destroy": "command",
         "op_video_exit_full_screen": "command",
         "op_video_pause": "command",

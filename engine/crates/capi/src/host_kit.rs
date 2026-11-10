@@ -17,7 +17,7 @@ use migo_capi_abi::host_services::{
     MIGO_HOST_SERVICE_WINDOW,
 };
 #[cfg(any(
-    target_os = "macos",
+    target_vendor = "apple",
     all(target_os = "linux", not(target_env = "ohos"))
 ))]
 use migo_core::services::VideoDecoderService;
@@ -316,9 +316,9 @@ impl MediaServices for CapiDeviceServices {
             .map(|services| services as Arc<dyn VideoService>)
     }
 
-    /// The platform's own decoders, in the engine: AVFoundation's on macOS.
-    /// A platform without one answers `createVideoDecoder` not supported.
-    #[cfg(target_os = "macos")]
+    /// The platform's own decoders, in the engine: AVFoundation's on macOS and
+    /// iOS. A platform without one answers `createVideoDecoder` not supported.
+    #[cfg(target_vendor = "apple")]
     fn video_decoder(&self) -> Option<Arc<dyn VideoDecoderService>> {
         Some(Arc::new(platform::apple::video_decoder::AppleVideoDecoder))
     }
