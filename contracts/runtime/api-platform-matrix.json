@@ -25,7 +25,7 @@
   "total": 382,
   "summary": {
     "android": {"engine": 62, "default": 123, "host": 187, "missing": 0, "unsupported": 10, "wired": 382, "verified": 251, "outside": 13, "ready": 381},
-    "ios": {"engine": 72, "default": 113, "host": 181, "missing": 1, "unsupported": 15, "wired": 377, "verified": 239, "outside": 10, "ready": 372},
+    "ios": {"engine": 72, "default": 113, "host": 181, "missing": 1, "unsupported": 15, "wired": 377, "verified": 240, "outside": 10, "ready": 373},
     "macos": {"engine": 72, "default": 89, "host": 177, "missing": 0, "unsupported": 44, "wired": 376, "verified": 218, "outside": 235, "ready": 369},
     "linux": {"engine": 72, "default": 138, "host": 156, "missing": 0, "unsupported": 16, "wired": 375, "verified": 214, "outside": 225, "ready": 363},
     "windows": {"engine": 71, "default": 2, "host": 295, "missing": 4, "unsupported": 10, "wired": 232, "verified": 0, "outside": 227, "ready": 285},
@@ -354,7 +354,7 @@
     "revokeBufferURL": {"category": "storage", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine", "verified": ["android", "ios", "macos", "linux"], "not_ready": ["windows", "ohos"]},
     "saveFileToDisk": {"category": "file", "needs": ["channel:image.save_file_to_disk"], "android": "unsupported", "ios": "unsupported", "macos": "default", "linux": "default", "windows": "host", "ohos": "unsupported", "outside": ["android", "ios", "ohos"], "not_ready": ["macos", "linux", "windows"]},
     "saveImageToPhotosAlbum": {"category": "media/image", "needs": ["channel:image.save_image_to_photos_album", "channel:permission"], "android": "host", "ios": "host", "macos": "host", "linux": "default", "windows": "host", "ohos": "missing", "not_ready": ["linux", "windows", "ohos"]},
-    "scanCode": {"category": "device/scan", "needs": ["channel:scan_code.scan_code"], "android": "default", "ios": "default", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "verified": ["android"], "outside": ["macos", "linux", "windows"], "not_ready": ["ios", "ohos"]},
+    "scanCode": {"category": "device/scan", "needs": ["channel:scan_code.scan_code"], "android": "default", "ios": "default", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "verified": ["android", "ios"], "outside": ["macos", "linux", "windows"], "not_ready": ["ohos"]},
     "selectGroupMembers": {"category": "chattool", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "outside": ["macos", "linux", "windows", "ohos"]},
     "sendGiftToFriend": {"category": "open-api/data", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "outside": ["macos", "linux", "windows"], "not_ready": ["ohos"]},
     "sendSocketMessage": {"category": "network/websocket", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine", "verified": ["android", "ios", "linux"], "not_ready": ["macos", "windows", "ohos"]},
