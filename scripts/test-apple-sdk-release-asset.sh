@@ -67,6 +67,7 @@ required = [
     "Sources/MigoAppleCamera/Localization/en.lproj/Localizable.strings",
     "Sources/MigoAppleCamera/Localization/zh-Hans.lproj/Localizable.strings",
     "Sources/MigoAppleMicrophone/MigoMicrophone.swift",
+    "Sources/MigoAppleMicrophone/MigoRecorder.swift",
 ]
 for relative in required:
     if not (package / relative).is_file():
