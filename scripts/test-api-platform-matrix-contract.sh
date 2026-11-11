@@ -54,7 +54,7 @@ while IFS= read -r path; do inputs+=("$path"); done < <(
     cd "$ROOT" && git ls-files include/migo platforms/apple/Sources/MigoAppleRenderer \
         platforms/apple/Sources/MigoMacV8 platforms/apple/Sources/MigoApplePerformancePlus \
         platforms/apple/Sources/MigoAppleLocation platforms/apple/Sources/MigoAppleBluetooth \
-        platforms/apple/Sources/MigoAppleCamera \
+        platforms/apple/Sources/MigoAppleCamera platforms/apple/Sources/MigoAppleMicrophone \
         platforms/linux/host-kit/src platforms/openharmony/entry/src/main \
         platforms/android/library/src/main/java
 )
@@ -120,6 +120,12 @@ if [[ -e "$ROOT/contracts/runtime/api-conformance-macos.json" ]]; then
     red "a run record that claims a status no run produces" contracts/runtime/api-conformance-macos.json \
         'text.replace("\"getWindowInfo\": {\"status\": \"verified\"}", "\"getWindowInfo\": {\"status\": \"probably\"}", 1)'
 fi
+# A service the SDK answers with hardware no simulator has is counted once a device ran it, and the decision that
+# holds it back says why and holds back something real.
+red "a service awaiting a device with no reason" contracts/runtime/api-platform-decisions.json \
+    'json.dumps({**json.loads(text), "awaiting_device": {"clipboard": {"platforms": ["ios"], "reason": ""}}})'
+red "a service awaiting a device that the SDK does not answer" contracts/runtime/api-platform-decisions.json \
+    'json.dumps({**json.loads(text), "awaiting_device": {"payment": {"platforms": ["ios"], "reason": "nothing answers it"}}})'
 red "the Swift SDK that stops answering a service itself" platforms/apple/Sources/MigoAppleRenderer/MigoBuiltInHostServices.swift \
     'text.replace("builtIn.insert(.clipboard)", "// builtIn.insert(.clipboard)", 1)'
 red "the macOS game view that stops answering the window service" platforms/apple/Sources/MigoMacV8/MigoWindowService.swift \

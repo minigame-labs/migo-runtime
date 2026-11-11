@@ -24,9 +24,8 @@ import MigoEngine
 /// Create it on the main thread; it is used there. The recording itself -- opening the microphone, writing the
 /// file -- happens off it (`MigoRecorder`), so a game's frames do not wait on either.
 public final class MigoMicrophone: MigoSystemCapability {
-    /// The services it answers, in the form `scripts/gen-api-platform-matrix.py` reads a capability's: one service
-    /// per line, platform-specific ones inside `#if os(...)`. The matrix counts this product once a conformance
-    /// lane has recorded with it on a device's microphone.
+    /// `scripts/gen-api-platform-matrix.py` reads `services` below to count these APIs as provided on the Apple
+    /// platforms: one service per line, platform-specific ones inside `#if os(...)`.
     public static let services: Set<MigoHostServiceID> = {
         var builtIn: Set<MigoHostServiceID> = []
         builtIn.insert(.recorder)

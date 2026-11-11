@@ -82,6 +82,7 @@ APPLE_CAPABILITIES = (
     "platforms/apple/Sources/MigoAppleLocation",
     "platforms/apple/Sources/MigoAppleBluetooth",
     "platforms/apple/Sources/MigoAppleCamera",
+    "platforms/apple/Sources/MigoAppleMicrophone",
 )
 LINUX_LAYER = "platforms/linux/host-kit/src"
 OHOS_LAYER = "platforms/openharmony/entry/src/main"
@@ -731,6 +732,24 @@ def generate(root: pathlib.Path) -> str:
     capi = capi_services(root)
     entries = c_entry_points(root)
     lanes = lane_facts(root)
+    # A service the SDK answers with hardware no simulator has is the SDK's
+    # only once a conformance lane ran it on a device: until then the platform
+    # offers it as a host interface, as before, and is not counted ready for it.
+    decisions.setdefault("awaiting_device", {})
+    for service, decision in decisions["awaiting_device"].items():
+        platforms = decision.get("platforms")
+        if not isinstance(platforms, list) or not platforms or not set(platforms) <= set(PLATFORMS):
+            raise Fail(f"awaiting_device.{service} names no platform, or one unknown")
+        if not decision.get("reason"):
+            raise Fail(f"awaiting_device.{service} gives no reason")
+        for platform in platforms:
+            lane = lanes.get(platform)
+            if lane is None or service not in lane["builtin"]:
+                raise Fail(
+                    f"awaiting_device names {service} on {platform}, which that platform's SDK does not answer: "
+                    "there is nothing waiting to be verified"
+                )
+            lane["builtin"].discard(service)
     android = android_facts(root)
     implemented, handlers, natives, delegated = android
     # An op of a call the SDK hands to a handler -> that handler's service.
