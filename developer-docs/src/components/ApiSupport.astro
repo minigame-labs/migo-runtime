@@ -80,6 +80,7 @@ const T = {
     everywhere: '全部平台',
     unsupportedOn: '不提供',
     missingOn: '缺失',
+    awaitingOn: 'SDK 已实现、待真机验证，暂按宿主接口计:',
     groups: '分类',
     summary: '各平台汇总',
     caption: (total: number, version: string) => `${total} 个 API,覆盖到通用小游戏平台基础库 ${version}。`,
@@ -99,6 +100,7 @@ const T = {
     everywhere: 'every platform',
     unsupportedOn: 'not offered on',
     missingOn: 'missing on',
+    awaitingOn: 'answered by the SDK but not yet run on a device, so counted as a host interface on',
     groups: 'Categories',
     summary: 'Summary per platform',
     caption: (total: number, version: string) => `${total} APIs, as of the common mini-game platform's base library ${version}.`,
@@ -111,6 +113,19 @@ const summaries = matrix.summary as Record<string, Record<Answer | 'ready' | 've
 const notes: Partial<Record<Verdict, string>> = T.note;
 const unsupported = decisions.unsupported as Record<string, Decision>;
 const gaps = decisions.gaps as Record<string, Decision>;
+// Keyed by host service, not by API: an API waits where it needs a service that does.
+const awaitingDevice = ((decisions as { awaiting_device?: Record<string, Decision> }).awaiting_device ?? {}) as Record<
+  string,
+  Decision
+>;
+function awaiting(api: string): Decision[] {
+  const services = new Set(
+    (apis[api].needs ?? []).filter((need) => need.startsWith('channel:')).map((need) => need.slice(8).split('.')[0]),
+  );
+  return Object.entries(awaitingDevice)
+    .filter(([service]) => services.has(service))
+    .map(([, decision]) => decision);
+}
 
 function verdict(api: string, cell: Cell, platform: string): Verdict {
   const answer = cell[platform] as Answer;
@@ -227,7 +242,7 @@ const total: number = matrix.total;
 {
   ordered.map(({ group, subs }) => {
     const names = subs.flatMap(([, list]) => list);
-    const explained = names.filter((api) => api in unsupported || api in gaps);
+    const explained = names.filter((api) => api in unsupported || api in gaps || awaiting(api).length > 0);
     return (
       <>
         <h2 id={`category-${group}`}>{group}</h2>
@@ -310,6 +325,11 @@ const total: number = matrix.total;
                       <code>{api}</code>, {T.missingOn} {where(gaps[api])}: {gaps[api].reason}
                     </li>
                   )}
+                  {awaiting(api).map((decision) => (
+                    <li>
+                      <code>{api}</code>, {T.awaitingOn} {where(decision)}: {decision.reason}
+                    </li>
+                  ))}
                 </>
               ))}
             </ul>

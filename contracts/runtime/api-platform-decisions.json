@@ -16,7 +16,10 @@
       "  the APIs of its kind: the platform provides it when its host layer posts that event.",
       "gaps: the engine answers, but the answer is invented or a stub, or the host has no way to supply the real",
       "  one. Missing on the platforms named until fixed; each is a work item.",
-      "unsupported: deliberately not offered on the platforms named, for the reason given; content feature-detects.",
+      "awaiting_device: a host service the platform's SDK answers with hardware no simulator has -- a microphone, a",
+    "  radio -- which no conformance lane has yet run on a device. Until one has, the platform is counted as before:",
+    "  offering the service as a host interface, not answering it. Keyed by service; removed with the record of the run.",
+    "unsupported: deliberately not offered on the platforms named, for the reason given; content feature-detects.",
       "host_owned: needs that are the host app's by nature -- its ad, payment, account and social integrations, its",
       "  updates of the content package, the consent it gives -- so a platform that offers them as a host interface is",
       "  complete without a default.",
@@ -99,6 +102,9 @@
     "onAudioInterruptionBegin": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"},
     "onAudioInterruptionEnd": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"},
     "operateGameRecorderVideo": {"platforms": ["windows", "ohos"], "reason": "what is shared is getGameRecorder's last recording, which Android, macOS, iOS and Linux make and these do not yet: here the share is refused as no recorded video (R1e Windows, R1f OpenHarmony)"}
+  },
+  "awaiting_device": {
+    "recorder": {"platforms": ["ios", "macos"], "reason": "MigoAppleMicrophone records with the device's microphone, which no simulator lane has: its recorder is verified against a tone, and counted once recorder-spec has run on a phone and a Mac with their own"}
   },
   "unsupported": {
     "createInferenceSession": {"platforms": "*", "reason": "on-device inference needs a model runtime per platform; not offered"},
