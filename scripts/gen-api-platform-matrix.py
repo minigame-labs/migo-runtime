@@ -78,7 +78,11 @@ APPLE_LAYER = "platforms/apple/Sources/MigoAppleRenderer"
 APPLE_MAC_VIEW = "platforms/apple/Sources/MigoMacV8"
 APPLE_IOS_VIEW = "platforms/apple/Sources/MigoApplePerformancePlus"
 # The optional capability products an app links and hands its game view.
-APPLE_CAPABILITIES = ("platforms/apple/Sources/MigoAppleLocation", "platforms/apple/Sources/MigoAppleBluetooth")
+APPLE_CAPABILITIES = (
+    "platforms/apple/Sources/MigoAppleLocation",
+    "platforms/apple/Sources/MigoAppleBluetooth",
+    "platforms/apple/Sources/MigoAppleCamera",
+)
 LINUX_LAYER = "platforms/linux/host-kit/src"
 OHOS_LAYER = "platforms/openharmony/entry/src/main"
 

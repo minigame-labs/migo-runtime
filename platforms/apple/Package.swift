@@ -10,6 +10,8 @@ import PackageDescription
 
 let package = Package(
     name: "Migo",
+    // The SDK's own screens speak the player's language: MigoAppleCamera's scanner, in English and Chinese.
+    defaultLocalization: "en",
     platforms: [
         .iOS(.v15),
         .macOS(.v11),
@@ -33,6 +35,7 @@ let package = Package(
         // Each is a `MigoSystemCapability` handed to either lane's game view.
         .library(name: "MigoAppleLocation", targets: ["MigoAppleLocation"]),
         .library(name: "MigoApplePhotos", targets: ["MigoApplePhotos"]),
+        .library(name: "MigoAppleCamera", targets: ["MigoAppleCamera"]),
         .library(name: "MigoAppleBluetooth", targets: ["MigoAppleBluetooth"]),
         // The two below are for `DeviceTestHost`, not for integrators. SwiftPM
         // test targets are tool-hosted and `xcodebuild test` refuses them on a
@@ -255,6 +258,19 @@ let package = Package(
             name: "MigoApplePhotosTests",
             dependencies: ["MigoApplePhotos"],
             path: "Tests/MigoApplePhotosTests"
+        ),
+
+        // The camera through AVFoundation, for either lane: scanCode's scanner on iOS.
+        .target(
+            name: "MigoAppleCamera",
+            dependencies: ["MigoAppleRenderer", "MigoEngine"],
+            path: "Sources/MigoAppleCamera",
+            resources: [.process("Localization")]
+        ),
+        .testTarget(
+            name: "MigoAppleCameraTests",
+            dependencies: ["MigoAppleCamera"],
+            path: "Tests/MigoAppleCameraTests"
         ),
 
         // A BLE central through CoreBluetooth, for either lane.

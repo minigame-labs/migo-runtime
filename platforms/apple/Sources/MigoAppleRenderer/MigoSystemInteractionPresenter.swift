@@ -164,8 +164,10 @@ import Foundation
     /// top view controller of the key window, and a toast or a loading
     /// indicator as a heads-up view over the window.
     /// Where the system's own UI is presented from: the key window, and the
-    /// controller on top of it.
-    enum MigoSystemPresentation {
+    /// controller on top of it. Public for a capability product's own screen
+    /// -- MigoAppleCamera's scanner -- which comes up over the game as the
+    /// SDK's pickers do.
+    public enum MigoSystemPresentation {
         static func keyWindow() -> UIWindow? {
             UIApplication.shared.connectedScenes
                 .compactMap { $0 as? UIWindowScene }
@@ -187,7 +189,7 @@ import Foundation
         /// wait for ever. `prepare` sees the controller it is presented from
         /// first -- an iPad's popover points at its view; `shown(true)` once it
         /// is up, `shown(false)` when there is no window to show it in.
-        static func present(
+        public static func present(
             _ controller: UIViewController, prepare: ((UIViewController) -> Void)? = nil,
             shown: @escaping (Bool) -> Void = { _ in }
         ) {

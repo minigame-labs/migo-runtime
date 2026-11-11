@@ -1,0 +1,6 @@
+/* scanCode's scanner. */
+"scan.hint" = "Place the code in the frame to scan it";
+"scan.album" = "Album";
+"scan.cancel" = "Cancel";
+"scan.noCode" = "No code was found in the picture";
+"scan.noCamera" = "The camera cannot be used";

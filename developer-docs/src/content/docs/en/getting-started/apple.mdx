@@ -171,6 +171,17 @@ These are **refused rather than faked**: `getHeapStatistics` on iOS (content run
 WebKit's JavaScriptCore, which exposes no heap figures), and downloaded subpackages when
 signing is enforced.
 
+What needs a privacy grant is a product of its own, linked only by an app that declares its purpose
+string -- App Store review asks for one for every such API a binary uses -- and passed to the game
+view in its configuration's `capabilities`:
+
+| Product | Answers | Declare |
+| --- | --- | --- |
+| `MigoAppleLocation` (`MigoLocation()`) | `getLocation` / `getFuzzyLocation`, the location grant and switch, `scope.userLocation` | `NSLocationWhenInUseUsageDescription` |
+| `MigoAppleBluetooth` (`MigoBluetooth()`) | the BLE central: the adapter, scanning, connections and GATT, `scope.bluetooth` | `NSBluetoothAlwaysUsageDescription` |
+| `MigoApplePhotos` (`MigoPhotoLibrary()`) | `saveImageToPhotosAlbum`, `scope.writePhotosAlbum` | `NSPhotoLibraryAddUsageDescription` |
+| `MigoAppleCamera` (`MigoCamera()`) | `scanCode` on iOS: the SDK's scanner, the back camera or -- unless content asks for `onlyFromCamera` -- a picture from the photo library; the camera grant | `NSCameraUsageDescription` |
+
 ## 6. What has been verified
 
 - **iOS devices**: on an iPhone XS Max (iOS 18.7), a game installed, loaded, turning
