@@ -53,6 +53,7 @@ use crate::{
     },
     device::{CapiDevice, DeviceState},
     host_services::CapiHostServices,
+    recorder::RecorderLease,
     settings::{CapiSystemInfo, HostReports},
 };
 use migo_capi_abi::MIGO_ERROR_INTERNAL;
@@ -123,6 +124,7 @@ impl CapiHostKit {
         window: Arc<HostWindowState>,
         device: Arc<DeviceState>,
         reports: Arc<HostReports>,
+        recorder: Arc<RecorderLease>,
     ) -> Self {
         // Offered exactly when the host installed the callbacks -- never
         // because the platform claims a keyboard. On Android the platform's own
@@ -139,9 +141,9 @@ impl CapiHostKit {
             });
         // Built once and shared by every service the host declared; which of
         // them content is offered is decided per accessor, by the declaration.
-        let host_services = notifier
-            .as_ref()
-            .map(|notifier| CapiHostServices::new(Arc::clone(notifier), Arc::clone(&reports)));
+        let host_services = notifier.as_ref().map(|notifier| {
+            CapiHostServices::new(Arc::clone(notifier), Arc::clone(&reports), recorder)
+        });
         // Also built once: content asks for system information on every
         // getWindowInfo and getSystemSetting, and a service that is the same
         // for the Host's life has no reason to be allocated per call.
@@ -627,6 +629,7 @@ mod tests {
             window(640, 480, 2.0),
             Arc::clone(&session.device),
             Arc::clone(&session.host_reports),
+            Arc::clone(&session.recorder_lease),
         );
         assert!(
             kit.create_device_services(1)
@@ -652,6 +655,7 @@ mod tests {
             window(640, 480, 2.0),
             Arc::clone(&session.device),
             Arc::clone(&session.host_reports),
+            Arc::clone(&session.recorder_lease),
         );
         let audio = kit
             .create_device_services(1)
@@ -746,6 +750,7 @@ mod tests {
             window(640, 480, 2.0),
             Arc::clone(&session.device),
             Arc::clone(&session.host_reports),
+            Arc::clone(&session.recorder_lease),
         );
         let keyboard = kit
             .create_device_services(1)
@@ -823,6 +828,7 @@ mod tests {
             Arc::clone(&state),
             Arc::clone(&session.device),
             Arc::clone(&session.host_reports),
+            Arc::clone(&session.recorder_lease),
         );
         let system = kit
             .create_device_services(1)

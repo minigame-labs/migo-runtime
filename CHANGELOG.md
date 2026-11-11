@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `MigoAppleMicrophone`, the Apple SDK's microphone capability, and with it `getRecorderManager` on iOS and macOS
+  without a recorder of the app's own: one recording at a time from the system's input, resampled to the rate and
+  channels content asked for and ended on the sample its `duration` ends on; `PCM` and `wav` as 16-bit samples,
+  `aac` -- and `mp3`, which the system cannot encode, as on Android -- as AAC in an MPEG-4 file, or as an ADTS
+  stream when content asked for frames, which are then the stream's bytes (`frameSize`, the last frame flagged);
+  `pause`/`resume`, `onInterruptionBegin`/`End` when the system takes the microphone, a microphone that changes
+  under a recording, the reference's `audioSource` on iOS. It decides `scope.record` with the system's prompt and
+  reports the microphone's grant to `getAppAuthorizeSetting`. Like MigoAppleLocation it is a product of its own:
+  an app links it, passes `MigoMicrophone()` among its game view's capabilities and declares
+  `NSMicrophoneUsageDescription`, which App Store review requires of any binary that uses the microphone.
+  `MigoCapabilityReports.postRecorderFrame` hands a capability's frames to content.
+- On iOS the process's audio session is lent to the host's recorder for each recording: from the recorder
+  service's START until the host reports that recording's STOP or ERROR (or the session ends) the engine applies
+  no category of its own -- a `setInnerAudioOption` meanwhile is kept and applied afterwards -- and then puts its
+  own back. The recorder sets the category it records with; the engine's binary still references none that
+  records, so an app that links no recorder owes no microphone purpose string.
 - `MigoAppleCamera`, the Apple SDK's camera capability, and with it `scanCode` on iOS: the SDK's own scanner, the
   back camera's picture under a frame read by the camera's own code reading (`AVCaptureMetadataOutput`, limited to
   the frame) and -- unless content asked for `onlyFromCamera` -- a picture from the photo library read by Vision. It

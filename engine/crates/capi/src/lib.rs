@@ -339,6 +339,10 @@ pub struct MigoSession {
     /// The host's standing permission decisions and settings reports, which
     /// content reads synchronously. The Session's, for the battery's reason.
     pub(crate) host_reports: Arc<settings::HostReports>,
+    /// The process's audio session while the host's recorder records with it.
+    /// The Session's: the host reports a recording over to the Session, whatever
+    /// Host its START left through.
+    pub(crate) recorder_lease: Arc<recorder::RecorderLease>,
     /// What network the session's content may reach, from
     /// `MigoSessionConfig.network_policy_json_utf8`; nothing when the host gave
     /// none. Immutable for the session's life, so every Host it starts -- the
@@ -670,6 +674,9 @@ pub unsafe extern "C" fn migo_session_create(
             input_saturation_reported: AtomicBool::new(false),
             device: Default::default(),
             host_reports: Default::default(),
+            recorder_lease: Arc::new(recorder::RecorderLease::new(
+                migo_core::services::platform_audio_service(),
+            )),
             network_policy,
             launch_options,
         });

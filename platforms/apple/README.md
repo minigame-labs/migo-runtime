@@ -212,6 +212,18 @@ camera's picture, so no `scope.camera` is asked for. It reports the camera
 grant. Declare `NSCameraUsageDescription`; without it the scanner reads the
 photo library only.
 
+`MigoAppleMicrophone` (`MigoMicrophone()`) records for `getRecorderManager`, one
+recording at a time: the system's input resampled to the rate and channels
+content asked for, ended on the sample its `duration` ends on, written as 16-bit
+samples (`PCM`, `wav`) or AAC (`aac`, and `mp3`, which the system cannot encode:
+an MPEG-4 file, or an ADTS stream when content asked for frames), with frames of
+`frameSize` handed over as it records. It reports the microphone grant and
+decides `scope.record` with the system's prompt. Declare
+`NSMicrophoneUsageDescription`; a sandboxed or hardened Mac app also needs the
+audio-input entitlement. On iOS the engine lends the process's audio session for
+each recording and takes it back when the recording ends, so the game's sound
+plays on through one.
+
 `MigoApplePhotos` (`MigoPhotoLibrary()`) saves to the photo library for
 `saveImageToPhotosAlbum` -- adding only, never reading: the pickers need no
 access -- reports the photo-library grant, and decides `scope.writePhotosAlbum`

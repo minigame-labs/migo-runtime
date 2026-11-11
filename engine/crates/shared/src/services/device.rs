@@ -228,6 +228,16 @@ pub trait AudioPlatformService: Send + Sync {
         ))
     }
 
+    /// The host's recorder is about to record: from now until `recording_ended` the process's
+    /// audio session is the recorder's to set up for input, and what this service would do to
+    /// it waits. Only a platform with one process-wide session -- iOS -- has anything to lend;
+    /// everywhere else a recorder opens its input beside the engine's output and this is nothing.
+    fn recording_began(&self) {}
+
+    /// The host's recorder let the microphone go: the session is this service's again, and it
+    /// puts back what it had set, with whatever content asked for meanwhile.
+    fn recording_ended(&self) {}
+
     /// Get available audio input sources.
     ///
     /// Returns source identifiers matching `RecorderManager.start()` audioSource param.

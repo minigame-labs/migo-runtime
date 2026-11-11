@@ -36,6 +36,7 @@ let package = Package(
         .library(name: "MigoAppleLocation", targets: ["MigoAppleLocation"]),
         .library(name: "MigoApplePhotos", targets: ["MigoApplePhotos"]),
         .library(name: "MigoAppleCamera", targets: ["MigoAppleCamera"]),
+        .library(name: "MigoAppleMicrophone", targets: ["MigoAppleMicrophone"]),
         .library(name: "MigoAppleBluetooth", targets: ["MigoAppleBluetooth"]),
         // The two below are for `DeviceTestHost`, not for integrators. SwiftPM
         // test targets are tool-hosted and `xcodebuild test` refuses them on a
@@ -271,6 +272,18 @@ let package = Package(
             name: "MigoAppleCameraTests",
             dependencies: ["MigoAppleCamera"],
             path: "Tests/MigoAppleCameraTests"
+        ),
+
+        // The microphone through AVFoundation, for either lane: getRecorderManager's recordings.
+        .target(
+            name: "MigoAppleMicrophone",
+            dependencies: ["MigoAppleRenderer", "MigoEngine"],
+            path: "Sources/MigoAppleMicrophone"
+        ),
+        .testTarget(
+            name: "MigoAppleMicrophoneTests",
+            dependencies: ["MigoAppleMicrophone"],
+            path: "Tests/MigoAppleMicrophoneTests"
         ),
 
         // A BLE central through CoreBluetooth, for either lane.

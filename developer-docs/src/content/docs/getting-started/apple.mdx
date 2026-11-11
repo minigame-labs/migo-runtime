@@ -158,6 +158,7 @@ JavaScriptCore 中，它不暴露堆数据），以及启用签名校验时的�
 | `MigoAppleBluetooth`（`MigoBluetooth()`） | BLE 中心设备：适配器、扫描、连接与 GATT，`scope.bluetooth` | `NSBluetoothAlwaysUsageDescription` |
 | `MigoApplePhotos`（`MigoPhotoLibrary()`） | `saveImageToPhotosAlbum`、`scope.writePhotosAlbum` | `NSPhotoLibraryAddUsageDescription` |
 | `MigoAppleCamera`（`MigoCamera()`） | iOS 上的 `scanCode`：SDK 自带的扫码界面，后置相机，或（内容没要求 `onlyFromCamera` 时）照片库里的图片；相机授权 | `NSCameraUsageDescription` |
+| `MigoAppleMicrophone`（`MigoMicrophone()`） | `getRecorderManager`：麦克风录音（PCM、wav、AAC——`mp3` 也录成 AAC，系统没有 MP3 编码器），`frameSize` 分帧，`scope.record`，麦克风授权 | `NSMicrophoneUsageDescription`（沙盒或强化运行时的 Mac App 另需音频输入 entitlement） |
 
 ## 6. 验证记录
 

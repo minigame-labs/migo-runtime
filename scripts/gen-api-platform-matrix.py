@@ -82,6 +82,7 @@ APPLE_CAPABILITIES = (
     "platforms/apple/Sources/MigoAppleLocation",
     "platforms/apple/Sources/MigoAppleBluetooth",
     "platforms/apple/Sources/MigoAppleCamera",
+    "platforms/apple/Sources/MigoAppleMicrophone",
 )
 LINUX_LAYER = "platforms/linux/host-kit/src"
 OHOS_LAYER = "platforms/openharmony/entry/src/main"

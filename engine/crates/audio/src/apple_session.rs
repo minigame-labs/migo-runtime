@@ -16,6 +16,15 @@
 //!   permission this profile does not grant -- so `false` is answered as not
 //!   supported, before this is asked.
 //!
+//! A recording is the one thing that needs another category, and it is not the
+//! engine's: the microphone belongs to the host's recorder (the Apple SDK's is
+//! an optional product, so that an app which never records links nothing that
+//! reads a microphone and owes App Store review no purpose string for one).
+//! While a recording is under way the session is lent to that recorder
+//! (`recording_began`): it sets the category it records with, and what content
+//! asks of the session meanwhile is kept, not applied. When the recording ends
+//! (`recording_ended`) the engine puts its own category back.
+//!
 //! `getAvailableAudioSources` reads the session's inputs: `auto`, and the
 //! built-in and headset microphones by the names the API gives them.
 //!
@@ -165,6 +174,20 @@ impl shared::services::AudioPlatformService for AppleAudioPlatform {
                 error.detail.unwrap_or_else(|| error.msg.to_string()),
             )
         })
+    }
+
+    fn recording_began(&self) {
+        configuration().lend();
+        info!("audio session lent to the host's recorder");
+    }
+
+    fn recording_ended(&self) {
+        match configuration().take_back(apply_category) {
+            Ok(true) => info!("audio session taken back from the host's recorder"),
+            Ok(false) => {}
+            // Left as the recorder had it; the next initialization tries again.
+            Err(error) => warn!("the audio session's category did not go back on: {error}"),
+        }
     }
 
     fn get_available_audio_sources(

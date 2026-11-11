@@ -384,6 +384,7 @@ pub unsafe extern "C" fn migo_session_attach_surface(
                         Arc::clone(&window_state),
                         Arc::clone(&session.device),
                         Arc::clone(&session.host_reports),
+                        Arc::clone(&session.recorder_lease),
                     ));
                     let options = session.init_options(configuration.scale_factor());
                     // The identity an external producer's packets must carry.

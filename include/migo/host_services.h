@@ -527,6 +527,16 @@ typedef uint32_t MigoHostService;
  * duration runs out -- the file handed over as a call result's are; ERROR with
  * {"errMsg"}; INTERRUPTION_BEGIN and INTERRUPTION_END when the system takes the
  * microphone away and gives it back.
+ *
+ * On iOS a process has one audio session, and it is the engine's: it plays the
+ * game's sound through it, in a category that cannot record. For a recording
+ * the engine lends it -- from the START it hands the host until the host
+ * reports that recording's STOP or ERROR, or the session ends, the engine sets
+ * no category -- so the host sets the category it records with when START
+ * arrives (play and record, so the game's sound goes on), and restores none:
+ * the engine puts its own back when the recording is reported over. What
+ * content asks of the session meanwhile (setInnerAudioOption) is applied then.
+ * Elsewhere a recorder opens its input beside the engine's output.
  */
 #define MIGO_RECORDER_START 0U
 #define MIGO_RECORDER_PAUSE 1U

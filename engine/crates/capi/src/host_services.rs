@@ -130,7 +130,12 @@ use shared::{
 };
 
 use crate::{
-    MigoSession, callbacks::Notifier, panic_barrier::guard, pin_session, settings::HostReports,
+    MigoSession,
+    callbacks::Notifier,
+    panic_barrier::guard,
+    pin_session,
+    recorder::{RecorderLease, recording_id},
+    settings::HostReports,
 };
 
 /// One request content makes that the host answers.
@@ -987,11 +992,22 @@ pub(crate) struct CapiHostServices {
     /// The host's standing permission decisions, which the permission service
     /// answers from.
     reports: Arc<HostReports>,
+    /// The process's audio session, lent to the host's recorder while it
+    /// records.
+    recorder: Arc<RecorderLease>,
 }
 
 impl CapiHostServices {
-    pub(crate) fn new(notifier: Arc<Notifier>, reports: Arc<HostReports>) -> Arc<Self> {
-        Arc::new(Self { notifier, reports })
+    pub(crate) fn new(
+        notifier: Arc<Notifier>,
+        reports: Arc<HostReports>,
+        recorder: Arc<RecorderLease>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            notifier,
+            reports,
+            recorder,
+        })
     }
 
     /// Whether the host declared `service`.
@@ -1449,11 +1465,18 @@ impl CameraService for CapiHostServices {
 
 impl RecorderService for CapiHostServices {
     fn start(&self, request_json: &str) -> Result<(), ServiceError> {
+        // Lent before the host hears START, so the category its recorder sets
+        // is never one the engine's audio is about to replace.
+        let recording = serde_json::from_str::<Value>(request_json)
+            .map(|request| recording_id(&request))
+            .unwrap_or(0);
+        self.recorder.begin(recording);
         self.command(
             MIGO_HOST_SERVICE_RECORDER,
             MIGO_RECORDER_START,
             request_json,
         )
+        .inspect_err(|_| self.recorder.end(recording))
     }
     fn pause(&self, request_json: &str) -> Result<(), ServiceError> {
         self.command(
@@ -1860,11 +1883,14 @@ pub unsafe extern "C" fn migo_session_post_host_service_event(
         };
         // Checked here, where the host can be told, rather than in content,
         // which can only drop it.
-        if !matches!(
-            serde_json::from_str::<Value>(&payload),
-            Ok(Value::Object(_))
-        ) {
+        let Ok(parsed @ Value::Object(_)) = serde_json::from_str::<Value>(&payload) else {
             return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        // A recording the host reports over no longer holds the audio session.
+        if service == MIGO_HOST_SERVICE_RECORDER
+            && matches!(event, MIGO_RECORDER_EVENT_STOP | MIGO_RECORDER_EVENT_ERROR)
+        {
+            session.recorder_lease.end(recording_id(&parsed));
         }
         let files = event_files(service, event);
         let delivery = if files.0.is_empty() {
@@ -2291,7 +2317,8 @@ mod tests {
             Arc::downgrade(&session),
         ));
         let reports = Arc::clone(&session.host_reports);
-        (session, CapiHostServices::new(notifier, reports))
+        let recorder = Arc::clone(&session.recorder_lease);
+        (session, CapiHostServices::new(notifier, reports, recorder))
     }
 
     #[test]

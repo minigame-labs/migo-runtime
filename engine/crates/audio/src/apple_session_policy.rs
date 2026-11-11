@@ -47,6 +47,9 @@ impl AudioSessionOptions {
 struct State {
     options: AudioSessionOptions,
     applied: bool,
+    /// The host's recorder holds the session: it set a category that records,
+    /// and nothing here is applied over it until it is taken back.
+    lent: bool,
 }
 
 #[derive(Default)]
@@ -64,10 +67,48 @@ impl SessionConfiguration {
             .state
             .lock()
             .expect("the session state is never poisoned");
+        if state.lent {
+            // Kept for when the session comes back: applying it now would take
+            // the microphone from the recording under way.
+            state.options = options;
+            state.applied = false;
+            return Ok(());
+        }
         apply(options)?;
         state.options = options;
         state.applied = true;
         Ok(())
+    }
+
+    /// The host's recorder takes the session, for a category that records.
+    pub(crate) fn lend(&self) {
+        self.state
+            .lock()
+            .expect("the session state is never poisoned")
+            .lent = true;
+    }
+
+    /// The recorder is done with the session: the category content's options
+    /// ask for goes back on, whether or not one was on before -- the recorder
+    /// left its own. `false` when it was not lent.
+    pub(crate) fn take_back(
+        &self,
+        apply: impl FnOnce(AudioSessionOptions) -> EngineResult<()>,
+    ) -> EngineResult<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .expect("the session state is never poisoned");
+        if !state.lent {
+            return Ok(false);
+        }
+        state.lent = false;
+        // Not applied until it is: a category that failed to go back on is
+        // tried again by the next initialization.
+        state.applied = false;
+        apply(state.options)?;
+        state.applied = true;
+        Ok(true)
     }
 
     pub(crate) fn ensure_configured(
@@ -78,7 +119,7 @@ impl SessionConfiguration {
             .state
             .lock()
             .expect("the session state is never poisoned");
-        if state.applied {
+        if state.applied || state.lent {
             return Ok(false);
         }
         apply(state.options)?;
@@ -171,6 +212,68 @@ mod tests {
             .unwrap();
         assert!(called);
         assert_eq!(configuration.state.lock().unwrap().options, options);
+    }
+
+    #[test]
+    fn a_lent_session_is_left_alone_until_it_is_taken_back() {
+        let configuration = SessionConfiguration::default();
+        configuration
+            .configure(AudioSessionOptions::default(), |_| Ok(()))
+            .unwrap();
+        configuration.lend();
+        // Neither content's options nor a late initialization touch the
+        // recorder's category.
+        let through_mute = AudioSessionOptions {
+            obey_mute_switch: false,
+        };
+        configuration
+            .configure(through_mute, |_| panic!("applied over a recording"))
+            .unwrap();
+        assert!(
+            !configuration
+                .ensure_configured(|_| panic!("initialized over a recording"))
+                .unwrap()
+        );
+        // Taken back, the options asked for meanwhile are what goes on.
+        let mut applied = None;
+        assert!(
+            configuration
+                .take_back(|options| {
+                    applied = Some(options);
+                    Ok(())
+                })
+                .unwrap()
+        );
+        assert_eq!(applied, Some(through_mute));
+        assert!(
+            !configuration
+                .take_back(|_| panic!("taken back twice"))
+                .unwrap()
+        );
+        configuration
+            .ensure_configured(|_| panic!("already applied"))
+            .unwrap();
+    }
+
+    #[test]
+    fn a_category_that_does_not_go_back_on_is_tried_again() {
+        let configuration = SessionConfiguration::default();
+        configuration.lend();
+        assert!(
+            configuration
+                .take_back(|_| Err(EngineError::new(ErrorCode::Internal)))
+                .is_err()
+        );
+        let mut retried = false;
+        assert!(
+            configuration
+                .ensure_configured(|_| {
+                    retried = true;
+                    Ok(())
+                })
+                .unwrap()
+        );
+        assert!(retried);
     }
 
     #[test]
