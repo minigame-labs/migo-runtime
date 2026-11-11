@@ -579,7 +579,8 @@ mod tests {
         }
     }
 
-    struct CountedService;
+    /// A clip of that many frames.
+    struct CountedService(u8);
 
     impl VideoDecoderService for CountedService {
         fn open(
@@ -592,7 +593,10 @@ mod tests {
                     "no such video",
                 ));
             }
-            Ok(Box::new(Counted { count: 5, next: 0 }))
+            Ok(Box::new(Counted {
+                count: self.0,
+                next: 0,
+            }))
         }
     }
 
@@ -630,12 +634,17 @@ mod tests {
 
     #[test]
     fn a_decoder_starts_hands_over_its_frames_seeks_ends_and_stops() {
+        // Longer than the two frames taken and everything the decoder may decode ahead of them, so it is still
+        // short of the clip's end, waiting for room, when the seek comes: a clip it could finish first would say
+        // "ended" before "seek" whenever its thread ran ahead of this one.
+        const CLIP: u8 = 2 + FASTEST_AHEAD as u8 + 3;
+        let last_ms = f64::from(CLIP - 1) * 40.0;
         let (host, _critical, mut rx) = crate::host_channel::channel(64);
         let mut decoders = VideoDecoders::default();
         let request = StartRequest::from_request(&json!({ "source": "clip.mp4" }));
         assert_eq!(request.mode, DecodeMode::Fastest);
         decoders
-            .start(7, Arc::new(CountedService), request, host)
+            .start(7, Arc::new(CountedService(CLIP)), request, host)
             .unwrap();
         assert_eq!(
             next_event(&mut rx),
@@ -649,10 +658,10 @@ mod tests {
         );
         assert_eq!(take_within(&decoders, 7).timing.pts_ms, 40.0);
 
-        assert!(decoders.seek(7, 160.0));
+        assert!(decoders.seek(7, last_ms));
         assert_eq!(next_event(&mut rx), json!({ "event": "seek" }));
         let after = take_within(&decoders, 7);
-        assert_eq!(after.rgba[0], 4, "the frame at 160 ms");
+        assert_eq!(after.rgba[0], CLIP - 1, "the clip's last frame");
         assert_eq!(next_event(&mut rx), json!({ "event": "ended" }));
 
         assert!(decoders.stop(7));
@@ -669,7 +678,7 @@ mod tests {
         let missing = StartRequest::from_request(&json!({ "source": "missing", "mode": 0 }));
         assert_eq!(missing.mode, DecodeMode::Pts);
         decoders
-            .start(7, Arc::new(CountedService), missing, host.clone())
+            .start(7, Arc::new(CountedService(5)), missing, host.clone())
             .unwrap();
         assert_eq!(
             next_event(&mut rx),
@@ -680,7 +689,7 @@ mod tests {
             StartRequest::from_request(&json!({ "source": "clip.mp4", "abortVideo": true }));
         assert!(!quiet.video);
         decoders
-            .start(7, Arc::new(CountedService), quiet, host)
+            .start(7, Arc::new(CountedService(5)), quiet, host)
             .unwrap();
         assert_eq!(
             next_event(&mut rx),
