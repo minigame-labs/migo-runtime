@@ -66,6 +66,8 @@ required = [
     "Sources/MigoAppleCamera/MigoCamera.swift",
     "Sources/MigoAppleCamera/Localization/en.lproj/Localizable.strings",
     "Sources/MigoAppleCamera/Localization/zh-Hans.lproj/Localizable.strings",
+    "Sources/MigoAppleMicrophone/MigoMicrophone.swift",
+    "Sources/MigoAppleMicrophone/MigoRecorder.swift",
 ]
 for relative in required:
     if not (package / relative).is_file():
@@ -118,6 +120,8 @@ build_product MigoAppleBluetooth "generic/platform=iOS"
 build_product MigoAppleBluetooth "platform=macOS"
 build_product MigoAppleCamera "generic/platform=iOS"
 build_product MigoAppleCamera "platform=macOS"
+build_product MigoAppleMicrophone "generic/platform=iOS"
+build_product MigoAppleMicrophone "platform=macOS"
 signed=0
 while IFS= read -r -d '' bundle; do
   copy="$WORK/signing/$(basename "$(dirname "$bundle")")/$(basename "$bundle")"

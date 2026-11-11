@@ -120,6 +120,13 @@ public final class MigoCapabilityReports {
         session?.postHostServiceEvent(service, event: event, json: json)
     }
 
+    /// One frame of a recording the capability makes, for content's
+    /// `onFrameRecorded`: typed rather than JSON because a microphone sends
+    /// many a second. `isLastFrame` on the frame that ends the recording.
+    public func postRecorderFrame(recordingId: UInt32, data: Data, isLastFrame: Bool) {
+        session?.postRecorderFrame(recordingId: recordingId, data: data, isLastFrame: isLastFrame)
+    }
+
     /// One characteristic value a connected peripheral sent, typed rather than
     /// JSON because a peripheral may notify a hundred times a second.
     public func postBleCharacteristicValue(

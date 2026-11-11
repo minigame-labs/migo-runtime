@@ -44,6 +44,7 @@ pub(crate) fn callback_session_pin() -> Arc<MigoSession> {
         input_saturation_reported: AtomicBool::new(false),
         device: Default::default(),
         host_reports: Default::default(),
+        recorder_lease: Arc::new(crate::recorder::RecorderLease::new(None)),
         network_policy: Default::default(),
         launch_options: None,
     })

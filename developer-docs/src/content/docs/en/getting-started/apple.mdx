@@ -181,6 +181,7 @@ view in its configuration's `capabilities`:
 | `MigoAppleBluetooth` (`MigoBluetooth()`) | the BLE central: the adapter, scanning, connections and GATT, `scope.bluetooth` | `NSBluetoothAlwaysUsageDescription` |
 | `MigoApplePhotos` (`MigoPhotoLibrary()`) | `saveImageToPhotosAlbum`, `scope.writePhotosAlbum` | `NSPhotoLibraryAddUsageDescription` |
 | `MigoAppleCamera` (`MigoCamera()`) | `scanCode` on iOS: the SDK's scanner, the back camera or -- unless content asks for `onlyFromCamera` -- a picture from the photo library; the camera grant | `NSCameraUsageDescription` |
+| `MigoAppleMicrophone` (`MigoMicrophone()`) | `getRecorderManager`: the microphone's recordings (PCM, wav, AAC -- `mp3` records AAC too, the system encodes no MP3), frames by `frameSize`, `scope.record`, the microphone grant | `NSMicrophoneUsageDescription` (a sandboxed or hardened Mac app also needs the audio-input entitlement) |
 
 ## 6. What has been verified
 
