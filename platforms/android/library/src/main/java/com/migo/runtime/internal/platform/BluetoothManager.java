@@ -363,6 +363,7 @@ public class BluetoothManager {
     static final class GattAttempt {
         private GattConnection connection;
         private boolean acceptingCallbacks = true;
+        private boolean disconnectReported;
         /** The createBLEConnection waiting for this attempt to connect. */
         private Reply connectReply;
         /** Requests waiting on this connection's GATT callbacks. */
@@ -379,6 +380,13 @@ public class BluetoothManager {
             Reply reply = connectReply;
             connectReply = null;
             return reply;
+        }
+
+        /** Whether this attempt's disconnect is still to be reported: true once. */
+        synchronized boolean claimDisconnectReport() {
+            if (disconnectReported) return false;
+            disconnectReported = true;
+            return true;
         }
 
         /** Fail everything still waiting on this connection, which is going. */
@@ -1730,7 +1738,9 @@ public class BluetoothManager {
     }
 
     public void closeBLEConnection(JSONObject opts, Reply reply) {
-        closeGattConnection(requiredString(opts, "deviceId"));
+        if (!closeGattConnection(requiredString(opts, "deviceId"))) {
+            throw new BluetoothFailure(NO_CONNECTION, "no connection");
+        }
         reply.ok();
     }
 
@@ -1770,12 +1780,22 @@ public class BluetoothManager {
         }
     }
 
-    void closeGattConnection(String deviceId) {
+    /**
+     * Closes the device's connection, made or still being made, and reports it
+     * disconnected; {@code false} when the device has none.
+     */
+    boolean closeGattConnection(String deviceId) {
         // Before closing this device, finish what is already owed. Running first means
         // a retry failure is reported rather than masking the caller's own close.
         retryUnclosedCandidates();
         GattAttempt attempt = gattConnections.get(deviceId);
+        if (attempt == null) return false;
         closeAndRemoveGatt(deviceId, attempt, true);
+        // close() takes the callback with it, so the system says nothing of a
+        // connection its owner closed. Content is told of every disconnect, the
+        // one it asked for included.
+        reportRetiredAttemptDisconnected(deviceId, attempt);
+        return true;
     }
 
     /**
@@ -1862,6 +1882,10 @@ public class BluetoothManager {
             if (connected ? current != attempt : current != null && current != attempt) {
                 return;
             }
+            // An attempt ends once however many ways it is seen to: closed by
+            // content while the peripheral leaves, or reported gone twice by
+            // the system.
+            if (!connected && !attempt.claimDisconnectReport()) return;
             connectionStateReporter.report(deviceId, connected);
         }
     }
