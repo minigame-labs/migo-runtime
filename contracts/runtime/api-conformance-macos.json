@@ -16,7 +16,8 @@
   ],
   "platform": "macos",
   "measured": [
-    {"date": "2026-11-10", "runner": "macos", "bundles": ["api-spec", "api-surface-spec", "audio-spec", "babylon", "babylon-input", "ble-peripheral-spec", "canvas2d", "device-spec", "easeljs", "egret", "font-generics", "fs-sandbox", "fs-spec", "game-recorder-share-spec", "game-recorder-spec", "geometry", "howler", "image", "inner-audio-spec", "input-key-spec", "input-touch-spec", "intl-spec", "io-spec", "keyboard-spec", "lan-spec", "lifecycle-exit", "lifecycle-launch-options", "lifecycle-restart", "media-spec", "network-spec", "offscreen-readback", "p5", "phaser", "phaser-canvas", "phaser-input", "phaser-loader", "pixi", "pixi-input", "playcanvas", "playcanvas-input", "readback", "recorder-spec", "resize", "robustness", "screen-fill", "screen-fill-webgl", "screen-fill-webgl2-read-none", "setting-spec", "smoothing", "spec", "state", "storage-spec", "system-info-spec", "text", "three", "three-adv", "three-input", "three-loaders", "timers-spec", "ui-spec", "video-controls-spec", "video-spec", "wasm", "webgl", "webgl-buffer", "webgl-buffer-presented", "webgl-buffer-presented-stencil", "webgl-buffer-preserved", "webgl-spec", "webgl-zero-size", "worker-spec"], "runtime": "eb2fa8709af19650f333c2f74d55a154e0a86240", "conformance": "228e01e5cf7f6ad0aa6639b8db58a47ff522752c"}
+    {"date": "2026-11-10", "runner": "macos", "bundles": ["api-spec", "api-surface-spec", "audio-spec", "babylon", "babylon-input", "ble-peripheral-spec", "canvas2d", "device-spec", "easeljs", "egret", "font-generics", "fs-sandbox", "fs-spec", "game-recorder-share-spec", "game-recorder-spec", "geometry", "howler", "image", "inner-audio-spec", "input-key-spec", "input-touch-spec", "intl-spec", "io-spec", "keyboard-spec", "lan-spec", "lifecycle-exit", "lifecycle-launch-options", "lifecycle-restart", "media-spec", "network-spec", "offscreen-readback", "p5", "phaser", "phaser-canvas", "phaser-input", "phaser-loader", "pixi", "pixi-input", "playcanvas", "playcanvas-input", "readback", "recorder-spec", "resize", "robustness", "screen-fill", "screen-fill-webgl", "screen-fill-webgl2-read-none", "setting-spec", "smoothing", "spec", "state", "storage-spec", "system-info-spec", "text", "three", "three-adv", "three-input", "three-loaders", "timers-spec", "ui-spec", "video-controls-spec", "video-spec", "wasm", "webgl", "webgl-buffer", "webgl-buffer-presented", "webgl-buffer-presented-stencil", "webgl-buffer-preserved", "webgl-spec", "webgl-zero-size", "worker-spec"], "runtime": "eb2fa8709af19650f333c2f74d55a154e0a86240", "conformance": "228e01e5cf7f6ad0aa6639b8db58a47ff522752c"},
+    {"date": "2026-11-13", "runner": "macos", "bundles": ["api-spec", "cursor-spec", "input-key-spec", "input-touch-spec"], "runtime": "63be6656c9b33e139a047d76c04080f52c3c97e5", "conformance": "df1939b81a8e0fbf935a6e2906bb381ee8b0169d"}
   ],
   "apis": {
     "addCard": {"status": "present"},
@@ -76,7 +77,7 @@
     "env": {"status": "verified"},
     "exitChatTool": {"status": "present"},
     "exitMiniProgram": {"status": "verified"},
-    "exitPointerLock": {"status": "present"},
+    "exitPointerLock": {"status": "verified"},
     "exitVoIPChat": {"status": "present"},
     "faceDetect": {"status": "absent"},
     "getAccountInfoSync": {"status": "verified"},
@@ -332,7 +333,7 @@
     "requestMidasFriendPayment": {"status": "present"},
     "requestMidasPayment": {"status": "present"},
     "requestMidasPaymentGameItem": {"status": "present"},
-    "requestPointerLock": {"status": "present"},
+    "requestPointerLock": {"status": "verified"},
     "requestSubscribeMessage": {"status": "present"},
     "requestSubscribeSystemMessage": {"status": "present"},
     "requirePrivacyAuthorize": {"status": "present"},
@@ -348,7 +349,7 @@
     "setBLEMTU": {"status": "present"},
     "setBackgroundFetchToken": {"status": "present"},
     "setClipboardData": {"status": "verified"},
-    "setCursor": {"status": "present"},
+    "setCursor": {"status": "verified"},
     "setDeviceOrientation": {"status": "verified"},
     "setEnableDebug": {"status": "verified"},
     "setHandoffQuery": {"status": "present"},
