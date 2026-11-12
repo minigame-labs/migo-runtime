@@ -65,6 +65,7 @@ host_events! {
     _internalTriggerBLECharacteristicValueChange = 31,
     _internalTriggerBLEMTUChange = 32,
     _internalOnRecorderFrameData = 33,
+    _internalOnCameraFrameReady = 34,
 }
 
 /// The size of one `MigoTouchPoint` record, as `01_touch.js` reads it.
@@ -392,6 +393,21 @@ impl InputSink for ServiceEventSink<'_> {
         self.send(
             event::_internalTriggerBLEMTUChange,
             vec![OwnedValue::Str(device_id.to_owned()), OwnedValue::U32(mtu)],
+        );
+    }
+    fn camera_frame_ready(
+        &mut self,
+        camera_id: u32,
+        credit: shared::protocol::camera_frame::CameraFrameCredit,
+    ) {
+        // The producer takes the frame with a call of its own
+        // (`op_camera_take_frame`), some time after this event reaches it: the
+        // announcement stays in flight until then, so frames that arrive
+        // meanwhile replace the waiting one instead of queueing announcements.
+        credit.hold_until_taken();
+        self.send(
+            event::_internalOnCameraFrameReady,
+            vec![OwnedValue::U32(camera_id)],
         );
     }
     fn recorder_frame(&mut self, recording_id: u32, data: Vec<u8>, is_last_frame: bool) {

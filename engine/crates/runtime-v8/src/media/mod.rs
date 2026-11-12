@@ -162,6 +162,27 @@ pub fn op_camera_close_frame_change(
     )
 }
 
+/// The newest frame of camera `id` waiting for content -- RGBA, four bytes a
+/// pixel, rows top first -- with its width and height written to `size`.
+/// Empty when none waits. Taking it is what lets the next one be announced.
+#[op2]
+#[buffer]
+pub fn op_camera_take_frame(
+    state: &mut OpState,
+    #[smi] id: u32,
+    #[buffer] size: &mut [f64],
+) -> Vec<u8> {
+    let host_id = state.borrow::<HostOpState>().id;
+    let Some(frame) = shared::protocol::camera_frame::take_camera_frame(host_id, id) else {
+        return Vec::new();
+    };
+    if let [width, height, ..] = size {
+        *width = f64::from(frame.width);
+        *height = f64::from(frame.height);
+    }
+    frame.data
+}
+
 // ==================== Image API Ops ====================
 //
 // Every one is a request the host answers through a hook. A request that names
@@ -392,6 +413,7 @@ main_runtime_extension!(
             op_camera_set_zoom,
             op_camera_listen_frame_change,
             op_camera_close_frame_change,
+            op_camera_take_frame,
             op_save_image_to_photos_album,
             op_preview_media,
             op_preview_image,

@@ -198,6 +198,15 @@ channel! {
         "_internalOnChooseMessageFileResult";
     op_create_ble_peripheral_server(json) => ble_peripheral.create_server,
         "_internalOnCreateBLEPeripheralServerResult";
+    op_camera_close_frame_change(json) => camera.close_frame_change;
+    op_camera_create(json) => camera.create, "_internalOnCreateCameraResult";
+    op_camera_destroy(json) => camera.destroy;
+    op_camera_listen_frame_change(json) => camera.listen_frame_change;
+    op_camera_set(json) => camera.set;
+    op_camera_set_zoom(json) => camera.set_zoom, "_internalOnCameraSetZoomResult";
+    op_camera_start_record(json) => camera.start_record, "_internalOnCameraStartRecordResult";
+    op_camera_stop_record(json) => camera.stop_record, "_internalOnCameraStopRecordResult";
+    op_camera_take_photo(json) => camera.take_photo, "_internalOnCameraTakePhotoResult";
     op_close_ble_connection(json) => bluetooth.close_ble_connection,
         "_internalOnCloseBLEConnectionResult";
     op_close_bluetooth_adapter(json) => bluetooth.close_adapter,

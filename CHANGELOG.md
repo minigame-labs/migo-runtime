@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `createCamera` reaches the host on iOS: the Performance+ producer sends the camera's nine requests to the
+  host's camera service, as commands answered through each method's result hook -- a refusal (`scope.camera` not
+  granted, no camera service) reaches that hook in the embedded op's words. A frame crosses when content takes it:
+  the host announces that a camera has one, and the engine takes the newest with `op_camera_take_frame`, answered
+  at once with the frame's size and its pixels, which cross once. The embedded runtime takes frames the same way
+  now -- the announcement carries no pixels, and the frame's allocation still becomes the `ArrayBuffer` content is
+  handed -- so both executions run one piece of engine JavaScript for it. While an announcement is in flight a
+  frame that arrives replaces the waiting one and announces nothing, so however fast a camera runs, frames queue
+  nowhere: not on the host's command queue, and not on the service stream.
 - The BLE peripheral in the Apple SDK: MigoAppleBluetooth answers `createBLEPeripheralServer` too, on iOS and
   macOS. Services as content describes them (properties, permissions, the two descriptors the system serves and
   an app's own), one advertisement of a device name and service UUIDs that replaces the one before -- the

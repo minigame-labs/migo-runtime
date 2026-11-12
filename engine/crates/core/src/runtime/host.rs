@@ -16,7 +16,6 @@ use shared::{
     host_channel::CriticalHostCommandSender,
     js_escape::HOOK_ARGS_NONE,
     op_state::{ContextLostState, HostOpState, HostTx, RafRx},
-    protocol::camera_frame::take_camera_frame,
     protocol::host_cmd::HostCommand,
     protocol::render_cmd::{CanvasCmd, RenderCommand},
     render_event::{RenderEvent, RenderEventReceiver},
@@ -835,27 +834,6 @@ impl Host {
                 Ok(())
             }
 
-            // The generation is read at the top of `handle_command_inner`, which
-            // is the only place that may act on it: a handler comparing it again
-            // would be a second decision point that could disagree with the one
-            // that already let this command through. Hence `_` here and below.
-            HostCommand::CameraFrameData {
-                camera_id,
-                credit: _credit,
-                runtime_generation: _,
-                ..
-            } => {
-                if let Some(entry) = take_camera_frame(self.id, camera_id) {
-                    self.js.dispatch_camera_frame_data(
-                        camera_id,
-                        entry.data,
-                        entry.width,
-                        entry.height,
-                    );
-                }
-                Ok(())
-            }
-
             HostCommand::OnMemoryWarning { level } => {
                 // Android ComponentCallbacks2 trim memory levels.
                 // Release a proportional slice of the image cache
@@ -1555,6 +1533,17 @@ impl InputSink for HostJsRuntime {
     }
     fn recorder_frame(&mut self, recording_id: u32, data: Vec<u8>, is_last_frame: bool) {
         self.dispatch_recorder_frame_data(recording_id, data, is_last_frame);
+    }
+    fn camera_frame_ready(
+        &mut self,
+        camera_id: u32,
+        credit: shared::protocol::camera_frame::CameraFrameCredit,
+    ) {
+        // Content takes the frame within this dispatch: the credit is held
+        // across it, so a frame arriving meanwhile replaces the waiting one
+        // rather than announcing itself.
+        self.dispatch_camera_frame_ready(camera_id);
+        drop(credit);
     }
 }
 

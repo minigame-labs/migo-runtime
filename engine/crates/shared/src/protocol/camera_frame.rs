@@ -87,6 +87,18 @@ pub struct CameraFrameCredit {
     token: u64,
 }
 
+impl CameraFrameCredit {
+    /// Leaves the announcement in flight until the frame is taken
+    /// (`take_camera_frame`), rather than until this is dropped: for a
+    /// consumer that is told of the frame now and takes it later, with a call
+    /// of its own. Until then a frame that arrives replaces the waiting one and
+    /// announces nothing.
+    pub fn hold_until_taken(mut self) {
+        // No announcement is numbered zero, so dropping this releases none.
+        self.token = 0;
+    }
+}
+
 impl Drop for CameraFrameCredit {
     fn drop(&mut self) {
         let _ = self.state.active_token.compare_exchange(
@@ -861,6 +873,39 @@ mod tests {
             })
         );
         drop(credit);
+    }
+
+    #[test]
+    fn an_announcement_held_until_taken_outlives_its_credit() {
+        let host_id = 9703;
+        let camera_id = 15;
+        let frame = |fill: u8| CameraFrameEntry {
+            data: vec![fill],
+            width: 1,
+            height: 1,
+        };
+        let CameraFramePush::Notify(credit) =
+            super::push_camera_frame(host_id, camera_id, frame(1))
+        else {
+            panic!("first frame must notify");
+        };
+        // The consumer was told, and will take the frame with a call of its own.
+        credit.hold_until_taken();
+        // Still in flight: a newer frame replaces the waiting one, unannounced.
+        assert!(matches!(
+            super::push_camera_frame(host_id, camera_id, frame(2)),
+            CameraFramePush::Superseded
+        ));
+        assert_eq!(
+            super::take_camera_frame(host_id, camera_id),
+            Some(frame(2)),
+            "the newest is the one taken"
+        );
+        // Taken, the next frame announces itself again.
+        assert!(matches!(
+            super::push_camera_frame(host_id, camera_id, frame(3)),
+            CameraFramePush::Notify(_)
+        ));
     }
 
     #[test]

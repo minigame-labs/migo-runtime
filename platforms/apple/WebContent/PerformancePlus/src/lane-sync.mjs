@@ -979,6 +979,19 @@ export function op_video_decoder_take_frame(decoderId, meta) {
   return frame[4];
 }
 
+/// Camera `id`'s newest frame for content, as the embedded op hands it over: its
+/// pixels -- an ArrayBuffer of their own, the one time they cross -- with
+/// `[width, height]` written to `size`; empty when none waits.
+export function op_camera_take_frame(cameraId, size) {
+  const id = smiU32(cameraId, "id");
+  const dimensions = f64ArrayOf(size, "size");
+  const frame = callService(SERVICE_OP.op_camera_take_frame, (w) => w.u32(id));
+  if (frame === null) return new Uint8Array(0);
+  dimensions[0] = frame[0];
+  dimensions[1] = frame[1];
+  return frame[2];
+}
+
 export function op_video_decoder_seek(decoderId, positionMs) {
   const id = smiU32(decoderId, "id");
   const position = toF64(positionMs, "position_ms");
