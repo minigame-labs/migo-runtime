@@ -815,6 +815,24 @@ impl ServiceContext {
                     None => OwnedValue::Null,
                 })
             }
+            // A camera's newest frame, as the embedded op hands it over: its
+            // size and its pixels, which cross this once; taking it is what
+            // lets the next one be announced.
+            id::op_camera_take_frame => {
+                let [camera] = exactly(op, args)?;
+                let camera = u32_of(op, 0, camera)?;
+                Ok(
+                    match shared::protocol::camera_frame::take_camera_frame(self.session(), camera)
+                    {
+                        Some(frame) => OwnedValue::Array(vec![
+                            OwnedValue::F64(f64::from(frame.width)),
+                            OwnedValue::F64(f64::from(frame.height)),
+                            OwnedValue::Bytes(frame.data),
+                        ]),
+                        None => OwnedValue::Null,
+                    },
+                )
+            }
             id::op_video_decoder_seek => {
                 let [decoder, position] = exactly(op, args)?;
                 let (decoder, position) = (u32_of(op, 0, decoder)?, f64_of(op, 1, position)?);
@@ -3182,6 +3200,83 @@ mod tests {
     /// a stop are answered at once, and the decoder's events reach content
     /// through the hook the embedded runtime calls. A platform with no decoder
     /// says so.
+    /// A camera's frame on the external session: the producer is told one
+    /// waits, in an event that carries no pixels, and takes the newest with one
+    /// call -- the announcement in flight until then, so frames that arrive
+    /// meanwhile replace the waiting one and queue nothing on the stream.
+    #[test]
+    fn a_camera_s_frame_is_announced_to_the_producer_and_taken_with_one_call() {
+        use shared::protocol::camera_frame::{
+            CameraFrameEntry, CameraFramePush, push_camera_frame,
+        };
+        use shared::protocol::host_cmd::HostCommand;
+
+        let session = 7711;
+        let root =
+            std::env::temp_dir().join(format!("migo-external-camera-{}", std::process::id()));
+        let context = ServiceContext::new(root.join("files"), root.join("cache"));
+        context.bind_session(session);
+        let outbox = ServiceOutbox::new(1, Arc::new(WakerSlot::default()));
+        let mut sink = super::super::host_events::ServiceEventSink { outbox: &outbox };
+        let mut state = super::super::input_state::InputState::default();
+        let frame = |fill: u8| CameraFrameEntry {
+            data: vec![fill; 8],
+            width: 2,
+            height: 1,
+        };
+        let take = || {
+            context
+                .call_sync(id::op_camera_take_frame, vec![OwnedValue::U32(3)])
+                .expect("answered")
+        };
+
+        let CameraFramePush::Notify(credit) = push_camera_frame(session, 3, frame(5)) else {
+            panic!("the first frame announces itself");
+        };
+        let announcement = HostCommand::CameraFrameData {
+            camera_id: 3,
+            data: Vec::new(),
+            width: 0,
+            height: 0,
+            credit,
+            runtime_generation: None,
+        };
+        assert!(
+            super::super::input_route::route(&mut state, &mut sink, announcement).is_none(),
+            "the producer's to hear"
+        );
+        let told = outbox.take_message().expect("the announcement");
+        assert!(
+            told.len() < 64,
+            "it carries no pixels: {} bytes",
+            told.len()
+        );
+        assert!(outbox.take_message().is_none(), "one announcement");
+
+        // Not taken yet: a newer frame replaces the waiting one and announces nothing.
+        assert!(matches!(
+            push_camera_frame(session, 3, frame(6)),
+            CameraFramePush::Superseded
+        ));
+        assert!(
+            matches!(
+                take(),
+                OwnedValue::Array(values) if matches!(
+                    values.as_slice(),
+                    [OwnedValue::F64(width), OwnedValue::F64(height), OwnedValue::Bytes(pixels)]
+                        if *width == 2.0 && *height == 1.0 && pixels == &vec![6u8; 8]
+                )
+            ),
+            "the newest frame, its size beside its pixels"
+        );
+        assert!(matches!(take(), OwnedValue::Null), "taken once");
+        // Taken, the next frame is announced again.
+        assert!(matches!(
+            push_camera_frame(session, 3, frame(7)),
+            CameraFramePush::Notify(_)
+        ));
+    }
+
     #[test]
     fn a_video_decoder_decodes_on_the_host_as_the_embedded_ops_decode() {
         use shared::protocol::host_cmd::HostCommand;

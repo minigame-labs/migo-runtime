@@ -104,6 +104,15 @@ pub(crate) trait InputSink {
     /// `_internalOnRecorderFrameData(recordingId, frameBuffer, isLastFrame)`,
     /// the frame as its ArrayBuffer.
     fn recorder_frame(&mut self, recording_id: u32, data: Vec<u8>, is_last_frame: bool);
+    /// `_internalOnCameraFrameReady(cameraId)`: the camera's newest frame
+    /// waits in its mailbox for content to take (`op_camera_take_frame`).
+    /// `credit` is the announcement: while it is held, or until the frame is
+    /// taken, a frame that arrives replaces the waiting one unannounced.
+    fn camera_frame_ready(
+        &mut self,
+        camera_id: u32,
+        credit: shared::protocol::camera_frame::CameraFrameCredit,
+    );
 }
 
 /// Deliver `command` to `sink` if it is input, and answer with it back if it
@@ -270,6 +279,9 @@ pub(crate) fn route(
             is_last_frame,
             credit: _credit,
         } => sink.recorder_frame(recording_id, data, is_last_frame),
+        HostCommand::CameraFrameData {
+            camera_id, credit, ..
+        } => sink.camera_frame_ready(camera_id, credit),
         other => return Some(other),
     }
     None

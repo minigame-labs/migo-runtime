@@ -53,6 +53,7 @@
     "_internalTriggerBLEConnectionStateChange": 30,
     "_internalTriggerBLECharacteristicValueChange": 31,
     "_internalTriggerBLEMTUChange": 32,
-    "_internalOnRecorderFrameData": 33
+    "_internalOnRecorderFrameData": 33,
+    "_internalOnCameraFrameReady": 34
   }
 }

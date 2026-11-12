@@ -8,6 +8,7 @@ import {
   op_camera_set_zoom,
   op_camera_listen_frame_change,
   op_camera_close_frame_change,
+  op_camera_take_frame,
 } from "ext:core/ops";
 import { allocateHostCallbackId, createDeferredApi, createListenerGroup, invokeCallback, failMessage } from "ext:host_v8_base/02_async.js";
 
@@ -324,17 +325,22 @@ function _internalOnCameraAuthCancelEvent(eventJson) {
   if (camera) _dispatch(camera, "authCancel");
 }
 
+// Where a taken frame's width and height are written.
+const _frameSize = new Float64Array(2);
+
 /**
- * Called from native with one frame.
+ * Called from native when a camera has a frame for content: the newest, which
+ * waits until it is taken here -- one that arrives meanwhile takes its place.
+ * It is taken even with no camera of content's to hand it to, so the next one
+ * is announced.
  * @param {number} cameraId
- * @param {ArrayBuffer} data - RGBA, four bytes a pixel, rows top first
- * @param {number} width
- * @param {number} height
  */
-function _internalOnCameraFrameData(cameraId, data, width, height) {
+function _internalOnCameraFrameReady(cameraId) {
+  // RGBA, four bytes a pixel, rows top first; empty when another call took it.
+  const pixels = op_camera_take_frame(cameraId, _frameSize);
   const camera = _cameras.get(cameraId);
-  if (camera) {
-    _dispatch(camera, "cameraFrame", { data, width, height });
+  if (camera && pixels.byteLength > 0) {
+    _dispatch(camera, "cameraFrame", { data: pixels.buffer, width: _frameSize[0], height: _frameSize[1] });
   }
 }
 
@@ -348,5 +354,5 @@ export {
   _internalOnCameraSetZoomResult,
   _internalOnCameraStopEvent,
   _internalOnCameraAuthCancelEvent,
-  _internalOnCameraFrameData,
+  _internalOnCameraFrameReady,
 };

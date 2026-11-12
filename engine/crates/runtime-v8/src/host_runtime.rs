@@ -685,16 +685,11 @@ impl HostJsRuntime {
 
     // ---- Camera frame dispatch ----
 
-    pub fn dispatch_camera_frame_data(
-        &mut self,
-        camera_id: u32,
-        data: Vec<u8>,
-        width: u32,
-        height: u32,
-    ) {
+    /// Camera `camera_id` has a frame waiting in its mailbox for content to take.
+    pub fn dispatch_camera_frame_ready(&mut self, camera_id: u32) {
         let host_id = self.host_id;
         self.dispatch_task(|rt, bindings| {
-            bindings.dispatch_camera_frame_data(rt, host_id, camera_id, data, width, height)
+            bindings.dispatch_camera_frame_ready(rt, host_id, camera_id)
         });
     }
 

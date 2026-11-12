@@ -342,6 +342,16 @@
     "op_video_decoder_take_frame": 315,
     "op_video_decoder_seek": 316,
     "op_video_decoder_stop": 317,
-    "op_video_decoder_remove": 318
+    "op_video_decoder_remove": 318,
+    "op_camera_create": 319,
+    "op_camera_destroy": 320,
+    "op_camera_set": 321,
+    "op_camera_take_photo": 322,
+    "op_camera_start_record": 323,
+    "op_camera_stop_record": 324,
+    "op_camera_set_zoom": 325,
+    "op_camera_listen_frame_change": 326,
+    "op_camera_close_frame_change": 327,
+    "op_camera_take_frame": 328
   }
 }

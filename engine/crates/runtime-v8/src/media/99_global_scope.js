@@ -19,7 +19,7 @@ ObjectDefineProperties(globalThis, {
     _internalOnCameraSetZoomResult: core.propNonEnumerable(cameraApi._internalOnCameraSetZoomResult),
     _internalOnCameraStopEvent: core.propNonEnumerable(cameraApi._internalOnCameraStopEvent),
     _internalOnCameraAuthCancelEvent: core.propNonEnumerable(cameraApi._internalOnCameraAuthCancelEvent),
-    _internalOnCameraFrameData: core.propNonEnumerable(cameraApi._internalOnCameraFrameData),
+    _internalOnCameraFrameReady: core.propNonEnumerable(cameraApi._internalOnCameraFrameReady),
 
     // Image API
     saveImageToPhotosAlbum: core.propNonEnumerable(imageApi.saveImageToPhotosAlbum),
