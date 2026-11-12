@@ -21,7 +21,8 @@
     {"date": "2026-11-11", "runner": "ios-device", "bundles": ["api-spec", "motion-at-rest-spec"], "runtime": "4afa23d0fc17dc13f6e8173f94d3f6b16b8548e8", "conformance": "9ddf916edc2ca0d8a84ff06056f0884f59bb5214"},
     {"date": "2026-11-11", "runner": "ios-device", "bundles": ["api-spec", "media-spec"], "runtime": "d08a3be17a4bc32edc21d3e3eb940a17b7d278e5", "conformance": "2227456259d45330432c9e04cf12d846c436b076"},
     {"date": "2026-11-11", "runner": "ios-simulator", "bundles": ["api-spec", "message-file-spec"], "runtime": "82dda6730068fb1f1c71607b8ca9cb8bc7e11905", "conformance": "f8b461da09904ffa375af4075c29b957a707e15b"},
-    {"date": "2026-11-11", "runner": "ios-simulator", "bundles": ["api-spec", "scan-spec"], "runtime": "d8084978cd04cd99d77076e705da4ae7552a8338", "conformance": "25e17db77d4b41f2d327274c1f0781da1453f0b7"}
+    {"date": "2026-11-11", "runner": "ios-simulator", "bundles": ["api-spec", "scan-spec"], "runtime": "d8084978cd04cd99d77076e705da4ae7552a8338", "conformance": "25e17db77d4b41f2d327274c1f0781da1453f0b7"},
+    {"date": "2026-11-12", "runner": "ios-device", "bundles": ["api-spec", "recorder-spec"], "runtime": "9e093d0284a68ee20398bd98015f64483be70131", "conformance": "a71f404faa81205263c578aadd07ffc2428162ff"}
   ],
   "apis": {
     "addCard": {"status": "present"},
