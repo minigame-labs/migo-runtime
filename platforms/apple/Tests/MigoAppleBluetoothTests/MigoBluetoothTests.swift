@@ -72,7 +72,7 @@ final class MigoBluetoothTests: XCTestCase {
 
     func testWhatIsRefusedAndWhy() {
         let bluetooth = MigoBluetooth()
-        XCTAssertEqual(bluetooth.services, [.bluetooth])
+        XCTAssertEqual(bluetooth.services, [.bluetooth, .blePeripheral])
         XCTAssertEqual(bluetooth.scopes, [MigoScope(MIGO_SCOPE_BLUETOOTH)])
         let recorder = Recorder()
         func call(_ method: UInt32, _ object: [String: Any] = [:]) {
@@ -86,19 +86,23 @@ final class MigoBluetoothTests: XCTestCase {
         call(Method.getAdapterState)
         call(Method.startDevicesDiscovery)
         call(Method.getBleDeviceServices, ["deviceId": UUID().uuidString])
-        // Android's, and the peripheral mode.
+        // Android's.
         call(Method.makePair, ["deviceId": "A"])
         call(Method.setBleMtu, ["deviceId": "A", "mtu": 100])
-        call(Method.openAdapter, ["mode": "peripheral"])
         // CoreLocation's.
         call(Method.getBeacons)
+        // The peripheral role's, with the adapter not open: no radio is made for it.
+        bluetooth.handle(
+            MigoHostServiceRequest(
+                service: .blePeripheral, method: MigoHostServiceID.BlePeripheral.createServer,
+                payload: Data(#"{"serverId":1}"#.utf8), reply: MigoHostServiceReply { recorder.outcomes.append($0) }))
         XCTAssertEqual(
             recorder.outcomes,
             [
                 .failure(message: "not init", code: 10000), .failure(message: "not init", code: 10000),
                 .failure(message: "not init", code: 10000), .failure(message: "not supported", code: nil),
-                .failure(message: "not supported", code: nil), .failure(message: "not supported", code: nil),
-                .failure(message: "unsupport", code: 11000),
+                .failure(message: "not supported", code: nil), .failure(message: "unsupport", code: 11000),
+                .failure(message: "not init", code: 10000),
             ])
     }
 }
