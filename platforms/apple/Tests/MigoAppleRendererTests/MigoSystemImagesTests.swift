@@ -165,6 +165,83 @@ final class MigoSystemImagesTests: XCTestCase {
         XCTAssertEqual(picker.asked.count, 1)
     }
 
+    /// A linked camera, as the image service sees it: it takes what the test
+    /// says it does, and remembers what it was asked.
+    private final class FakeCamera: MigoCameraCapturing {
+        struct Asked: Equatable {
+            let video: Bool
+            let maxDuration: TimeInterval
+            let front: Bool
+        }
+
+        var services: Set<MigoHostServiceID> { [] }
+        var scopes: Set<MigoScope> { [] }
+        var asked: [Asked] = []
+        var outcome: MigoCaptureOutcome = .cancelled
+        func handle(_ request: MigoHostServiceRequest) {}
+        func report(to reports: MigoCapabilityReports?) {}
+        func requestScope(_ scope: MigoScope, completion: @escaping (Bool) -> Void) { completion(false) }
+        func capture(
+            video: Bool, maxDuration: TimeInterval, front: Bool, staging: URL,
+            completion: @escaping (MigoCaptureOutcome) -> Void
+        ) {
+            asked.append(Asked(video: video, maxDuration: maxDuration, front: front))
+            completion(outcome)
+        }
+    }
+
+    func testACameraOnlyCallIsTheLinkedCamerasAndOneThatAllowsTheAlbumIsShownTheAlbum() throws {
+        let picker = FakePicker()
+        picker.files = [image("album.png", 4, 4, .png)]
+        let camera = FakeCamera()
+        camera.outcome = .captured(image("taken.jpg", 12, 8, .jpeg))
+        let images = MigoSystemImages(picker: picker, camera: camera, staging: root)
+
+        let taken = result(call(images, Method.chooseImage, ["sourceType": ["camera"], "count": 9]))
+        XCTAssertEqual((taken["tempFilePaths"] as? [String])?.map { URL(fileURLWithPath: $0).lastPathComponent }, ["taken.jpg"])
+        XCTAssertEqual(camera.asked, [FakeCamera.Asked(video: false, maxDuration: 10, front: false)])
+        XCTAssertTrue(picker.asked.isEmpty, "the album is not shown for a call that allows the camera only")
+
+        // The album, when content allows it: the camera too or not.
+        _ = result(call(images, Method.chooseImage, ["sourceType": ["album", "camera"]]))
+        _ = result(call(images, Method.chooseImage, [:]))
+        XCTAssertEqual(picker.asked.count, 2)
+        XCTAssertEqual(camera.asked.count, 1)
+    }
+
+    func testACapturedPhotoIsDescribedAsAChosenOneAndTheCameraIsAskedForWhatContentSaid() throws {
+        let camera = FakeCamera()
+        camera.outcome = .captured(image("taken.jpg", 12, 8, .jpeg))
+        let images = MigoSystemImages(picker: FakePicker(), camera: camera, staging: root)
+
+        // A photo when photos are allowed, from the camera content named.
+        let media = result(call(images, Method.chooseMedia, ["sourceType": ["camera"], "camera": "front"]))
+        XCTAssertEqual(media["type"] as? String, "image")
+        let item = try XCTUnwrap((media["tempFiles"] as? [[String: Any]])?.first)
+        XCTAssertEqual(item["fileType"] as? String, "image")
+        XCTAssertEqual(item["width"] as? Int, 12)
+        XCTAssertEqual(item["height"] as? Int, 8)
+        // A video only when content asked for videos only, as long as it said: 3 to 60 seconds.
+        camera.outcome = .cancelled
+        for (asked, taken) in [(1.0, 3.0), (30.0, 30.0), (600.0, 60.0)] {
+            XCTAssertEqual(
+                call(images, Method.chooseMedia, ["sourceType": ["camera"], "mediaType": ["video"], "maxDuration": asked]),
+                .failure(message: "cancel", code: nil))
+            XCTAssertEqual(camera.asked.last, FakeCamera.Asked(video: true, maxDuration: taken, front: false))
+        }
+        XCTAssertEqual(camera.asked.first, FakeCamera.Asked(video: false, maxDuration: 10, front: true))
+    }
+
+    func testACameraThatTakesNothingFailsTheCallWithWhy() {
+        let camera = FakeCamera()
+        let images = MigoSystemImages(picker: FakePicker(), camera: camera, staging: root)
+        XCTAssertEqual(
+            call(images, Method.chooseImage, ["sourceType": ["camera"]]), .failure(message: "cancel", code: nil))
+        camera.outcome = .unavailable("auth deny")
+        XCTAssertEqual(
+            call(images, Method.chooseImage, ["sourceType": ["camera"]]), .failure(message: "auth deny", code: nil))
+    }
+
     /// A linked photo library, as the image service sees it.
     private final class FakeLibrary: MigoPhotoLibrarySaving {
         var services: Set<MigoHostServiceID> { [] }

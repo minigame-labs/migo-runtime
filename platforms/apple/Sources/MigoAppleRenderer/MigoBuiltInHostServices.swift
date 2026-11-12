@@ -60,7 +60,8 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
     private lazy var interaction = MigoSystemInteraction(presenter: MigoSystemInteractionPresenter())
     /// Kept for the session: a picker up is state.
     private lazy var images = MigoSystemImages(
-        photoLibrary: capabilities.lazy.compactMap { $0 as? MigoPhotoLibrarySaving }.first)
+        photoLibrary: capabilities.lazy.compactMap { $0 as? MigoPhotoLibrarySaving }.first,
+        camera: capabilities.lazy.compactMap { $0 as? MigoCameraCapturing }.first)
     private let capabilities: [MigoSystemCapability]
     /// Kept for the session: what content listens for is state.
     private lazy var screen = MigoSystemScreen(post: { [weak self] event, object in
