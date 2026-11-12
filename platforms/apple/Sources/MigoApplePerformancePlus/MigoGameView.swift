@@ -339,6 +339,15 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             engine?.postRecorderFrame(recordingId: recordingId, data: data, isLastFrame: isLastFrame)
         }
 
+        /// One frame of camera `cameraId` the app's camera made, for content's
+        /// `onCameraFrame` (`MigoEngineSession.postCameraFrame`). Main thread.
+        public func postCameraFrame(
+            cameraId: UInt32, width: Int, height: Int, rowStride: Int, format: MigoPixelFormat, pixels: UnsafeRawPointer
+        ) {
+            engine?.postCameraFrame(
+                cameraId: cameraId, width: width, height: height, rowStride: rowStride, format: format, pixels: pixels)
+        }
+
         /// Report the value a synchronous ecosystem getter answers with --
         /// `name` one of the contract's values (`getExtConfigSync`,
         /// `isChatTool`, ...), `json` what the API returns -- whenever it

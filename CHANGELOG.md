@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `postCameraFrame` in the Apple SDK -- on `MigoEngineSession`, both game views and `MigoCapabilityReports`: one
+  frame of a camera content listens to, for a host's own camera service or a capability's, read into content's
+  RGBA in the call (`migo_session_post_camera_frame`).
 - `createCamera` reaches the host on iOS: the Performance+ producer sends the camera's nine requests to the
   host's camera service, as commands answered through each method's result hook -- a refusal (`scope.camera` not
   granted, no camera service) reaches that hook in the embedded op's words. A frame crosses when content takes it:

@@ -776,6 +776,32 @@ public final class MigoEngineSession {
         }
     }
 
+    /// One frame of camera `cameraId`, while content listens for them
+    /// (`migo_session_post_camera_frame`), for content's `onCameraFrame`:
+    /// `height` rows of `width` pixels in `format` -- a `MIGO_PIXEL_FORMAT_*`
+    /// -- top row first, `rowStride` bytes apart. They are read into content's
+    /// RGBA in the call, so `pixels` need outlive nothing more. Only the newest
+    /// frame waits for content: one that arrives before content took the last
+    /// replaces it. Main thread.
+    public func postCameraFrame(
+        cameraId: UInt32, width: Int, height: Int, rowStride: Int, format: MigoPixelFormat, pixels: UnsafeRawPointer
+    ) {
+        guard !isClosed else { return }
+        var frame = MigoCameraFrame()
+        frame.struct_size = UInt32(MemoryLayout<MigoCameraFrame>.size)
+        frame.abi_version = MIGO_ABI_VERSION_CURRENT
+        frame.camera_id = cameraId
+        frame.width = UInt32(clamping: width)
+        frame.height = UInt32(clamping: height)
+        frame.row_stride = UInt32(clamping: rowStride)
+        frame.format = format
+        frame.pixels = pixels.assumingMemoryBound(to: UInt8.self)
+        let result = migo_session_post_camera_frame(session, &frame)
+        if result != MIGO_OK, result != MIGO_ERROR_WOULD_BLOCK {
+            NSLog("MigoEngineSession: migo_session_post_camera_frame returned \(result)")
+        }
+    }
+
     /// One BLE characteristic value, typed: the ids as the requests named
     /// them, the bytes copied by the engine during the call. Main thread.
     func postBleCharacteristicValue(deviceId: String, serviceId: String, characteristicId: String, value: Data) {

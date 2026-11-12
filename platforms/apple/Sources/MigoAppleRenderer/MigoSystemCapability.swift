@@ -127,6 +127,17 @@ public final class MigoCapabilityReports {
         session?.postRecorderFrame(recordingId: recordingId, data: data, isLastFrame: isLastFrame)
     }
 
+    /// One frame of a camera the capability opened, for content's
+    /// `onCameraFrame`: typed rather than JSON because a camera sends thirty a
+    /// second. `height` rows of `width` pixels in `format`, top row first,
+    /// `rowStride` bytes apart, read in the call.
+    public func postCameraFrame(
+        cameraId: UInt32, width: Int, height: Int, rowStride: Int, format: MigoPixelFormat, pixels: UnsafeRawPointer
+    ) {
+        session?.postCameraFrame(
+            cameraId: cameraId, width: width, height: height, rowStride: rowStride, format: format, pixels: pixels)
+    }
+
     /// One characteristic value a connected peripheral sent, typed rather than
     /// JSON because a peripheral may notify a hundred times a second.
     public func postBleCharacteristicValue(
