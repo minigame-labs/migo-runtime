@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The BLE peripheral in the Apple SDK: MigoAppleBluetooth answers `createBLEPeripheralServer` too, on iOS and
+  macOS. Services as content describes them (properties, permissions, the two descriptors the system serves and
+  an app's own), one advertisement of a device name and service UUIDs that replaces the one before -- the
+  reference says the same of iOS, and that manufacturer data cannot be set there; an advertisement as a beacon is
+  refused, the system making those in its location framework -- reads and writes reported to content with a
+  `callbackId` and answered when it writes the value (one it does not answer gets no response; the rest of a long
+  read is answered from the value it gave; a long write is reported whole, and a write to several characteristics
+  answered once all are), notifications queued while the system has no room, `onCharacteristicSubscribed` and
+  `Unsubscribed`. `onBLEPeripheralConnectionStateChanged` is inferred, the system reporting no connections to a
+  peripheral: connected at a central's first read, write or subscription, disconnected when its last subscription
+  ends. `openBluetoothAdapter({mode: "peripheral"})` opens the adapter as the reference has iOS do, instead of
+  being refused.
 - `MigoAppleMicrophone`, the Apple SDK's microphone capability, and with it `getRecorderManager` on iOS and macOS
   without a recorder of the app's own: one recording at a time from the system's input, resampled to the rate and
   channels content asked for and ended on the sample its `duration` ends on; `PCM` and `wav` as 16-bit samples,

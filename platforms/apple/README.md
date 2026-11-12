@@ -202,7 +202,14 @@ characteristics are known, reads (the value arriving as a characteristic value),
 writes, notifications, RSSI and the write MTU -- with the Bluetooth grant, the
 Bluetooth switch, and `scope.bluetooth` decided by the system's prompt. Declare
 `NSBluetoothAlwaysUsageDescription`. Pairing and setting the MTU are Android's
-and refused, as are the peripheral mode and, for now, iBeacons.
+and refused. It is the peripheral too (`createBLEPeripheralServer`): the
+services content describes, one advertisement of a name and service UUIDs (the
+system lets an app set no manufacturer data, and makes a beacon's advertisement
+in its location framework, so that one is refused), reads and writes handed to
+content to answer -- the rest of a long read answered from the value it gave, a
+long write reported whole -- and notifications sent as the system has room. The
+system tells a peripheral of no connection: a central is reported connected when
+it first reads, writes or subscribes, and gone when its last subscription ends.
 
 `MigoAppleCamera` (`MigoCamera()`) answers `scanCode` on iOS with the SDK's own
 scanner: the back camera's picture under a frame, the code in it read by the

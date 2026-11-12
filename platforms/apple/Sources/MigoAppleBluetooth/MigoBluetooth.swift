@@ -3,11 +3,14 @@ import Foundation
 import MigoAppleRenderer
 import MigoEngine
 
-/// Bluetooth for games as a BLE central, through CoreBluetooth: the adapter,
-/// scanning, the connected devices, and GATT -- connections with their
-/// services and characteristics discovered, reads, writes, notifications, RSSI
-/// -- with the app's Bluetooth grant, the Bluetooth switch, and
-/// `scope.bluetooth` decided by the system's own prompt.
+/// Bluetooth for games through CoreBluetooth, in both roles. As a BLE central:
+/// the adapter, scanning, the connected devices, and GATT -- connections with
+/// their services and characteristics discovered, reads, writes,
+/// notifications, RSSI. As a peripheral: `createBLEPeripheralServer`'s servers
+/// -- services content describes, an advertisement, and the reads, writes and
+/// subscriptions of the centrals that find it (`MigoPeripheralServers`). With
+/// the app's Bluetooth grant, the Bluetooth switch, and `scope.bluetooth`
+/// decided by the system's own prompt.
 ///
 /// An app opts in by linking this product, passing a `MigoBluetooth()` among
 /// its game view's capabilities, and declaring
@@ -15,7 +18,7 @@ import MigoEngine
 /// so the scope is refused without asking.
 ///
 /// What the platform documents for Android only -- pairing, asking whether a
-/// device is paired, setting the MTU -- is refused, as is the peripheral mode.
+/// device is paired, setting the MTU -- is refused.
 /// iBeacons are CoreLocation's: ranged by `MigoLocation` on iOS when it is
 /// linked too, and refused otherwise.
 ///
@@ -26,6 +29,7 @@ public final class MigoBluetooth: MigoSystemCapability {
     public static let services: Set<MigoHostServiceID> = {
         var builtIn: Set<MigoHostServiceID> = []
         builtIn.insert(.bluetooth)
+        builtIn.insert(.blePeripheral)
         return builtIn
     }()
 
@@ -53,6 +57,12 @@ public final class MigoBluetooth: MigoSystemCapability {
     private var flush: Timer?
     private var interval: TimeInterval = 0
     private var connections: [UUID: Connection] = [:]
+    /// The peripheral role, whose radio is made when content first creates a server.
+    private lazy var servers = MigoPeripheralServers(
+        radio: { MigoPeripheralManagerRadio() }, isOpen: { [weak self] in self?.opened ?? false },
+        post: { [weak self] event, object in
+            self?.reports?.postEvent(.blePeripheral, event: event.rawValue, object: object)
+        })
 
     public init() {
         delegate.owner = self
@@ -172,6 +182,19 @@ public final class MigoBluetooth: MigoSystemCapability {
     public func handle(_ request: MigoHostServiceRequest) {
         guard let reply = request.reply else { return }
         let options = request.object
+        if request.service == .blePeripheral {
+            guard let method = MigoPeripheralServers.Method(rawValue: request.method) else {
+                reply.fail("not supported")
+                return
+            }
+            servers.handle(method, options) { answer in
+                switch answer {
+                case .success(let result): reply.succeed(result)
+                case .failure(let failure): reply.fail(failure.message, code: failure.code)
+                }
+            }
+            return
+        }
         switch request.method {
         case Method.openAdapter: openAdapter(options, reply)
         case Method.closeAdapter:
@@ -237,10 +260,8 @@ public final class MigoBluetooth: MigoSystemCapability {
     }
 
     private func openAdapter(_ options: [String: Any], _ reply: MigoHostServiceReply) {
-        if let mode = options["mode"] as? String, mode == "peripheral" {
-            reply.fail("not supported")
-            return
-        }
+        // Either mode opens the one adapter: the reference has iOS name the peripheral's, and a server's radio
+        // is made when content creates the server.
         opened = true
         if central == nil { makeCentral() }
         if let central, central.state != .unknown, central.state != .resetting {
@@ -260,6 +281,7 @@ public final class MigoBluetooth: MigoSystemCapability {
 
     /// The adapter closes: scanning stops, connections end, what waited fails.
     private func close() {
+        servers.close()
         stopDiscovery()
         failConnections(.notConnected)
         if let central {

@@ -104,6 +104,7 @@
     "operateGameRecorderVideo": {"platforms": ["windows", "ohos"], "reason": "what is shared is getGameRecorder's last recording, which Android, macOS, iOS and Linux make and these do not yet: here the share is refused as no recorded video (R1e Windows, R1f OpenHarmony)"}
   },
   "awaiting_device": {
+    "ble_peripheral": {"platforms": ["ios", "macos"], "reason": "MigoAppleBluetooth's peripheral needs a Bluetooth radio and a central to find it, which no simulator lane has: its servers are verified against a radio the tests play, and counted once ble-peripheral-spec has run on a phone with another device as its central"},
     "recorder": {"platforms": ["ios", "macos"], "reason": "MigoAppleMicrophone records with the device's microphone, which no simulator lane has: its recorder is verified against a tone, and counted once recorder-spec has run on a phone and a Mac with their own"}
   },
   "unsupported": {
