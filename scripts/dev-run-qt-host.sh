@@ -13,7 +13,8 @@
 # `--build-only` compiles the host and exits, for the reason dev-run-c-host.sh
 # gives for its own: the environment below is a cargo fingerprint input, so a
 # caller that wants the host built ahead of a timed run builds it through this
-# script. It needs Qt 6 Widgets (qt6-base-dev) and a display (DISPLAY, or a
+# script. It needs Qt 6 Widgets (qt6-base-dev), XTest for its scripted player's
+# mouse (libxtst-dev) and a display (DISPLAY, or a
 # virtual one: xvfb-run).
 #
 # The host's settings and its scripted player are environment variables it
