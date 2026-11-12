@@ -364,7 +364,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                     hostServices: MigoGameViewHostServices(
                         app: configuration.hostServices, window: windowService, video: videos),
                     capabilities: configuration.capabilities, networkPolicyJSON: configuration.networkPolicyJSON,
-                    launchOptionsJSON: configuration.launchOptionsJSON)
+                    launchOptionsJSON: configuration.launchOptionsJSON, stage: self)
                 self.engine = engine
                 engine.onEvent = { [weak self] event in self?.engineEvent(event) }
                 for (name, json) in ecosystemValues { engine.setEcosystemValue(name, json: json) }

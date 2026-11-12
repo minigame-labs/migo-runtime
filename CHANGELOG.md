@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `createCamera` in the Apple SDK, on iOS: MigoAppleCamera opens the phone's cameras. A camera's preview is a
+  view of its own over the game where content put it (`x`, `y`, `width`, `height`, changed as content changes
+  them), covering that rectangle and taking no touches; `takePhoto` writes a JPEG and answers its size as shown;
+  `startRecord`/`stopRecord` answer the video and its cover, the video exported again at a size to send when
+  content asks for it compressed, with the app's sound only when the app may already use the microphone; `setZoom`
+  answers the zoom the camera took, from 1 to its largest, to a tenth; `onCameraFrame` is handed the newest frame,
+  upright as the preview shows it, read where it is handed over and copied nowhere on the way; `onStop` when the
+  system interrupts the camera. It decides `scope.camera` with the system's prompt, and a player's refusal reaches
+  content as `onAuthCancel` beside the failed `createCamera`. `MigoCapabilityReports.stage` is the view the game is
+  shown in, for a capability that shows something of its own over it (`MigoEngineSession` takes it as `stage:`).
 - `postCameraFrame` in the Apple SDK -- on `MigoEngineSession`, both game views and `MigoCapabilityReports`: one
   frame of a camera content listens to, for a host's own camera service or a capability's, read into content's
   RGBA in the call (`migo_session_post_camera_frame`).

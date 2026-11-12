@@ -284,10 +284,12 @@ public final class MigoEngineSession {
     /// `launchOptionsJSON` is what the game is launched with, the object
     /// `MigoSessionConfig.launch_options_json_utf8` documents; `nil` is the
     /// engine's defaults, and anything but an object fails `migo_session_create`.
+    /// `stage` is the view the game is shown in, which a capability that shows
+    /// something over the game -- a camera's preview -- puts it in.
     public init(
         directories: Directories, contentSigning: ContentSigning, preferredFramesPerSecond: Int? = nil,
         hostServices: MigoHostServiceProvider? = nil, capabilities: [MigoSystemCapability] = [],
-        networkPolicyJSON: String? = nil, launchOptionsJSON: String? = nil
+        networkPolicyJSON: String? = nil, launchOptionsJSON: String? = nil, stage: MigoGameStage? = nil
     ) throws {
         self.capabilities = capabilities
         var signingKey = [UInt8](repeating: 0, count: 32)
@@ -422,7 +424,7 @@ public final class MigoEngineSession {
         // SDK decides content's scopes unless the app answers the permission
         // service itself.
         let reports = MigoCapabilityReports(
-            session: self, decidesScopes: !(hostServices?.services.contains(.permission) ?? false))
+            session: self, decidesScopes: !(hostServices?.services.contains(.permission) ?? false), stage: stage)
         capabilityReports = reports
         for capability in capabilities { capability.report(to: reports) }
         // A player back from the system's settings may have changed a grant.

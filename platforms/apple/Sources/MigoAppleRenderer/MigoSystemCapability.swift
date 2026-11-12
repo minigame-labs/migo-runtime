@@ -1,6 +1,16 @@
 import Foundation
 import MigoEngine
 
+#if os(iOS)
+    import UIKit
+    /// The view a game is shown in.
+    public typealias MigoGameStage = UIView
+#elseif os(macOS)
+    import AppKit
+    /// The view a game is shown in.
+    public typealias MigoGameStage = NSView
+#endif
+
 /// A part of the system an app opts into by linking the product that reads it
 /// -- location, the camera, the photo library -- rather than one the SDK
 /// always carries: App Store review asks for a purpose string for every such
@@ -91,10 +101,16 @@ public final class MigoCapabilityReports {
     /// are checked against. When the app answers the permission service, its
     /// decisions are, and these are not recorded.
     public let decidesScopes: Bool
+    /// The view the game is shown in, its bounds the game's surface in points
+    /// from the top left -- content's coordinates -- for a capability that
+    /// shows something of its own over the game where content put it: a
+    /// camera's preview. `nil` for a session no game view shows.
+    public private(set) weak var stage: MigoGameStage?
 
-    init(session: MigoEngineSession, decidesScopes: Bool) {
+    init(session: MigoEngineSession, decidesScopes: Bool, stage: MigoGameStage? = nil) {
         self.session = session
         self.decidesScopes = decidesScopes
+        self.stage = stage
     }
 
     /// One system switch: `MIGO_SYSTEM_SETTING_FLAG_*`.
