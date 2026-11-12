@@ -532,7 +532,8 @@ public final class BluetoothManagerGattCleanupTest {
         assertFalse(
                 "GATT was closed while the admitted connection dispatch was in flight",
                 connection.closedDuringDispatch);
-        assertEquals(Arrays.asList("discover", "state:true", "close"), events);
+        // The close content asked for is reported too, after the connect it followed.
+        assertEquals(Arrays.asList("discover", "state:true", "close", "state:false"), events);
         assertFalse(manager.hasGattConnection("FF:00", connection));
     }
 
@@ -632,13 +633,16 @@ public final class BluetoothManagerGattCleanupTest {
         FakeGattConnection currentConnection = new FakeGattConnection();
         assertTrue(manager.publishGattConnection("AB:CD", current, currentConnection));
 
+        // The superseded attempt's own close, which content asked for.
+        assertEquals(Arrays.asList("AB:CD:false"), states);
+
         manager.handleGattConnectionStateChange("AB:CD", current, currentConnection, true);
-        assertEquals(Arrays.asList("AB:CD:true"), states);
+        assertEquals(Arrays.asList("AB:CD:false", "AB:CD:true"), states);
 
         manager.handleGattConnectionStateChange(
                 "AB:CD", superseded, supersededConnection, true);
 
-        assertEquals(Arrays.asList("AB:CD:true"), states);
+        assertEquals(Arrays.asList("AB:CD:false", "AB:CD:true"), states);
         assertTrue(manager.hasGattConnection("AB:CD", currentConnection));
         assertEquals(1, currentConnection.discoverAttempts);
         assertEquals(0, currentConnection.closeAttempts);

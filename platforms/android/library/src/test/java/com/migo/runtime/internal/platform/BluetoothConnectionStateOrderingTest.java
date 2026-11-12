@@ -191,6 +191,71 @@ public final class BluetoothConnectionStateOrderingTest {
     }
 
     /**
+     * A connection content closes is one the system reports nothing more of:
+     * {@code close()} takes the callback with it. Content is still told, as the
+     * reference says it is of a disconnect it asked for -- found on a phone,
+     * where {@code closeBLEConnection} succeeded and {@code
+     * onBLEConnectionStateChange} never said so.
+     */
+    @Test
+    public void aConnectionContentClosesIsReportedDisconnected() {
+        List<Boolean> delivered = new CopyOnWriteArrayList<>();
+        BluetoothManager manager = new BluetoothManager(
+                44,
+                (operation, failure) -> {},
+                (deviceId, connected) -> delivered.add(connected));
+        BluetoothManager.GattAttempt attempt = manager.beginGattAttempt(DEVICE);
+        assertNotNull(attempt);
+        FakeGattConnection connection = new FakeGattConnection();
+        manager.handleGattConnectionStateChange(DEVICE, attempt, connection, true);
+        assertEquals(Collections.singletonList(Boolean.TRUE), delivered);
+
+        assertTrue(manager.closeGattConnection(DEVICE));
+
+        assertEquals(java.util.Arrays.asList(Boolean.TRUE, Boolean.FALSE), delivered);
+        assertFalse(manager.hasGattConnection(DEVICE, connection));
+    }
+
+    /**
+     * One connection ends once, however many ways it is seen to: the peripheral
+     * leaving as content closes, or the system saying so twice.
+     */
+    @Test
+    public void aConnectionIsReportedDisconnectedOnce() {
+        List<Boolean> delivered = new CopyOnWriteArrayList<>();
+        BluetoothManager manager = new BluetoothManager(
+                45,
+                (operation, failure) -> {},
+                (deviceId, connected) -> delivered.add(connected));
+        BluetoothManager.GattAttempt attempt = manager.beginGattAttempt(DEVICE);
+        assertNotNull(attempt);
+        FakeGattConnection connection = new FakeGattConnection();
+        manager.handleGattConnectionStateChange(DEVICE, attempt, connection, true);
+
+        manager.closeGattConnection(DEVICE);
+        // The system's own word of it, late, and again.
+        manager.handleGattConnectionStateChange(DEVICE, attempt, connection, false);
+        manager.handleGattConnectionStateChange(DEVICE, attempt, connection, false);
+        // And content closing what is closed already, which is no connection.
+        assertFalse(manager.closeGattConnection(DEVICE));
+
+        assertEquals(java.util.Arrays.asList(Boolean.TRUE, Boolean.FALSE), delivered);
+    }
+
+    @Test
+    public void closingADeviceThatWasNeverConnectedReportsNothing() {
+        List<Boolean> delivered = new CopyOnWriteArrayList<>();
+        BluetoothManager manager = new BluetoothManager(
+                46,
+                (operation, failure) -> {},
+                (deviceId, connected) -> delivered.add(connected));
+
+        assertFalse(manager.closeGattConnection(DEVICE));
+
+        assertEquals(Collections.emptyList(), delivered);
+    }
+
+    /**
      * Wait until {@code thread} is actually parked on a monitor.
      *
      * <p>Polling for the state rather than sleeping for a plausible interval:

@@ -1001,6 +1001,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- On Android `closeBLEConnection` tells content the connection is gone: `onBLEConnectionStateChange` hears
+  `connected: false` for a disconnect content asked for, as the reference says it does. The SDK left that to the
+  system's callback, which closing a connection takes away, so content heard nothing -- found with a phone as the
+  central of another. A connection is reported gone once however it ends, and `closeBLEConnection` for a device with
+  no connection fails with 10006 "no connection" as it does on iOS; it answered ok.
 - On iOS `chooseMessageFile` with `type: "image"` or `"video"` picks from the photo library, where the player keeps
   them -- as the Android SDK's `image/*` and `video/*` reach the system's photo picker -- and any other type from the
   Files app. It opened Files for every type, which holds no photos until the player puts some there.
