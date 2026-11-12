@@ -48,6 +48,31 @@ def check_gradle(root: Path = ROOT) -> None:
         raise ValueError("Gradle shipping dependencies must come only from the canonical Android runtime list")
 
 
+CONSUMER_LOCK = "tests/maven_consumer/android/gradle.lockfile"
+# What a host's app runs with, each way it can take the engine.
+CONSUMER_RUNTIME = ("bundledDebugRuntimeClasspath", "deferredDebugRuntimeClasspath")
+
+
+def check_consumer_lock(root: Path = ROOT) -> None:
+    """The host app that resolves the published SDK (tests/maven_consumer) locks its dependencies, and a
+    runtime dependency the SDK's POM gains reaches that app: one its lock does not hold fails its build --
+    which no gate saw until the whole release had been built, a day of red after ZXing was added."""
+    locked: dict[str, set[str]] = {}
+    for line in (root / CONSUMER_LOCK).read_text().splitlines():
+        coordinate, separator, configurations = line.partition("=")
+        if separator and not line.startswith("#"):
+            locked[coordinate] = set(configurations.split(","))
+    for dep in load(root)["maven_runtime"]:
+        coordinate = f"{dep['group']}:{dep['artifact']}:{dep['version']}"
+        missing = [name for name in CONSUMER_RUNTIME if name not in locked.get(coordinate, set())]
+        if missing:
+            raise ValueError(
+                f"{CONSUMER_LOCK} does not lock {coordinate} for {', '.join(missing)}: regenerate it against a "
+                "staged repository (gradlew :maven-consumer:dependencies --write-locks -PmigoMavenRepo=<repo>)"
+            )
+
+
 if __name__ == "__main__":
     check_gradle()
-    print("Android Gradle runtime dependencies agree with canonical Maven list")
+    check_consumer_lock()
+    print("Android Gradle runtime dependencies agree with canonical Maven list, and the consumer app locks them")
