@@ -211,7 +211,15 @@ long write reported whole -- and notifications sent as the system has room. The
 system tells a peripheral of no connection: a central is reported connected when
 it first reads, writes or subscribes, and gone when its last subscription ends.
 
-`MigoAppleCamera` (`MigoCamera()`) answers `scanCode` on iOS with the SDK's own
+`MigoAppleCamera` (`MigoCamera()`) is `createCamera`'s cameras on iOS: each a
+preview of its own over the game where content put it, covering that rectangle
+and taking no touches; photos as JPEGs, video as the system records it (again at
+a size to send when content asks for it compressed, and with the app's sound only
+when the app may already use the microphone), zoom from 1 to the camera's
+largest, and frames as the camera makes them, upright as the preview shows them,
+only the newest handed over. It decides `scope.camera` with the system's prompt,
+and a player's refusal reaches content as `onAuthCancel` beside the failed
+`createCamera`. It also answers `scanCode` on iOS with the SDK's own
 scanner: the back camera's picture under a frame, the code in it read by the
 camera itself, or -- unless content asked for `onlyFromCamera` -- a picture from
 the photo library read by Vision; content hears only the code, never the
