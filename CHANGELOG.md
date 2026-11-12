@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- On iOS a `chooseImage` or `chooseMedia` that allows the camera only (`sourceType: ["camera"]`) takes a photo or a
+  video with the system's camera screen, when the app links MigoAppleCamera: one photo as a JPEG, or -- when
+  content asked for videos only -- one video of at most `maxDuration` seconds (3 to 60, 10 unless said), on the
+  camera `camera` names, answered as a chosen file is. It failed "not supported"; it still does without the
+  product, and a call that allows the album is shown the album, as on Android. A video is recorded with its sound,
+  so the app must also declare `NSMicrophoneUsageDescription`; a photo needs only the camera's purpose string.
+  `MigoCameraCapturing` is the role a capability takes it through.
 - `createCamera` in the Apple SDK, on iOS: MigoAppleCamera opens the phone's cameras. A camera's preview is a
   view of its own over the game where content put it (`x`, `y`, `width`, `height`, changed as content changes
   them), covering that rectangle and taking no touches; `takePhoto` writes a JPEG and answers its size as shown;

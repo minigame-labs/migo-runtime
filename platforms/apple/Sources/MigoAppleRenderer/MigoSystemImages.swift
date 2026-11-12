@@ -14,7 +14,8 @@ import UniformTypeIdentifiers
 /// images, media and files, its viewer (`MigoSystemPreview`), and on a Mac
 /// saving a file where the player chooses. Saving to the photo library is the
 /// linked capability's that does it (`MigoPhotoLibrarySaving`) and refused
-/// without one; the camera is not offered here.
+/// without one; so is taking a photo or a video for a call that allows the
+/// camera only (`MigoCameraCapturing`).
 ///
 /// A file this answers with is the host's own copy, in its staging directory:
 /// the engine moves it into the session when the call completes, so a file the
@@ -23,16 +24,19 @@ final class MigoSystemImages {
     private let picker: MigoFilePicker
     private let preview: MigoSystemPreview
     private let photoLibrary: MigoPhotoLibrarySaving?
+    private let camera: MigoCameraCapturing?
     private let staging: URL
     /// Where the slow parts -- decoding, encoding, describing a video -- run.
     private let work = DispatchQueue(label: "dev.migo.images", qos: .userInitiated, attributes: .concurrent)
 
     init(
         picker: MigoFilePicker = MigoSystemFilePicker(), preview: MigoSystemPreview? = nil,
-        photoLibrary: MigoPhotoLibrarySaving? = nil, staging: URL = MigoSystemImages.defaultStaging
+        photoLibrary: MigoPhotoLibrarySaving? = nil, camera: MigoCameraCapturing? = nil,
+        staging: URL = MigoSystemImages.defaultStaging
     ) {
         self.picker = picker
         self.photoLibrary = photoLibrary
+        self.camera = camera
         self.preview = preview ?? MigoSystemPreview(staging: staging)
         self.staging = staging
     }
@@ -63,12 +67,12 @@ final class MigoSystemImages {
         case Method.compressImage:
             work.async { self.compress(options, reply) }
         case Method.chooseImage:
-            choose(kinds: [.image], sources: options["sourceType"], count: options["count"], reply) { files in
+            choose(kinds: [.image], options, reply) { files in
                 try self.chosenImages(files)
             }
         case Method.chooseMedia:
             let kinds = Self.mediaKinds(options["mediaType"])
-            choose(kinds: kinds, sources: options["sourceType"], count: options["count"], reply) { files in
+            choose(kinds: kinds, options, reply) { files in
                 try self.chosenMedia(files)
             }
         case Method.chooseMessageFile:
@@ -188,8 +192,8 @@ final class MigoSystemImages {
         return kinds.isEmpty ? [.image, .video] : kinds
     }
 
-    /// The camera is a capability of its own; a call that allows only it is
-    /// refused, one that allows the album too is shown the album.
+    /// A call that allows the album is shown the album, the camera too or not;
+    /// one that allows the camera only is the linked camera's.
     private static func albumAllowed(_ sources: Any?) -> Bool {
         guard let names = sources as? [Any], !names.isEmpty else { return true }
         return names.contains { ($0 as? String) == "album" }
@@ -200,15 +204,15 @@ final class MigoSystemImages {
     }
 
     private func choose(
-        kinds: Set<MigoPickKind>, sources: Any?, count: Any?, _ reply: MigoHostServiceReply,
+        kinds: Set<MigoPickKind>, _ options: [String: Any], _ reply: MigoHostServiceReply,
         describe: @escaping ([URL]) throws -> [String: Any]
     ) {
-        guard Self.albumAllowed(sources) else {
-            reply.fail("not supported")
+        guard Self.albumAllowed(options["sourceType"]) else {
+            capture(kinds: kinds, options, reply, describe: describe)
             return
         }
         let request = MigoPickRequest(
-            count: Self.count(count, default: 9), kinds: kinds, source: .library, staging: staging)
+            count: Self.count(options["count"], default: 9), kinds: kinds, source: .library, staging: staging)
         picker.pick(request) { [work] outcome in
             switch outcome {
             case .cancelled:
@@ -219,6 +223,39 @@ final class MigoSystemImages {
                 work.async {
                     do {
                         reply.succeed(try describe(Array(files.prefix(request.count))))
+                    } catch {
+                        reply.fail(Self.reason(error))
+                    }
+                }
+            }
+        }
+    }
+
+    /// One photo, or one video when content asked for videos only -- a camera
+    /// takes one kind at a time -- of at most `maxDuration` seconds, the
+    /// reference's 3 to 60 and 10 unless said, from the camera content named.
+    private func capture(
+        kinds: Set<MigoPickKind>, _ options: [String: Any], _ reply: MigoHostServiceReply,
+        describe: @escaping ([URL]) throws -> [String: Any]
+    ) {
+        guard let camera else {
+            reply.fail("not supported")
+            return
+        }
+        let seconds = (options["maxDuration"] as? NSNumber)?.doubleValue ?? 10
+        camera.capture(
+            video: !kinds.contains(.image), maxDuration: min(max(seconds.isFinite ? seconds : 10, 3), 60),
+            front: options["camera"] as? String == "front", staging: staging
+        ) { [work] outcome in
+            switch outcome {
+            case .cancelled:
+                reply.fail("cancel")
+            case .unavailable(let reason):
+                reply.fail(reason)
+            case .captured(let file):
+                work.async {
+                    do {
+                        reply.succeed(try describe([file]))
                     } catch {
                         reply.fail(Self.reason(error))
                     }

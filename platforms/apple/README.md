@@ -219,7 +219,14 @@ when the app may already use the microphone), zoom from 1 to the camera's
 largest, and frames as the camera makes them, upright as the preview shows them,
 only the newest handed over. It decides `scope.camera` with the system's prompt,
 and a player's refusal reaches content as `onAuthCancel` beside the failed
-`createCamera`. It also answers `scanCode` on iOS with the SDK's own
+`createCamera`. With it linked, a `chooseImage` or `chooseMedia` that allows the
+camera only (`sourceType: ["camera"]`) shows the system's camera screen -- one
+photo, or one video of at most `maxDuration` seconds when content asked for
+videos only, on the camera content named -- and answers as a chosen file does;
+without it such a call fails "not supported", and a call that allows the album
+is shown the album either way, as on Android. A video is recorded with its
+sound, so it also needs `NSMicrophoneUsageDescription`. It also answers
+`scanCode` on iOS with the SDK's own
 scanner: the back camera's picture under a frame, the code in it read by the
 camera itself, or -- unless content asked for `onlyFromCamera` -- a picture from
 the photo library read by Vision; content hears only the code, never the

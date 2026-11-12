@@ -4,24 +4,28 @@ import MigoEngine
 
 #if os(iOS)
     import AVFoundation
+    import UIKit
 #endif
 
 /// The camera for games, through AVFoundation, on iOS: `createCamera`'s cameras -- a preview over the game where
 /// content put it, its frames, photos, video and zoom (`MigoCameraSessions`, `MigoCaptureCamera`) -- `scanCode`'s
 /// scanner -- the back camera's picture under a frame, the code in it read as it comes, or a picture from the photo
-/// library read by Vision unless content asked for the camera only -- content's `scope.camera`, and the camera's
-/// grant for `getAppAuthorizeSetting`.
+/// library read by Vision unless content asked for the camera only -- the system's camera screen for `chooseImage`
+/// and `chooseMedia` when content allows the camera only (`MigoCameraScreen`), content's `scope.camera`, and the
+/// camera's grant for `getAppAuthorizeSetting`.
 ///
 /// A camera content creates hands it the camera's picture, so it needs content's `scope.camera`, which this decides
 /// with the system's prompt. The scanner is the SDK's own screen, as a system picker is the system's: content hears
 /// only the code the player chose to scan, never the camera's picture, so it uses the app's camera grant without the
-/// scope.
+/// scope. So does the camera screen, which hands content only the photo or the video the player chose to keep.
 ///
 /// An app opts in by linking this product, passing a `MigoCamera()` among its game view's capabilities, and declaring
 /// why it uses the camera: `NSCameraUsageDescription`. Without the purpose string the system shows no prompt: the
 /// scope is refused, and the scanner reads the photo library only. It is a product of its own because App Store
 /// review requires that purpose string of any app whose binary uses the camera. A recording carries the app's sound
-/// only when the app may already use the microphone; the camera asks for none.
+/// only when the app may already use the microphone; the camera asks for none. The system's camera screen records a
+/// video with its sound, so a video is taken there only by an app that also declares
+/// `NSMicrophoneUsageDescription`; a photo needs none.
 ///
 /// Create it on the main thread; it is used there.
 public final class MigoCamera: MigoSystemCapability {
@@ -48,6 +52,8 @@ public final class MigoCamera: MigoSystemCapability {
     #if os(iOS)
         /// The scanner up, if one is.
         private weak var scanner: MigoScannerViewController?
+        /// The system's camera screen up, if one is.
+        private var screen: MigoCameraScreen?
         private var reports: MigoCapabilityReports?
         /// `createCamera`'s cameras, each shown in the game's view.
         private lazy var cameras = MigoCameraSessions(
@@ -72,6 +78,7 @@ public final class MigoCamera: MigoSystemCapability {
             guard reports != nil else {
                 // The session closed: the scanner up answers nobody, and goes; so do the cameras.
                 scanner?.finish(.cancelled)
+                screen?.finish(.cancelled)
                 cameras.close()
                 return
             }
@@ -161,8 +168,8 @@ public final class MigoCamera: MigoSystemCapability {
                 reply.fail("not supported")
                 return
             }
-            guard scanner == nil else {
-                reply.fail("a scanner is showing")
+            guard scanner == nil, screen == nil else {
+                reply.fail("a camera is showing")
                 return
             }
             let options = request.object
@@ -195,3 +202,44 @@ public final class MigoCamera: MigoSystemCapability {
         }
     #endif
 }
+
+#if os(iOS)
+    extension MigoCamera: MigoCameraCapturing {
+        public func capture(
+            video: Bool, maxDuration: TimeInterval, front: Bool, staging: URL,
+            completion: @escaping (MigoCaptureOutcome) -> Void
+        ) {
+            guard screen == nil, scanner == nil else {
+                completion(.unavailable("a camera is showing"))
+                return
+            }
+            guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+                completion(.unavailable("there is no camera"))
+                return
+            }
+            // The system ends an app that records sound without saying why.
+            if video, (Bundle.main.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription") as? String)?.isEmpty != false {
+                NSLog(
+                    "MigoCamera: the app declares no NSMicrophoneUsageDescription in its Info.plist, so the system's "
+                        + "camera screen takes photos only")
+                completion(.unavailable("the app may not record a video's sound"))
+                return
+            }
+            askForTheCamera { [weak self] granted in
+                guard let self else { return completion(.cancelled) }
+                guard granted else { return completion(.unavailable("auth deny")) }
+                guard self.screen == nil, self.scanner == nil else {
+                    return completion(.unavailable("a camera is showing"))
+                }
+                let shown = MigoCameraScreen(
+                    video: video, maxDuration: maxDuration, front: front, staging: staging
+                ) { [weak self] outcome in
+                    self?.screen = nil
+                    completion(outcome)
+                }
+                self.screen = shown
+                shown.show()
+            }
+        }
+    }
+#endif

@@ -48,6 +48,30 @@ public protocol MigoPhotoLibrarySaving: MigoSystemCapability {
     func saveImageToPhotoLibrary(_ file: URL, completion: @escaping (String?) -> Void)
 }
 
+/// What a capability's camera screen ended with.
+public enum MigoCaptureOutcome {
+    /// The photo or the video, a file of the caller's from here on.
+    case captured(URL)
+    case cancelled
+    /// Nothing was taken, with why.
+    case unavailable(String)
+}
+
+/// A capability that takes a photo or records a video with the system's camera
+/// screen: what the SDK's image service hands `chooseImage` and `chooseMedia`
+/// to when content allows the camera only, the rest of that service being the
+/// SDK's own -- a call that allows the album is shown the album. The screen is
+/// the system's, as a picker is: content is handed only what the player chose
+/// to take, so it needs no `scope.camera`. Main thread.
+public protocol MigoCameraCapturing: MigoSystemCapability {
+    /// Show the camera for one photo, or with `video` one recording of at most
+    /// `maxDuration` seconds, on the front camera first when `front`; the file
+    /// is written under `staging`. `completion` is called once.
+    func capture(
+        video: Bool, maxDuration: TimeInterval, front: Bool, staging: URL,
+        completion: @escaping (MigoCaptureOutcome) -> Void)
+}
+
 /// A capability that ranges iBeacons: what the Bluetooth service's beacon
 /// methods -- `startBeaconDiscovery`, `stopBeaconDiscovery`, `getBeacons` --
 /// are handed to, the rest of that service being Bluetooth's. On Apple
