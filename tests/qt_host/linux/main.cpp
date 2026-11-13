@@ -20,19 +20,28 @@
 //   TAP-TEXT <text>    the player taps the button, or the menu item, that says <text>
 //   TYPE-TEXT <text>   the player types <text> into the field that holds the focus
 //   PRESS-ENTER        the player presses Enter there
+//   POINTER-OVER-GAME  the player is at the game: its window active, the game
+//                      holding the keyboard, the cursor in its middle
+//   MOVE-MOUSE <dx> <dy>  the player moves the mouse by that many pixels
+//   PRESS-ESCAPE       the player presses Esc
 //
 // are done in that order, each once it can be -- a dialog may not be up yet when
 // its line arrives, nor the keyboard's field have taken the focus. The keys are
 // key events sent to the focused field, as a keyboard's are, so what the field
-// reports is the Host Kit's own.
+// reports is the Host Kit's own. The mouse and Esc are the X server's own input
+// (XTest, tests/x11_player in the Host Kit): a pointer lock goes by the mouse's
+// raw motion, which no event sent to a widget carries.
 
 #include <migo/linux/qt6/managed_session.hpp>
 #include <migo/linux/qt6/media.hpp>
+
+#include "x11_player.hpp"
 
 #include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
 #include <QByteArray>
+#include <QCursor>
 #include <QFile>
 #include <QKeyEvent>
 #include <QLineEdit>
@@ -136,7 +145,8 @@ bool enter() {
 /// in order, until it can be done.
 class Player final : public QObject {
 public:
-    explicit Player(const char *path) {
+    /// `game` is the game's view, for what the player does with the mouse.
+    Player(const char *path, QWidget *game) : game_(game) {
         if (path == nullptr || path[0] == '\0') return;
         feed_.setFileName(QString::fromLocal8Bit(path));
         auto *timer = new QTimer(this);
@@ -162,25 +172,59 @@ private:
                 requests_.append(Request{Request::Type, line.mid(10)});
             } else if (line == QStringLiteral("PRESS-ENTER")) {
                 requests_.append(Request{Request::Enter, {}});
+            } else if (line == QStringLiteral("POINTER-OVER-GAME")) {
+                requests_.append(Request{Request::PointerOverGame, {}});
+            } else if (line.startsWith(QStringLiteral("MOVE-MOUSE "))) {
+                requests_.append(Request{Request::MoveMouse, line.mid(11)});
+            } else if (line == QStringLiteral("PRESS-ESCAPE")) {
+                requests_.append(Request{Request::Escape, {}});
             }
         }
         while (!requests_.isEmpty() && perform(requests_.first())) requests_.removeFirst();
     }
 
     struct Request {
-        enum Kind { Tap, Type, Enter } kind;
+        enum Kind { Tap, Type, Enter, PointerOverGame, MoveMouse, Escape } kind;
         QString text;
     };
 
-    static bool perform(const Request &request) {
+    bool perform(const Request &request) {
         switch (request.kind) {
             case Request::Tap: return tap(request.text);
             case Request::Type: return type(request.text);
             case Request::Enter: return enter();
+            case Request::PointerOverGame: return pointerOverGame();
+            case Request::MoveMouse: {
+                const QStringList by = request.text.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+                if (by.size() == 2) hands().move(by.at(0).toInt(), by.at(1).toInt());
+                return true;
+            }
+            case Request::Escape:
+                hands().escape();
+                return true;
         }
         return false;
     }
 
+    /// The player at the game, which is where a pointer lock may be taken;
+    /// asked again until the window is active and the game holds the keyboard.
+    bool pointerOverGame() {
+        if (game_ == nullptr || !game_->isVisible()) return false;
+        game_->window()->activateWindow();
+        game_->setFocus();
+        QCursor::setPos(game_->mapToGlobal(game_->rect().center()));
+        return game_->window()->isActiveWindow() && game_->hasFocus();
+    }
+
+    /// The server's input, taken up the first time the player uses the mouse:
+    /// while it is held the mouse moves the pointer exactly as far as it moves.
+    x11_player::Hands &hands() {
+        if (!hands_) hands_ = std::make_unique<x11_player::Hands>();
+        return *hands_;
+    }
+
+    QWidget *game_;
+    std::unique_ptr<x11_player::Hands> hands_;
     QFile feed_;
     QByteArray buffered_;
     QList<Request> requests_;
@@ -260,7 +304,7 @@ int main(int argc, char **argv) {
     app.setQuitOnLastWindowClosed(false);
     QObject::connect(&app, &QGuiApplication::lastWindowClosed, game, [game] { (void)game->close(); });
 
-    Player player(std::getenv("MIGO_QT_HOST_FEED"));
+    Player player(std::getenv("MIGO_QT_HOST_FEED"), game->view());
     window.show();
     if (const MigoResult loaded = game->loadContent(content_id, QStringLiteral("game.js")); loaded != MIGO_OK) {
         std::fprintf(stderr, "[qt-host] loadContent failed: %d\n", static_cast<int>(loaded));

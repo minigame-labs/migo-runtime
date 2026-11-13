@@ -148,6 +148,12 @@ fn main() {
     for source in kit_files(&cmake, ".cpp") {
         build.file(kit.join(source));
     }
+    // The host's player moves the mouse and presses Esc through the X server
+    // (XTest), with the hands the Host Kit's own tests use.
+    let player = kit.join("tests/x11_player.cpp");
+    println!("cargo:rerun-if-changed={}", player.display());
+    build.include(kit.join("tests"));
+    build.file(&player);
     build.file(&host);
     build.compile("migo_qt_host");
 
@@ -163,6 +169,7 @@ fn main() {
         "Qt6Gui",
         "Qt6Core",
         "X11",
+        "Xtst",
         "xcb-xinput",
         "xcb",
         "udev",
