@@ -13,6 +13,13 @@ namespace migo::windows_host {
 /// The services Windows already offers an App, answered with its own -- the
 /// Linux Host Kit's `MigoQtBuiltInHostServices` for Win32:
 ///
+/// Toasts, loading indicators, modals and action sheets: a toast or a loading
+/// indicator is a card over the middle of the game -- one at a time, taking no
+/// input, with `mask` keeping the game's from it too -- drawn with Direct2D;
+/// a modal or an action sheet is a dialog of the system's controls, modal to
+/// the App's window without holding its message loop, the buttons in Windows'
+/// order. Closing one any other way is the player declining it.
+///
 /// The clipboard: the system's, as text.
 ///
 /// The window the game is shown in -- the App's top-level window: setWindowSize

@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Windows Host Kit's interaction service: toasts and loading indicators as a card over the middle of the game,
+  drawn with Direct2D and DirectWrite on a layered window that takes no input (`mask` keeps the game's from it too);
+  modals and action sheets as dialogs of the system's controls, modal to the App's window without holding its message
+  loop -- the keyboard's dialog navigation comes through a thread message hook -- the buttons in Windows' order.
 - The Windows Host Kit's built-in host services (`migo::windows-builtin-host-services`), which the Managed session
   answers what the App does not with: the system clipboard; the window (`setWindowSize`, its state reported,
   `setCursor` from a CSS keyword or a cursor file, the pointer lock reported and a refusal said); the screen
