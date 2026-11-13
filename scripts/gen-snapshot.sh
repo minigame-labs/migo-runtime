@@ -207,8 +207,13 @@ ADB="${ADB:-$HOME/Android/Sdk/platform-tools/adb}"
 [[ -x "$ADB" ]] || ADB="$(command -v adb || true)"
 [[ -n "$ADB" && -x "$ADB" ]] || die "adb not found (set ADB=/path/to/adb)"
 
-LIBCXX="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/$LIBCXX_TRIPLE/libc++_shared.so"
-[[ -f "$LIBCXX" ]] || die "libc++_shared.so not found: $LIBCXX"
+# The NDK's prebuilt toolchain is named for the machine it runs on (linux-x86_64,
+# darwin-x86_64, windows-x86_64); its sysroot is the device's whichever it is.
+LIBCXX=""
+for candidate in "$NDK"/toolchains/llvm/prebuilt/*/sysroot/usr/lib/"$LIBCXX_TRIPLE"/libc++_shared.so; do
+  if [[ -f "$candidate" ]]; then LIBCXX="$candidate"; break; fi
+done
+[[ -n "$LIBCXX" ]] || die "libc++_shared.so for $LIBCXX_TRIPLE not found under $NDK/toolchains/llvm/prebuilt"
 
 # ---- device -----------------------------------------------------------------
 if [[ -z "$SERIAL" ]]; then

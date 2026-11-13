@@ -131,6 +131,30 @@ if got="$(LIBCLANG_PATH="$w/system-llvm/lib" resolve_in "$w/sdk-good" "" LIBCLAN
 else
     fail "bindgen's libclang is not the pinned NDK's (got '${got:-<none>}')"
 fi
+# cargo-ndk reads ANDROID_NDK_HOME; the build scripts of what it compiles
+# (skia-bindings, ada-url) read ANDROID_NDK. Four scripts each exported the second
+# by hand after resolving and the snapshot generator did not, so it stopped the
+# day ada-url joined what it links -- on a developer machine only, because CI's NDK
+# action exports both names for the job and hides the omission. An inherited value
+# is the other half: it would put a different NDK's headers under this compiler.
+if got="$(ANDROID_NDK="$w/ambient-ndk" resolve_in "$w/sdk-good" "" ANDROID_NDK)" \
+   && [[ "$got" == "$w/sdk-good/ndk/$ANDROID_NDK_PIN" ]]; then
+    pass "resolution points ANDROID_NDK at the pinned NDK too, over an inherited one"
+else
+    fail "ANDROID_NDK is not the pinned NDK after resolving (got '${got:-<none>}')"
+fi
+if got="$(env -u ANDROID_NDK bash -c "
+        export ANDROID_HOME='$w/sdk-good' ANDROID_SDK_ROOT='$w/sdk-good' HOME='$w/nohome'
+        unset ANDROID_NDK_HOME ANDROID_NDK_ROOT
+        source '$LIB'
+        ANDROID_NDK_PIN='$ANDROID_NDK_PIN'
+        android_ndk_resolve >/dev/null 2>&1 || exit 1
+        bash -c 'printf %s \"\${ANDROID_NDK:-}\"'")" \
+   && [[ "$got" == "$w/sdk-good/ndk/$ANDROID_NDK_PIN" ]]; then
+    pass "a child process sees ANDROID_NDK when the environment never set it"
+else
+    fail "ANDROID_NDK is not exported to child processes (got '${got:-<none>}')"
+fi
 mkdir -p "$w/sdk-noclang/ndk/$ANDROID_NDK_PIN"
 printf 'Pkg.Desc = Android NDK\nPkg.Revision = %s\n' "$ANDROID_NDK_PIN" \
     > "$w/sdk-noclang/ndk/$ANDROID_NDK_PIN/source.properties"
