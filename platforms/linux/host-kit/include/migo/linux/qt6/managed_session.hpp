@@ -72,6 +72,9 @@ public:
         /// leaves createVideo to `appServices`. The players hold still while
         /// the window is minimized, as the game does.
         std::shared_ptr<const MigoQtVideoSupport> videos;
+        /// The microphone getRecorderManager records from -- `MigoQtMedia`
+        /// again -- or null, which leaves the recorder to `appServices`.
+        std::shared_ptr<const MigoQtMicrophone> microphone;
     };
 
     /// Constructs the Session and its view, and installs the callback table.

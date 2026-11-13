@@ -97,12 +97,14 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
     add_library(migo_qt6_host_services STATIC
         include/migo/linux/qt6/host_services.hpp
         src/qt6/host_services.cpp
-        # Internal, not installed: how what stands over the game is shown, the
-        # backlight (sysfs and logind, over Qt's D-Bus), the image service
+        # Internal, not installed: how what stands over the game is shown,
+        # where the files handed to the Session wait, the backlight (sysfs and
+        # logind, over Qt's D-Bus), the image service
         # with its viewer (downloading over Qt's network), where the device is
         # (GeoClue, or the desktop portal inside a sandbox), its motion sensors
         # (IIO, through udev), and Bluetooth (BlueZ).
         src/qt6/overlay.hpp
+        src/qt6/staging.hpp
         src/qt6/backlight.hpp
         src/qt6/backlight.cpp
         src/qt6/images.hpp
@@ -187,10 +189,11 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
     )
     list(APPEND _migo_linux_host_kit_targets migo_qt6_managed_session)
 
-    # Videos for the image service and createVideo: its own target, since it
-    # links GStreamer, which nothing else here does. An App that links it gives
-    # a MigoQtMedia to the services; one that does not refuses videos, leaves
-    # createVideo to itself, and needs no GStreamer.
+    # Videos for the image service and createVideo, and the microphone for
+    # getRecorderManager: its own target, since it links GStreamer, which
+    # nothing else here does. An App that links it gives a MigoQtMedia to the
+    # services; one that does not refuses videos, leaves createVideo and the
+    # recorder to itself, and needs no GStreamer.
     if(MIGO_LINUX_HOST_KIT_BUILD_QT6_MEDIA)
         pkg_check_modules(MIGO_GSTREAMER QUIET IMPORTED_TARGET
             gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0)
@@ -209,6 +212,8 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
             src/qt6/media_video_controls.cpp
             src/qt6/media_videos.hpp
             src/qt6/media_videos.cpp
+            src/qt6/media_recorder.hpp
+            src/qt6/media_recorder.cpp
         )
         add_library(migo::qt6-media ALIAS migo_qt6_media)
         set_target_properties(migo_qt6_media PROPERTIES

@@ -25,6 +25,8 @@ class QWidget;
 
 namespace migo::linux_host::qt6 {
 
+class Staging;
+
 /// The image service, answered with what Qt and the desktop offer every App:
 /// compressing an image with Qt's own readers and writers; the file dialog --
 /// the desktop's, through its portal, wherever Qt finds one -- to pick images
@@ -87,7 +89,6 @@ public:
     /// when neither is. Zero or less is not given.
     [[nodiscard]] static QSize targetSize(QSize source, int width, int height);
 
-    class Staging;
 
 private:
     /// What the player picked, the originals, at most the count asked for.
@@ -121,7 +122,9 @@ private:
     bool canShowDialog(MigoQtHostServiceReply &reply);
     void show(QFileDialog *dialog);
 
-    /// The staging directory, made the first time a call needs it.
+    /// The staging directory, made the first time a call needs it: the Host
+    /// Kit's own files until the Session takes them, shared with the work in
+    /// flight, so the directory lasts as long as the last of it.
     std::shared_ptr<Staging> staging();
     /// What downloads a preview's images, made the first time one is.
     QNetworkAccessManager &network();

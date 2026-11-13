@@ -189,6 +189,13 @@ struct HostServiceEvent {
 /// library lets it, while a test reads them on its own.
 std::vector<HostServiceAnswer> host_service_answers();
 const std::vector<HostServiceEvent> &host_service_events() noexcept;
+/// One frame of a recording the host delivered (migo_session_post_recorder_frame).
+struct RecorderFrame {
+    uint32_t recording_id = 0;
+    std::string bytes;
+    bool last = false;
+};
+const std::vector<RecorderFrame> &recorder_frames() noexcept;
 
 /// Runs `take` on each answer as the host completes the call, on the thread
 /// that completes it and before the answer is recorded: where the library takes

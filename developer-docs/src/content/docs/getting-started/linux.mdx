@@ -182,7 +182,16 @@ MigoSession  > SurfaceHost ──> MigoQtX11SurfaceView
 - **蓝牙**（`openBluetoothAdapter` 及 BLE 主机端 API）：系统总线上的 BlueZ——适配器（未开启报 `10001`）、按所给服务过滤的 BLE 扫描（`SetDiscoveryFilter`）、听到即上报的设备（按 `interval` 批量，除非 `allowDuplicatesKey` 否则每个只报一次）、提供某服务的已连接设备，以及在 BlueZ 解析完设备服务后才答复的连接（遵守 `timeout`，已连接的报 `-1`）。服务、特征、读（值单独送达）、有/无应答的写、通知、MTU（BlueZ 5.62 起）与其他平台一致，错误码用通用小游戏平台的。设备以地址标识。按服务扫描时只上报提供其一的设备，无论还有谁在扫描。已连接设备的 RSSI（BlueZ 不向应用提供）、配对与设置 MTU（参考文档写明仅 Android）、外围设备模式均拒绝。只在适配器打开期间镜像 BlueZ 的对象。
 - **iBeacon**（`startBeaconDiscovery`、`getBeacons`、`onBeaconUpdate`、`onBeaconServiceChange`）：从 BlueZ 报告的 BLE 广播里听——类型 2、长度 21 的 Apple 段——用独立的扫描（自己的 D-Bus 连接，内容的设备扫描与信标扫描互不收窄、互不停止），只认所请求的 proximity UUID（128 位，否则 `11006`）。每秒上报一次范围内的信标（与 CoreLocation 测距一致），10 秒没听到的移除；距离与远近按 Android SDK 的公式由 RSSI 与发射功率估算。蓝牙关闭报 `11001`。再次开始即改测新的 UUID。
 - **运动传感器**（`startAccelerometer`、`startGyroscope`、`startCompass`、`startDeviceMotionListening` 及对应的停止）：内核经 IIO 给出的加速度计、陀螺仪、磁力计，经 udev 找到，换算到屏幕坐标系（x 向右、y 沿屏幕向上、z 指出屏幕）——优先用 udev 的 `ACCEL_MOUNT_MATRIX`（硬件数据库对该机型的校正），否则用内核的 `mount_matrix`；二合一设备取屏幕一侧的加速度计而非底座的。按请求的间隔（`game` 20 毫秒、`ui` 60 毫秒、`normal` 200 毫秒）在独立线程读取。罗盘航向与设备方向由重力和磁场按 Android `SensorManager` 的同一算法求出，两个平台对同一姿态给出相同结果；IIO 不提供磁力计的校准信息，罗盘精度报 `unknown`。设备没有的传感器以缺什么为原因拒绝，不编造数据。Host Kit 因此链接 libudev。
-- **权限**（`authorize` 及需要 scope 的调用）：桌面能决定的 scope。`scope.userLocation`（以及 `scope.userLocationBackground`——桌面没有另一种）由 GeoClue 决定——App 第一次请求时由其 agent（沙箱内由门户）询问玩家——并记录为已决定；没有 GeoClue 就无人可问，scope 保持未决定。`scope.writePhotosAlbum` 直接授予：玩家的图片目录属于玩家与 App，桌面不对它设关卡。其他 scope 一律拒绝（`auth deny`）：要自己决定 scope 的 App（登录、自己的授权弹窗）整个回答权限服务。
+- **权限**（`authorize` 及需要 scope 的调用）：桌面能决定的 scope。`scope.userLocation`（以及 `scope.userLocationBackground`——桌面没有另一种）由 GeoClue 决定——App 第一次请求时由其 agent（沙箱内由门户）询问玩家——并记录为已决定；没有 GeoClue 就无人可问，scope 保持未决定。`scope.writePhotosAlbum` 直接授予：玩家的图片目录属于玩家与 App，桌面不对它设关卡；Host Kit 负责录音时（见下）`scope.record` 同样直接授予。其他 scope 一律拒绝（`auth deny`）：要自己决定 scope 的 App（登录、自己的授权弹窗）整个回答权限服务。
+- **录音**（`getRecorderManager`，需 `migo::qt6-media`）：桌面的默认输入——GStreamer 找到的 PipeWire、PulseAudio 或 ALSA——转换为内容所要的 `sampleRate` 与 `numberOfChannels`。把同一个 `MigoQtMedia` 作为会话的麦克风交给它：
+
+  ```cpp
+  const auto media = std::make_shared<MigoQtMedia>();
+  options.videos = media;
+  options.microphone = media;
+  ```
+
+  录音文件与 Android、Apple 平台相同：`PCM` 为裸样本，`wav` 带文件头，`aac`（以及没有系统能编码的 `mp3`）为 AAC——不要帧时写 MPEG-4 文件（`.m4a`），要帧时写 ADTS 流（`.aac`），帧就是流的字节。`onFrameRecorded` 边录边交出 `frameSize` KB 的帧，最后一帧带标记；录音在 `duration` 结束的那个样本处结束，暂停不留空隙。输入开始录音时触发 `onStart`，无法录音时 `onError` 说明原因（`invalid audio parameters`，或声音服务器给的原因）。桌面只有一个输入、没有打断：`audioSource` 不区分输入，`onInterruptionBegin` 不会触发。AAC 需要一个 GStreamer AAC 编码器：libav 的（`gstreamer1.0-libav`），或 FDK、VisualOn、FAAC 的。没有 `migo::qt6-media` 时，录音由 App 自己答复（`MIGO_HOST_SERVICE_RECORDER`）。
 
 `MigoManagedSession` 读取内核给出的手柄（`getGamepads`、`onGamepadConnected`、`onGamepadDisconnected`、`vibrationActuator`）：udev 标为摇杆的 evdev 设备，随插随拔。遵循内核手柄布局（`Documentation/input/gamepad.rst`）的手柄映射到 W3C 标准布局——17 个按键、4 个轴，模拟扳机与十字键的 hat 按驱动报告的位置取——不遵循的原样传递（按键与轴按编码顺序，`mapping` 为空）。驱动支持 `FF_RUMBLE` 且可写打开的手柄有双马达震动。采样时间戳用 `CLOCK_MONOTONIC`，与 X 服务器给视图输入盖的时钟一致。读取手柄需要能访问其 `/dev/input/event*` 节点：桌面会话会授予登录用户（udev 的 `uaccess`），Flatpak 内需要 `--device=all`。
 

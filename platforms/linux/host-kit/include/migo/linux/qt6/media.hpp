@@ -13,7 +13,7 @@ class QWidget;
 
 namespace migo::linux_host::qt6 {
 
-/// Videos for the Host Kit's services, described and played by GStreamer:
+/// Videos and the microphone for the Host Kit's services, through GStreamer:
 /// chooseMedia describes a picked video -- how long it plays, its size as
 /// shown, its first frame as the cover -- previewMedia plays one, with its
 /// sound, in the viewer, and createVideo's players play over the game. The
@@ -40,6 +40,17 @@ namespace migo::linux_host::qt6 {
 /// a player under the game (underGameView) -- the other SDKs do not show one
 /// either. A network poster is read up to 8 MiB, as the Apple SDK reads one.
 ///
+/// The microphone (`recorder`) is the desktop's default input -- PipeWire's,
+/// PulseAudio's or ALSA's, as GStreamer finds it -- converted to the rate and
+/// channels content asks for, written as the Android and Apple SDKs write a
+/// recording: PCM raw, wav behind its header, and AAC ("mp3" too: no system
+/// encodes MP3) in an MPEG-4 file (.m4a), or as an ADTS stream (.aac) when
+/// content asks for frames, which are then its bytes. AAC needs one of
+/// GStreamer's AAC encoders: libav's (gstreamer1.0-libav), or FDK's, VisualOn's
+/// or FAAC's. A recording ends on the sample its duration ends on; one paused
+/// leaves no gap in its file. An App gives it as
+/// `MigoManagedSession::Options::microphone`, or to `MigoQtBuiltInHostServices`.
+///
 /// Its own component, `migo::qt6-media`, since it links GStreamer, which the
 /// Host Kit's core does not: an App that links it makes one -- shared, as
 /// describing a video outlasts a call whose Session goes -- and gives it as
@@ -52,7 +63,7 @@ namespace migo::linux_host::qt6 {
 ///
 /// A video turned as it was recorded is shown upright, as its tags say; a
 /// stream of non-square pixels at the size it is meant to be seen at.
-class MigoQtMedia final : public MigoQtVideoSupport {
+class MigoQtMedia final : public MigoQtVideoSupport, public MigoQtMicrophone {
 public:
     /// Starts GStreamer, if no one has.
     MigoQtMedia();
@@ -69,6 +80,9 @@ public:
     /// None without GStreamer.
     [[nodiscard]] std::unique_ptr<MigoQtVideoPlayers> players(QWidget &stage,
                                                               MigoQtVideoPlayers::Post post) const override;
+    /// None without GStreamer.
+    [[nodiscard]] std::unique_ptr<MigoQtRecorder> recorder(MigoQtRecorder::Post post, MigoQtRecorder::PostFrame frame,
+                                                           const QString &staging) const override;
 
 private:
     bool started_ = false;

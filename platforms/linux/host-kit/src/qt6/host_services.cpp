@@ -77,6 +77,19 @@ MigoResult MigoQtHostServiceChannel::postSensorSample(const MigoSensorSample &sa
     return migo_session_post_sensor_sample(session_, &sample);
 }
 
+MigoResult MigoQtHostServiceChannel::postRecorderFrame(std::uint32_t recording_id, const QByteArray &bytes, bool last) {
+    MigoRecorderFrame frame{};
+    frame.struct_size = static_cast<std::uint32_t>(sizeof(frame));
+    frame.abi_version = MIGO_ABI_VERSION_1;
+    frame.recording_id = recording_id;
+    frame.is_last_frame = last ? 1U : 0U;
+    frame.data = reinterpret_cast<const std::uint8_t *>(bytes.constData());
+    frame.length = static_cast<std::uint32_t>(bytes.size());
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (session_ == nullptr) return MIGO_OK;
+    return migo_session_post_recorder_frame(session_, &frame);
+}
+
 MigoResult MigoQtHostServiceChannel::postBleCharacteristicValue(const QString &device, const QString &service,
                                                                const QString &characteristic, const QByteArray &value) {
     const QByteArray device_id = device.toUtf8();
@@ -642,6 +655,13 @@ MigoQtBuiltInHostServices::MigoQtBuiltInHostServices(MigoQtX11SurfaceView &view,
                                                      std::shared_ptr<MigoQtHostServiceChannel> channel,
                                                      std::shared_ptr<const MigoQtVideoSupport> videos,
                                                      QObject *parent)
+    : MigoQtBuiltInHostServices(view, std::move(channel), std::move(videos), nullptr, parent) {}
+
+MigoQtBuiltInHostServices::MigoQtBuiltInHostServices(MigoQtX11SurfaceView &view,
+                                                     std::shared_ptr<MigoQtHostServiceChannel> channel,
+                                                     std::shared_ptr<const MigoQtVideoSupport> videos,
+                                                     std::shared_ptr<const MigoQtMicrophone> microphone,
+                                                     QObject *parent)
     : QObject(parent),
       surface_(&view),
       channel_(channel),
@@ -653,6 +673,16 @@ MigoQtBuiltInHostServices::MigoQtBuiltInHostServices(MigoQtX11SurfaceView &view,
         videos_ = videos->players(view, [channel = channel_](std::uint32_t event, const QJsonObject &payload) {
             (void)channel->post(MIGO_HOST_SERVICE_VIDEO, event, payload);
         });
+    }
+    if (microphone != nullptr) {
+        recorder_ = microphone->recorder(
+            [channel = channel_](std::uint32_t event, const QJsonObject &payload) {
+                (void)channel->post(MIGO_HOST_SERVICE_RECORDER, event, payload);
+            },
+            [channel = channel_](std::uint32_t recording, const QByteArray &bytes, bool last) {
+                (void)channel->postRecorderFrame(recording, bytes, last);
+            },
+            Images::Places::system().staging);
     }
     // Inside a sandbox the portal asks GeoClue for the App, and stands its
     // dialog over the game's window.
@@ -692,6 +722,8 @@ std::uint64_t MigoQtBuiltInHostServices::services() const noexcept {
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_BLUETOOTH);
     // createVideo's players, where the App's video support makes them.
     if (videos_ != nullptr) builtIn |= hostServiceBit(MIGO_HOST_SERVICE_VIDEO);
+    // getRecorderManager's recorder, where the App gives a microphone.
+    if (recorder_ != nullptr) builtIn |= hostServiceBit(MIGO_HOST_SERVICE_RECORDER);
     return builtIn;
 }
 
@@ -734,6 +766,10 @@ void MigoQtBuiltInHostServices::call(MigoHostService service, std::uint32_t meth
             } else {
                 bluetooth_->call(method, request, std::move(reply));
             }
+            return;
+        case MIGO_HOST_SERVICE_RECORDER:
+            // Every method a command: there is no call to answer.
+            if (recorder_ != nullptr) recorder_->call(method, request);
             return;
         case MIGO_HOST_SERVICE_VIDEO:
             if (videos_ != nullptr) {
@@ -870,6 +906,15 @@ void MigoQtBuiltInHostServices::permission(std::uint32_t method, const QJsonObje
         case MIGO_SCOPE_BLUETOOTH:
             (void)channel_->setScopeState(scope, MIGO_SCOPE_STATE_GRANTED);
             (void)reply.succeed();
+            return;
+        case MIGO_SCOPE_RECORD:
+            // Where the Host Kit records: a desktop does not gate the microphone.
+            if (recorder_ != nullptr) {
+                (void)channel_->setScopeState(scope, MIGO_SCOPE_STATE_GRANTED);
+                (void)reply.succeed();
+            } else {
+                (void)reply.fail(QStringLiteral("auth deny"));
+            }
             return;
         default:
             (void)reply.fail(QStringLiteral("auth deny"));

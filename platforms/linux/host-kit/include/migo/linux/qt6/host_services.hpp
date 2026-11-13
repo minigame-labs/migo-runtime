@@ -72,6 +72,11 @@ public:
     MigoResult postBleCharacteristicValue(const QString &device, const QString &service, const QString &characteristic,
                                           const QByteArray &value);
 
+    /// Delivers one frame of the recording `recording_id`
+    /// (`migo_session_post_recorder_frame`); `last` flags the recording's last.
+    /// Any thread; MIGO_OK once closed.
+    MigoResult postRecorderFrame(std::uint32_t recording_id, const QByteArray &bytes, bool last);
+
 private:
     explicit MigoQtHostServiceChannel(MigoSession *session) noexcept : session_(session) {}
 
@@ -155,6 +160,44 @@ public:
     /// The game paused (false) or running again (true): its players hold still
     /// while it is paused, and the ones that were playing play on when it runs.
     virtual void setRunning(bool running) = 0;
+};
+
+/// getRecorderManager's microphone: the recorder service
+/// (MIGO_HOST_SERVICE_RECORDER), which an App's microphone support makes
+/// (`MigoQtMicrophone::recorder`) and the built-in services answer with.
+///
+/// One recording at a time, as the service's requests ask for it -- every one a
+/// command -- reported as its events: a recording's frames, when content asked
+/// for them, before its STOP, whose file is handed to the Session as the event
+/// is posted. Going, it takes the recording under way with it, unreported.
+/// GUI thread.
+class MigoQtRecorder {
+public:
+    /// One of the service's events, its object naming the recording ("recordingId").
+    using Post = std::function<void(std::uint32_t event, const QJsonObject &payload)>;
+    /// One frame of a recording; `last` flags its last.
+    using PostFrame = std::function<void(std::uint32_t recording_id, const QByteArray &bytes, bool last)>;
+
+    virtual ~MigoQtRecorder() = default;
+
+    /// One request of the service, carried out.
+    virtual void call(std::uint32_t method, const QJsonObject &request) = 0;
+};
+
+/// The microphone, for getRecorderManager. The Host Kit's core links no media
+/// framework: the optional `migo::qt6-media` component is one (`MigoQtMedia`),
+/// and without one the recorder is the App's to answer.
+class MigoQtMicrophone {
+public:
+    virtual ~MigoQtMicrophone() = default;
+
+    /// The recorder, its events posted through `post` and its frames through
+    /// `frame`, each on the GUI thread; files staged in `staging`, the App's
+    /// cache, until the Session takes them. None where this support records
+    /// nothing, which leaves the recorder to the App. GUI thread.
+    [[nodiscard]] virtual std::unique_ptr<MigoQtRecorder> recorder(MigoQtRecorder::Post post,
+                                                                   MigoQtRecorder::PostFrame frame,
+                                                                   const QString &staging) const = 0;
 };
 
 /// Videos, for the image service and createVideo. The Host Kit's core links no
@@ -248,6 +291,12 @@ public:
 /// service is then answered, and otherwise left to the App. They hold still
 /// while the game is paused (`setRunning`).
 ///
+/// The microphone: getRecorderManager's recorder, where the App gives a
+/// microphone (`MigoQtMicrophone`; `MigoQtMedia` is one) -- the recorder
+/// service is then answered, and `scope.record` granted: a desktop does not
+/// gate an App's microphone (a sandbox's App is given the sound server when it
+/// is installed). Without one both are the App's.
+///
 /// Location: GeoClue's, on the system bus outside a sandbox and through the
 /// desktop portal's Location inside one. getLocation asks it at street level,
 /// or exactly with `isHighAccuracy`, and waits ten seconds for a position --
@@ -275,7 +324,8 @@ public:
 /// or the portal asking the player the first time the App asks -- and is
 /// recorded as decided; `scope.writePhotosAlbum` and `scope.bluetooth` are
 /// granted, the player's Pictures folder and Bluetooth being theirs and the
-/// App's, which a desktop does not gate.
+/// App's, which a desktop does not gate; so is `scope.record` where the Host
+/// Kit records (a microphone given).
 /// Any other scope is the App's to decide, and refused ("auth deny") without
 /// an answer of its own: an App that decides scopes answers the permission
 /// service itself.
@@ -302,6 +352,11 @@ public:
     /// videos. Shared, since describing one outlasts a call whose Session goes.
     MigoQtBuiltInHostServices(MigoQtX11SurfaceView &view, std::shared_ptr<MigoQtHostServiceChannel> channel,
                               std::shared_ptr<const MigoQtVideoSupport> videos, QObject *parent = nullptr);
+    /// The same, with the microphone `microphone` records from; null leaves
+    /// the recorder to the App.
+    MigoQtBuiltInHostServices(MigoQtX11SurfaceView &view, std::shared_ptr<MigoQtHostServiceChannel> channel,
+                              std::shared_ptr<const MigoQtVideoSupport> videos,
+                              std::shared_ptr<const MigoQtMicrophone> microphone, QObject *parent = nullptr);
     ~MigoQtBuiltInHostServices() override;
 
     [[nodiscard]] std::uint64_t services() const noexcept override;
@@ -346,6 +401,8 @@ private:
     std::unique_ptr<Beacons> beacons_;
     /// createVideo's players, where the App's video support makes them.
     std::unique_ptr<MigoQtVideoPlayers> videos_;
+    /// getRecorderManager's recorder, where the App gives a microphone.
+    std::unique_ptr<MigoQtRecorder> recorder_;
 };
 
 }  // namespace migo::linux_host::qt6
