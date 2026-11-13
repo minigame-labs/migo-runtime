@@ -625,6 +625,12 @@ private:
     QString reported_orientation_;
 };
 
+// ---- videos -------------------------------------------------------------------------------------
+
+std::unique_ptr<MigoQtVideoPlayers> MigoQtVideoSupport::players(QWidget &, MigoQtVideoPlayers::Post) const {
+    return nullptr;
+}
+
 // ---- the built-in services --------------------------------------------------------------------
 
 MigoQtBuiltInHostServices::MigoQtBuiltInHostServices(MigoQtX11SurfaceView &view,
@@ -642,7 +648,12 @@ MigoQtBuiltInHostServices::MigoQtBuiltInHostServices(MigoQtX11SurfaceView &view,
       interaction_(std::make_unique<Interaction>(view)),
       window_(std::make_unique<WindowService>(view, std::move(channel))),
       backlight_(std::make_unique<Backlight>(QStringLiteral("/sys/class/backlight"), QDBusConnection::systemBus())),
-      images_(std::make_unique<Images>(view, Images::Places::system(), std::move(videos))) {
+      images_(std::make_unique<Images>(view, Images::Places::system(), videos)) {
+    if (videos != nullptr) {
+        videos_ = videos->players(view, [channel = channel_](std::uint32_t event, const QJsonObject &payload) {
+            (void)channel->post(MIGO_HOST_SERVICE_VIDEO, event, payload);
+        });
+    }
     // Inside a sandbox the portal asks GeoClue for the App, and stands its
     // dialog over the game's window.
     const bool sandboxed = insideSandbox();
@@ -679,6 +690,8 @@ std::uint64_t MigoQtBuiltInHostServices::services() const noexcept {
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_PERMISSION);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_MOTION);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_BLUETOOTH);
+    // createVideo's players, where the App's video support makes them.
+    if (videos_ != nullptr) builtIn |= hostServiceBit(MIGO_HOST_SERVICE_VIDEO);
     return builtIn;
 }
 
@@ -720,6 +733,13 @@ void MigoQtBuiltInHostServices::call(MigoHostService service, std::uint32_t meth
                 beacons_->call(method, request, std::move(reply));
             } else {
                 bluetooth_->call(method, request, std::move(reply));
+            }
+            return;
+        case MIGO_HOST_SERVICE_VIDEO:
+            if (videos_ != nullptr) {
+                videos_->call(method, request, std::move(reply));
+            } else {
+                (void)reply.fail(QStringLiteral("not supported"));
             }
             return;
         case MIGO_HOST_SERVICE_CLIPBOARD:
@@ -897,5 +917,9 @@ void MigoQtBuiltInHostServices::motion(std::uint32_t method, const QJsonObject &
 }
 
 QString MigoQtBuiltInHostServices::indicatorTitle() const { return interaction_->indicatorTitle(); }
+
+void MigoQtBuiltInHostServices::setRunning(bool running) {
+    if (videos_ != nullptr) videos_->setRunning(running);
+}
 
 }  // namespace migo::linux_host::qt6

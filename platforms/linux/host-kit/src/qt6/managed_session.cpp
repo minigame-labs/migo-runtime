@@ -291,6 +291,8 @@ public:
         if (running != reported_running) {
             reported_running = running;
             (void)migo_session_set_lifecycle(session, running ? MIGO_LIFECYCLE_RUNNING : MIGO_LIFECYCLE_PAUSED);
+            // What plays over the game holds still with it.
+            if (built_in != nullptr) built_in->setRunning(running);
         }
     }
 

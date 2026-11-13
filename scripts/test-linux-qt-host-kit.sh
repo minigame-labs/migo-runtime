@@ -90,9 +90,11 @@ if rg -n \
 fi
 # The game's frames never reach the CPU, and nothing paints over the game on it.
 # The one exception is the media component (migo::qt6-media): it paints the
-# videos it decodes -- GStreamer's frames, never the game's -- in a widget of
-# its own, in the preview viewer.
-if rg -n 'QPainter|toImage\(' --glob '!media.cpp' --glob '!media.hpp' "${PRODUCTION_PATHS[@]}"; then
+# videos it decodes -- GStreamer's frames, never the game's -- in widgets of
+# its own: the preview viewer's player, and createVideo's players, each a
+# window of its own over the game, with their controls.
+if rg -n 'QPainter|toImage\(' --glob '!media.cpp' --glob '!media.hpp' \
+    --glob '!media_video_controls.*' --glob '!media_videos.*' "${PRODUCTION_PATHS[@]}"; then
     fail "CPU painting or readback escaped into the X11 adapter or the services over the game"
 fi
 if rg -n 'QMainWindow|QWidget[[:space:]]*\([[:space:]]*nullptr|new[[:space:]]+QWindow|setParent[[:space:]]*\([[:space:]]*nullptr|setWindowFlags?\(|Qt::Window\b' \

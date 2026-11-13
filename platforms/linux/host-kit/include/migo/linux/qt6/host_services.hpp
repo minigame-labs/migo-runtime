@@ -13,6 +13,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -129,9 +130,37 @@ public:
                       MigoQtHostServiceReply reply) = 0;
 };
 
-/// Videos, for the image service. The Host Kit's core links no media framework:
-/// the optional `migo::qt6-media` component is one (`MigoQtMedia`), and
-/// without one chooseMedia and previewMedia refuse videos.
+/// createVideo's players for one game: the video service
+/// (MIGO_HOST_SERVICE_VIDEO), which an App's video support makes
+/// (`MigoQtVideoSupport::players`) and the built-in services answer with.
+///
+/// Each player stands where content put it over the game -- x, y, width x
+/// height in content's coordinates, the logical pixels of the game's view from
+/// its top left -- and is cut to the game's view; one full screen fills the
+/// view. A call is answered once what it asked has happened, as the
+/// reference's promises settle, and what a player does is posted as the
+/// service's events. Going, it takes its players, and the calls still
+/// unanswered fail ("video destroyed"). GUI thread.
+class MigoQtVideoPlayers {
+public:
+    /// One of the service's events, its object naming the player ("videoId").
+    using Post = std::function<void(std::uint32_t event, const QJsonObject &payload)>;
+
+    virtual ~MigoQtVideoPlayers() = default;
+
+    /// One request of the service: a command carried out, a call answered once
+    /// done -- through `reply`, now or later.
+    virtual void call(std::uint32_t method, const QJsonObject &request, MigoQtHostServiceReply reply) = 0;
+
+    /// The game paused (false) or running again (true): its players hold still
+    /// while it is paused, and the ones that were playing play on when it runs.
+    virtual void setRunning(bool running) = 0;
+};
+
+/// Videos, for the image service and createVideo. The Host Kit's core links no
+/// media framework: the optional `migo::qt6-media` component is one
+/// (`MigoQtMedia`), and without one chooseMedia and previewMedia refuse videos,
+/// and createVideo is the App's to answer.
 class MigoQtVideoSupport {
 public:
     virtual ~MigoQtVideoSupport() = default;
@@ -155,6 +184,11 @@ public:
     /// through it; `poster` stands in its place until it first plays, its first
     /// frame when null. It stops when it goes. GUI thread.
     [[nodiscard]] virtual QWidget *player(const QString &source, const QImage &poster, QWidget &parent) const = 0;
+
+    /// createVideo's players over `stage` -- the game's view, which they are
+    /// cut to and go with -- each event posted through `post`; null where this
+    /// support has none, which leaves createVideo to the App. GUI thread.
+    [[nodiscard]] virtual std::unique_ptr<MigoQtVideoPlayers> players(QWidget &stage, MigoQtVideoPlayers::Post post) const;
 };
 
 /// The services Qt already offers an App, answered with Qt's own: the
@@ -208,6 +242,11 @@ public:
 /// and cover -- and previewed, played in the viewer, where the App gives the
 /// support to (`MigoQtVideoSupport`), and refused where it does not. The camera
 /// is refused.
+///
+/// Videos over the game: createVideo's players, where the App's video support
+/// makes them (`MigoQtVideoSupport::players`; `MigoQtMedia` does) -- the video
+/// service is then answered, and otherwise left to the App. They hold still
+/// while the game is paused (`setRunning`).
 ///
 /// Location: GeoClue's, on the system bus outside a sandbox and through the
 /// desktop portal's Location inside one. getLocation asks it at street level,
@@ -273,6 +312,12 @@ public:
     /// sees: its title, or empty when none is.
     [[nodiscard]] QString indicatorTitle() const;
 
+    /// The game paused (false) or running again (true), as the App reports it
+    /// to the Session (`migo_session_set_lifecycle`): what plays over the game
+    /// holds still while it is paused. `MigoManagedSession` reports it; an App
+    /// that owns its Session does.
+    void setRunning(bool running);
+
 Q_SIGNALS:
     /// Content's setEnableDebug: the debugging aids on or off. Content is told
     /// the new state by the Session once its owner reports it
@@ -299,6 +344,8 @@ private:
     std::unique_ptr<Bluetooth> bluetooth_;
     /// Made the first time content looks for beacons, with a connection of its own.
     std::unique_ptr<Beacons> beacons_;
+    /// createVideo's players, where the App's video support makes them.
+    std::unique_ptr<MigoQtVideoPlayers> videos_;
 };
 
 }  // namespace migo::linux_host::qt6

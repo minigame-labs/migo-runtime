@@ -617,7 +617,8 @@ migo_session_set_host_callbacks(MigoSession *session, const MigoHostCallbacks *c
     if ((callbacks->on_host_service_call != nullptr) != (callbacks->host_services != 0)) {
         return MIGO_ERROR_INVALID_ARGUMENT;
     }
-    if ((callbacks->host_services >> (MIGO_HOST_SERVICE_UPDATE + 1)) != 0) return MIGO_ERROR_INVALID_ARGUMENT;
+    // The header's last service: the library's MIGO_HOST_SERVICES_KNOWN.
+    if ((callbacks->host_services >> (MIGO_HOST_SERVICE_BLE_PERIPHERAL + 1)) != 0) return MIGO_ERROR_INVALID_ARGUMENT;
     if (callbacks->on_host_service_call != nullptr && callbacks->dispatch == nullptr) {
         return MIGO_ERROR_INVALID_ARGUMENT;
     }

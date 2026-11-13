@@ -57,11 +57,19 @@ What is claimed:
   App-owned `SurfaceHost`. They are separate targets, so an App that owns its own
   Session never links a type that creates and destroys Sessions.
 - `migo::qt6-media` (optional: `-DMIGO_LINUX_HOST_KIT_BUILD_QT6_MEDIA=ON`) is
-  videos for the image service, through GStreamer: `chooseMedia` picks videos,
-  described by their length, size as shown and cover, and `previewMedia` plays
-  them. An App links it and gives a `MigoQtMedia` to the Session
-  (`MigoManagedSession::Options::videos`); without it, videos are refused and
-  nothing links GStreamer.
+  videos, through GStreamer: `chooseMedia` picks videos, described by their
+  length, size as shown and cover; `previewMedia` plays them; and `createVideo`'s
+  players play over the game -- each an X window inside the game's view, which
+  the X server keeps above the game's frames and which moves, hides and goes
+  with it, so no window manager is involved. As the Android and Apple SDKs' do,
+  a player shows its poster until it plays, fits its picture as `objectFit`
+  says, holds still while the game is paused, and has the controls content asks
+  for: the play button in the middle, the bar a click shows (play or pause, the
+  time, a progress bar, full screen -- the game's whole view), the progress
+  line, the double click and the sideways drag; with none of them, a click on it
+  is the game's. An App links it and gives a `MigoQtMedia` to the Session
+  (`MigoManagedSession::Options::videos`); without it, videos are refused,
+  `createVideo` is the App's to answer, and nothing links GStreamer.
 - Qt Wayland, Qt Quick and GTK 4 are not claimed, and the last two are blocked
   on the same thing -- see "Render-path limits".
 

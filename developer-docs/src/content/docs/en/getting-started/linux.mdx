@@ -227,7 +227,7 @@ desktop already offers with Qt's own:
   download -- is downloaded over Qt's network, with no referrer, into a file removed as it is made. Another preview
   replaces the one shown. Videos are the optional `migo::qt6-media` component's (below): without it, `chooseMedia` and
   `previewMedia` refuse them. The camera is refused.
-- **Videos** (`chooseMedia`, `previewMedia`), with `migo::qt6-media`: GStreamer -- the engine's decoder on Linux too --
+- **Videos** (`chooseMedia`, `previewMedia`, `createVideo`), with `migo::qt6-media`: GStreamer -- the engine's decoder on Linux too --
   describes and plays them. It is its own component because it links GStreamer, which the rest of the Host Kit does
   not: configure the Host Kit with `-DMIGO_LINUX_HOST_KIT_BUILD_QT6_MEDIA=ON` (it needs `libgstreamer1.0-dev` and
   `libgstreamer-plugins-base1.0-dev`), link `migo::qt6-media`, and give the Session a `MigoQtMedia`:
@@ -243,8 +243,24 @@ desktop already offers with Qt's own:
   JPEG); one GStreamer cannot read is answered with zeros and no cover. `previewMedia` plays a video in the viewer,
   with its sound: its `poster` until it first plays (its first frame without one), a click or the button to play and
   pause, and a slider to move through it. A file is played through the handle the viewer holds, so the engine may
-  take back what it lent; an http(s) video is played as it streams. Which videos play is GStreamer's plugins':
-  `gstreamer1.0-plugins-good` for MP4 and WebM, `gstreamer1.0-libav` for H.264 and most other codecs.
+  take back what it lent; an http(s) video is played as it streams. `createVideo`'s players play over the game, each
+  where content put it (`x`, `y`, `width`, `height` in the logical pixels its touches arrive in) and cut to the game's
+  view: an X window inside the view's, which the X server keeps above the game's frames and which moves, hides and
+  goes with it -- no window manager is involved. As on Android and the Apple platforms, a player shows its `poster`
+  until it plays, fits its picture as `objectFit` says on its `backgroundColor`, answers each call once done (a play
+  once it plays, a seek once there), reports `onPlay`, `onPause`, `onEnded`, `onTimeUpdate` (four times a second),
+  `onWaiting`, `onProgress` and `onError`, and holds still while the game is paused -- its window minimized -- playing
+  on when it runs again. Its controls are the ones content asks for: the play button in the middle while it is not
+  playing (`showCenterPlayBtn`); the bar a click shows -- play or pause, the time, a progress bar
+  (`showProgressInControlMode`), the length, full screen -- which hides after three seconds of playing (`controls`);
+  the thin progress line while the bar is hidden (`showProgress`); a double click that plays or pauses
+  (`enablePlayGesture`); and a sideways drag that seeks (`enableProgressGesture`). The buttons carry the names
+  assistive technology reads -- `play`, `play or pause`, `full screen` -- as on the other platforms; with none of the
+  controls asked for, a click on the video is the game's. Full screen fills the game's view; a desktop's screen does
+  not turn, so a `direction` is not applied. The window is opaque: an alpha in `backgroundColor` is drawn over black,
+  and `underGameView` is not shown under the game (nor is it on the other platforms). Which videos play is
+  GStreamer's plugins': `gstreamer1.0-plugins-good` for MP4 and WebM, `gstreamer1.0-libav` for H.264 and most other
+  codecs. Without `migo::qt6-media`, `createVideo` is the App's to answer (its own services, `MIGO_HOST_SERVICE_VIDEO`).
 - **Location** (`getLocation`, `getFuzzyLocation`): GeoClue's position, asked of GeoClue on the system bus outside a
   sandbox and of the XDG desktop portal's `Location` inside one (Flatpak, Snap), which asks GeoClue for the App.
   `getLocation` asks at street level, or exactly with `isHighAccuracy`, and waits ten seconds for a position --

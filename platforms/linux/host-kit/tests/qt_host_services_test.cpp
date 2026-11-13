@@ -24,6 +24,7 @@
 #include <QDBusMessage>
 #include <QDBusObjectPath>
 #include <QDeadlineTimer>
+#include <QElapsedTimer>
 #include <QDir>
 #include <QFile>
 #include <QDialog>
@@ -849,6 +850,67 @@ private:
     bool listening_ = false;
     QHash<QByteArray, QByteArray> files_;
     QHash<QTcpSocket *, QByteArray> requests_;
+};
+
+
+/// Asks the video service `method` as content does and waits for its answer: a
+/// failure "no answer" when none comes in `ms`.
+fake_migo::HostServiceAnswer askVideo(std::uint32_t method, std::uint64_t call_id, const QJsonObject &request,
+                                      int ms = 10000) {
+    fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_VIDEO, method, call_id, json(request));
+    (void)QTest::qWaitFor([call_id] { return answerTo(call_id).has_value(); }, ms);
+    if (std::optional<fake_migo::HostServiceAnswer> answer = answerTo(call_id)) return *answer;
+    fake_migo::HostServiceAnswer none;
+    none.status = MIGO_HOST_SERVICE_STATUS_FAIL;
+    none.message = "no answer";
+    return none;
+}
+
+/// One of the video service's commands, as content gives it.
+void tellVideo(std::uint32_t method, const QJsonObject &request) {
+    fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_VIDEO, method, 0, json(request));
+}
+
+/// The video service's events so far, `event` ones only, their objects.
+std::vector<QJsonObject> videoEvents(std::uint32_t event) {
+    std::vector<QJsonObject> said;
+    for (const auto &posted : fake_migo::host_service_events()) {
+        if (posted.service == MIGO_HOST_SERVICE_VIDEO && posted.event == event) said.push_back(parsed(posted.payload));
+    }
+    return said;
+}
+
+/// createVideo's player in `view`, or null.
+QWidget *videoPlayer(QWidget &view) { return view.findChild<QWidget *>(QStringLiteral("migoVideoPlayer")); }
+
+/// What the player shows at `at` -- its middle by default -- as `want`.
+bool videoShows(QWidget &view, const QColor &want, std::optional<QPoint> at = std::nullopt) {
+    QWidget *player = videoPlayer(view);
+    if (player == nullptr || !player->isVisible() || player->width() < 32 || player->height() < 32) return false;
+    const QImage shot = player->grab().toImage();
+    return looksLike(shot, at.value_or(QPoint(shot.width() / 2, shot.height() / 2)), want);
+}
+
+/// The probe clip's frame `i`, of ten at ten a second: flat (25 i, 255 - 25 i, 128).
+QColor clipFrame(int i) { return QColor(i * 25, 255 - i * 25, 128); }
+
+/// A Managed Session with videos, its view filling a 320 x 200 window.
+struct ManagedVideos {
+    std::unique_ptr<Managed> fixture;
+    QWidget *view = nullptr;
+
+    ManagedVideos() {
+        MigoManagedSession::Options options;
+        options.videos = std::make_shared<MigoQtMedia>();
+        fixture = std::make_unique<Managed>(options);
+        view = fixture->session.view();
+        if (view == nullptr) return;
+        auto *layout = new QVBoxLayout(&fixture->container);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->addWidget(view);
+        fixture->container.resize(320, 200);
+        fixture->container.show();
+    }
 };
 
 }  // namespace
@@ -2061,6 +2123,349 @@ private slots:
         QCOMPARE(fixture.session.close(), MIGO_OK);
         QVERIFY(fixture.session.isClosed());
         QTRY_VERIFY(mediaViewer() == nullptr);
+    }
+
+
+    /// createVideo's players, where the App gives video support: each where
+    /// content put it in the game's view, its first frame until it plays; a
+    /// call answered once done -- a play once it plays, a seek once there --
+    /// and what it does posted as the service's events, naming it. Full screen
+    /// fills the game's view; a destroyed player is gone, and a call for it
+    /// fails.
+    void a_video_plays_where_content_puts_it() {
+        ManagedVideos videos;
+        QVERIFY(videos.view != nullptr);
+        QWidget &view = *videos.view;
+        QTRY_COMPARE(view.size(), QSize(320, 200));
+        QVERIFY((fake_migo::installed_callbacks().host_services & hostServiceBit(MIGO_HOST_SERVICE_VIDEO)) != 0);
+        QTemporaryDir scratch;
+        const QString clip = scratch.filePath(QStringLiteral("clip.mp4"));
+        QVERIFY(QFile::copy(QStringLiteral(MIGO_TEST_PROBE_CLIP), clip));
+
+        tellVideo(MIGO_VIDEO_CREATE, {{"videoId", 7}, {"src", clip}, {"x", 10}, {"y", 20}, {"width", 128},
+                                      {"height", 96}, {"objectFit", "fill"}, {"controls", false},
+                                      {"showCenterPlayBtn", false}});
+        QTRY_VERIFY(videoPlayer(view) != nullptr);
+        QCOMPARE(videoPlayer(view)->geometry(), QRect(10, 20, 128, 96));
+        QTRY_VERIFY_WITH_TIMEOUT(videoShows(view, clipFrame(0)), 10000);
+        QVERIFY(videoEvents(MIGO_VIDEO_EVENT_PLAY).empty());
+
+        QCOMPARE(askVideo(MIGO_VIDEO_PLAY, 1, {{"videoId", 7}}).status, MIGO_HOST_SERVICE_STATUS_OK);
+        QCOMPARE(videoEvents(MIGO_VIDEO_EVENT_PLAY).size(), std::size_t{1});
+        QCOMPARE(videoEvents(MIGO_VIDEO_EVENT_PLAY).front(), QJsonObject({{"videoId", 7}}));
+        QTRY_COMPARE_WITH_TIMEOUT(videoEvents(MIGO_VIDEO_EVENT_ENDED).size(), std::size_t{1}, 10000);
+        QVERIFY(videoShows(view, clipFrame(9)));
+        const std::vector<QJsonObject> times = videoEvents(MIGO_VIDEO_EVENT_TIME_UPDATE);
+        QVERIFY(!times.empty());
+        for (const QJsonObject &time : times) {
+            const double duration = time.value(QStringLiteral("duration")).toDouble();
+            const double position = time.value(QStringLiteral("position")).toDouble();
+            QVERIFY2(duration > 0.9 && duration < 1.1 && position >= 0 && position <= duration,
+                     qPrintable(QJsonDocument(time).toJson(QJsonDocument::Compact)));
+        }
+        // A file is all there.
+        QVERIFY(!videoEvents(MIGO_VIDEO_EVENT_PROGRESS).empty());
+        QCOMPARE(videoEvents(MIGO_VIDEO_EVENT_PROGRESS).front().value(QStringLiteral("buffered")).toInt(), 100);
+
+        QCOMPARE(askVideo(MIGO_VIDEO_SEEK, 2, {{"videoId", 7}, {"time", 0.55}}).status, MIGO_HOST_SERVICE_STATUS_OK);
+        QTRY_VERIFY(videoShows(view, clipFrame(5)));
+        // Paused already: nothing to tell.
+        QCOMPARE(askVideo(MIGO_VIDEO_PAUSE, 3, {{"videoId", 7}}).status, MIGO_HOST_SERVICE_STATUS_OK);
+        QVERIFY(videoEvents(MIGO_VIDEO_EVENT_PAUSE).empty());
+        QCOMPARE(askVideo(MIGO_VIDEO_PLAY, 4, {{"videoId", 7}}).status, MIGO_HOST_SERVICE_STATUS_OK);
+        QCOMPARE(askVideo(MIGO_VIDEO_PAUSE, 5, {{"videoId", 7}}).status, MIGO_HOST_SERVICE_STATUS_OK);
+        QCOMPARE(videoEvents(MIGO_VIDEO_EVENT_PLAY).size(), std::size_t{2});
+        QCOMPARE(videoEvents(MIGO_VIDEO_EVENT_PAUSE).size(), std::size_t{1});
+        // Stopped: back at the start.
+        QCOMPARE(askVideo(MIGO_VIDEO_STOP, 6, {{"videoId", 7}}).status, MIGO_HOST_SERVICE_STATUS_OK);
+        QTRY_VERIFY(videoShows(view, clipFrame(0)));
+
+        QCOMPARE(askVideo(MIGO_VIDEO_REQUEST_FULL_SCREEN, 7, {{"videoId", 7}, {"direction", 90}}).status,
+                 MIGO_HOST_SERVICE_STATUS_OK);
+        QCOMPARE(videoPlayer(view)->geometry(), view.rect());
+        QCOMPARE(askVideo(MIGO_VIDEO_EXIT_FULL_SCREEN, 8, {{"videoId", 7}}).status, MIGO_HOST_SERVICE_STATUS_OK);
+        QCOMPARE(videoPlayer(view)->geometry(), QRect(10, 20, 128, 96));
+        tellVideo(MIGO_VIDEO_SET, {{"videoId", 7}, {"x", 40}, {"y", 30.4}});
+        QTRY_COMPARE(videoPlayer(view)->geometry(), QRect(40, 30, 128, 96));
+
+        tellVideo(MIGO_VIDEO_DESTROY, {{"videoId", 7}});
+        QTRY_VERIFY(videoPlayer(view) == nullptr);
+        QCOMPARE(askVideo(MIGO_VIDEO_PLAY, 9, {{"videoId", 7}}).message, std::string("video not found"));
+        QCOMPARE(videos.fixture->session.close(), MIGO_OK);
+    }
+
+    /// A player with no source refuses to play or seek; one whose source
+    /// cannot be played says so once, as an error, and refuses too; one that
+    /// goes fails the calls it has not answered.
+    void a_video_that_cannot_play_refuses() {
+        ManagedVideos videos;
+        QVERIFY(videos.view != nullptr);
+        QWidget &view = *videos.view;
+        QTRY_COMPARE(view.size(), QSize(320, 200));
+
+        tellVideo(MIGO_VIDEO_CREATE, {{"videoId", 1}});
+        QCOMPARE(askVideo(MIGO_VIDEO_PLAY, 1, {{"videoId", 1}}).message, std::string("no src"));
+        QCOMPARE(askVideo(MIGO_VIDEO_SEEK, 2, {{"videoId", 1}, {"time", 1}}).message, std::string("no src"));
+
+        tellVideo(MIGO_VIDEO_CREATE, {{"videoId", 2}, {"src", "ftp://example.com/clip.mp4"}});
+        QTRY_COMPARE(videoEvents(MIGO_VIDEO_EVENT_ERROR).size(), std::size_t{1});
+        QCOMPARE(videoEvents(MIGO_VIDEO_EVENT_ERROR).front(),
+                 QJsonObject({{"videoId", 2}, {"errMsg", "video:fail the src is not a file or a URL"}}));
+        QCOMPARE(askVideo(MIGO_VIDEO_PLAY, 3, {{"videoId", 2}}).message, std::string("the src is not a file or a URL"));
+
+        QTemporaryDir scratch;
+        tellVideo(MIGO_VIDEO_CREATE, {{"videoId", 3}, {"src", scratch.filePath(QStringLiteral("none.mp4"))}});
+        QTRY_COMPARE_WITH_TIMEOUT(videoEvents(MIGO_VIDEO_EVENT_ERROR).size(), std::size_t{2}, 10000);
+        QTest::qWait(200);
+        QCOMPARE(videoEvents(MIGO_VIDEO_EVENT_ERROR).size(), std::size_t{2});
+        QVERIFY(videoEvents(MIGO_VIDEO_EVENT_ERROR).back().value(QStringLiteral("errMsg")).toString().startsWith(
+            QStringLiteral("video:fail ")));
+        QCOMPARE(askVideo(MIGO_VIDEO_PLAY, 4, {{"videoId", 3}}).status, MIGO_HOST_SERVICE_STATUS_FAIL);
+
+        // A server that never answers: the play waits for a first frame that
+        // never comes, and fails as the player goes.
+        QTcpServer silent;
+        QVERIFY(silent.listen(QHostAddress::LocalHost, 0));
+        tellVideo(MIGO_VIDEO_CREATE,
+                  {{"videoId", 4}, {"src", QStringLiteral("http://127.0.0.1:%1/clip.mp4").arg(silent.serverPort())}});
+        fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_PLAY, 5,
+                                                                json({{"videoId", 4}}));
+        QTest::qWait(300);
+        QVERIFY(!answerTo(5).has_value());
+        tellVideo(MIGO_VIDEO_DESTROY, {{"videoId", 4}});
+        QTRY_VERIFY(answerTo(5).has_value());
+        QCOMPARE(answerTo(5)->message, std::string("video destroyed"));
+        QCOMPARE(videos.fixture->session.close(), MIGO_OK);
+    }
+
+
+    /// A player shows its poster -- a file's, or one downloaded -- until it
+    /// plays, then its picture fitted as objectFit says on its background: a
+    /// translucent one drawn over black, as nothing shows through it.
+    void a_video_shows_its_poster_and_fits_its_picture() {
+        ManagedVideos videos;
+        QVERIFY(videos.view != nullptr);
+        QWidget &view = *videos.view;
+        QTRY_COMPARE(view.size(), QSize(320, 200));
+        QTemporaryDir scratch;
+        const QString clip = scratch.filePath(QStringLiteral("clip.mp4"));
+        QVERIFY(QFile::copy(QStringLiteral(MIGO_TEST_PROBE_CLIP), clip));
+        QImage magenta(32, 32, QImage::Format_RGB32);
+        magenta.fill(QColor(255, 0, 255));
+        const QString poster = scratch.filePath(QStringLiteral("poster.png"));
+        QVERIFY(magenta.save(poster, "PNG"));
+
+        // Square, where the clip is 4:3: a band of background above and below it.
+        const QJsonObject plain{{"src", clip}, {"x", 0}, {"y", 0}, {"width", 160}, {"height", 160},
+                                {"controls", false}, {"showCenterPlayBtn", false}, {"showProgress", false},
+                                {"backgroundColor", "#0000FF"}};
+        QJsonObject first = plain;
+        first.insert(QStringLiteral("videoId"), 1);
+        first.insert(QStringLiteral("poster"), poster);
+        tellVideo(MIGO_VIDEO_CREATE, first);
+        QTRY_VERIFY_WITH_TIMEOUT(videoShows(view, QColor(255, 0, 255)), 10000);
+        // Paused on its first frame, it still shows the poster.
+        QTest::qWait(300);
+        QVERIFY(videoShows(view, QColor(255, 0, 255)));
+        QCOMPARE(askVideo(MIGO_VIDEO_PLAY, 1, {{"videoId", 1}}).status, MIGO_HOST_SERVICE_STATUS_OK);
+        QTRY_COMPARE_WITH_TIMEOUT(videoEvents(MIGO_VIDEO_EVENT_ENDED).size(), std::size_t{1}, 10000);
+        QVERIFY(videoShows(view, clipFrame(9)));
+        QVERIFY(videoShows(view, QColor(0, 0, 255), QPoint(80, 8)));
+        tellVideo(MIGO_VIDEO_SET, {{"videoId", 1}, {"objectFit", "cover"}});
+        QTRY_VERIFY(videoShows(view, clipFrame(9), QPoint(80, 8)));
+        tellVideo(MIGO_VIDEO_SET, {{"videoId", 1}, {"objectFit", "contain"}, {"backgroundColor", "#80FF0000"}});
+        QTRY_VERIFY(videoShows(view, QColor(128, 0, 0), QPoint(80, 8)));
+        tellVideo(MIGO_VIDEO_DESTROY, {{"videoId", 1}});
+        QTRY_VERIFY(videoPlayer(view) == nullptr);
+
+        // A poster from the network.
+        QByteArray png;
+        {
+            QBuffer buffer(&png);
+            QVERIFY(buffer.open(QIODevice::WriteOnly));
+            QVERIFY(magenta.save(&buffer, "PNG"));
+        }
+        LocalWeb web({{"/poster.png", png}});
+        QVERIFY(web.listening());
+        QJsonObject second = plain;
+        second.insert(QStringLiteral("videoId"), 2);
+        second.insert(QStringLiteral("poster"), web.url("/poster.png"));
+        tellVideo(MIGO_VIDEO_CREATE, second);
+        QTRY_VERIFY_WITH_TIMEOUT(videoShows(view, QColor(255, 0, 255)), 10000);
+        QCOMPARE(videos.fixture->session.close(), MIGO_OK);
+    }
+
+    /// A player plays at the rate content asks for: the one-second clip takes
+    /// twice as long at half speed.
+    void a_video_plays_at_the_rate_content_asks_for() {
+        ManagedVideos videos;
+        QVERIFY(videos.view != nullptr);
+        QTRY_COMPARE(videos.view->size(), QSize(320, 200));
+        QTemporaryDir scratch;
+        const QString clip = scratch.filePath(QStringLiteral("clip.mp4"));
+        QVERIFY(QFile::copy(QStringLiteral(MIGO_TEST_PROBE_CLIP), clip));
+        tellVideo(MIGO_VIDEO_CREATE, {{"videoId", 1}, {"src", clip}, {"playbackRate", 0.5}, {"controls", false}});
+        QCOMPARE(askVideo(MIGO_VIDEO_PLAY, 1, {{"videoId", 1}}).status, MIGO_HOST_SERVICE_STATUS_OK);
+        QElapsedTimer played;
+        played.start();
+        QTRY_COMPARE_WITH_TIMEOUT(videoEvents(MIGO_VIDEO_EVENT_ENDED).size(), std::size_t{1}, 10000);
+        QVERIFY2(played.elapsed() >= 1600, qPrintable(QString::number(played.elapsed())));
+
+        // Changed as it plays, from where it is: played again from the start
+        // at half speed, then at one and a half times its pace.
+        QCOMPARE(askVideo(MIGO_VIDEO_PLAY, 2, {{"videoId", 1}}).status, MIGO_HOST_SERVICE_STATUS_OK);
+        played.restart();
+        tellVideo(MIGO_VIDEO_SET, {{"videoId", 1}, {"playbackRate", 1.5}});
+        QTRY_COMPARE_WITH_TIMEOUT(videoEvents(MIGO_VIDEO_EVENT_ENDED).size(), std::size_t{2}, 10000);
+        QVERIFY2(played.elapsed() < 950, qPrintable(QString::number(played.elapsed())));
+        QCOMPARE(videos.fixture->session.close(), MIGO_OK);
+    }
+
+    /// While the game is paused -- its window minimized -- its players hold
+    /// still, and the one that was playing plays on when it runs again.
+    void videos_hold_still_while_the_game_is_paused() {
+        // The Session hears its window from the view's first attach.
+        if (!require_xcb("xcb-only test", __FILE__, __LINE__)) return;
+        ManagedVideos videos;
+        QVERIFY(videos.view != nullptr);
+        QWidget &view = *videos.view;
+        QTRY_COMPARE(view.size(), QSize(320, 200));
+        QTRY_COMPARE(fake_migo::calls().attach, 1);
+        QTemporaryDir scratch;
+        const QString clip = scratch.filePath(QStringLiteral("clip.mp4"));
+        QVERIFY(QFile::copy(QStringLiteral(MIGO_TEST_PROBE_CLIP), clip));
+        tellVideo(MIGO_VIDEO_CREATE, {{"videoId", 1}, {"src", clip}, {"loop", true}, {"controls", false}});
+        QCOMPARE(askVideo(MIGO_VIDEO_PLAY, 1, {{"videoId", 1}}).status, MIGO_HOST_SERVICE_STATUS_OK);
+        QTRY_VERIFY(!videoEvents(MIGO_VIDEO_EVENT_TIME_UPDATE).empty());
+
+        videos.fixture->container.setWindowState(Qt::WindowMinimized);
+        QTRY_VERIFY(std::find(fake_migo::window_reports().begin(), fake_migo::window_reports().end(), "paused") !=
+                    fake_migo::window_reports().end());
+        QTest::qWait(100);
+        const std::size_t heard = videoEvents(MIGO_VIDEO_EVENT_TIME_UPDATE).size();
+        QTest::qWait(1000);
+        QCOMPARE(videoEvents(MIGO_VIDEO_EVENT_TIME_UPDATE).size(), heard);
+        // Held, not paused: content asked for no pause.
+        QVERIFY(videoEvents(MIGO_VIDEO_EVENT_PAUSE).empty());
+        // Looped, it never ended.
+        QVERIFY(videoEvents(MIGO_VIDEO_EVENT_ENDED).empty());
+
+        videos.fixture->container.setWindowState(Qt::WindowNoState);
+        QTRY_COMPARE(videoEvents(MIGO_VIDEO_EVENT_PLAY).size(), std::size_t{2});
+        QTRY_VERIFY(videoEvents(MIGO_VIDEO_EVENT_TIME_UPDATE).size() > heard);
+        QCOMPARE(videos.fixture->session.close(), MIGO_OK);
+    }
+
+    /// A player's own controls: the play button in the middle while it is not
+    /// playing, a bar a click shows -- its full-screen button filling the view
+    /// -- a double click that plays or pauses where content asks for it, and a
+    /// sideways drag that seeks. Each button has the name assistive technology
+    /// reads.
+    void a_videos_own_controls_drive_it() {
+        ManagedVideos videos;
+        QVERIFY(videos.view != nullptr);
+        QWidget &view = *videos.view;
+        QTRY_COMPARE(view.size(), QSize(320, 200));
+        QTemporaryDir scratch;
+        const QString clip = scratch.filePath(QStringLiteral("clip.mp4"));
+        QVERIFY(QFile::copy(QStringLiteral(MIGO_TEST_PROBE_CLIP), clip));
+        tellVideo(MIGO_VIDEO_CREATE, {{"videoId", 1}, {"src", clip}, {"x", 0}, {"y", 0}, {"width", 320},
+                                      {"height", 160}, {"objectFit", "fill"}});
+        QTRY_VERIFY(videoPlayer(view) != nullptr);
+        QWidget &player = *videoPlayer(view);
+        auto *controls = player.findChild<QWidget *>(QStringLiteral("migoVideoControls"));
+        auto *bar = player.findChild<QWidget *>(QStringLiteral("migoVideoBar"));
+        QVERIFY(controls != nullptr && bar != nullptr);
+        QTRY_COMPARE(controls->size(), player.size());
+        // Away from the middle button.
+        const QPoint aside(40, 40);
+        QTRY_VERIFY_WITH_TIMEOUT(videoShows(view, clipFrame(0), aside), 10000);
+        const auto named = [&player](const char *name) -> QToolButton * {
+            for (QToolButton *button : player.findChildren<QToolButton *>()) {
+                if (button->accessibleName() == QLatin1String(name)) return button;
+            }
+            return nullptr;
+        };
+        QToolButton *play = named("play");
+        QVERIFY(play != nullptr && named("play or pause") != nullptr && named("full screen") != nullptr);
+        QVERIFY(play->isVisible());
+        QVERIFY(!bar->isVisible());
+
+        // A click away from the buttons shows the bar; its button fills the view.
+        QTest::mouseClick(controls, Qt::LeftButton, {}, QPoint(20, 20));
+        QTRY_VERIFY(bar->isVisible());
+        named("full screen")->click();
+        QCOMPARE(player.geometry(), view.rect());
+        named("full screen")->click();
+        QCOMPARE(player.geometry(), QRect(0, 0, 320, 160));
+
+        // A drag across half the picture: half the video on.
+        QTest::mousePress(controls, Qt::LeftButton, {}, QPoint(40, 60));
+        QTest::mouseMove(controls, QPoint(120, 62));
+        QTest::mouseMove(controls, QPoint(200, 64));
+        QTest::mouseRelease(controls, Qt::LeftButton, {}, QPoint(200, 64));
+        QTRY_VERIFY(videoShows(view, clipFrame(5), aside));
+        QVERIFY(videoEvents(MIGO_VIDEO_EVENT_PLAY).empty());
+
+        // The middle button plays it, and goes while it plays.
+        play->click();
+        QCOMPARE(videoEvents(MIGO_VIDEO_EVENT_PLAY).size(), std::size_t{1});
+        QVERIFY(!play->isVisible());
+        named("play or pause")->click();
+        QCOMPARE(videoEvents(MIGO_VIDEO_EVENT_PAUSE).size(), std::size_t{1});
+
+        // A double click plays or pauses only where content asks for it.
+        tellVideo(MIGO_VIDEO_SET, {{"videoId", 1}, {"enablePlayGesture", true}});
+        QTest::qWait(50);
+        QTest::mouseDClick(controls, Qt::LeftButton, {}, QPoint(250, 40));
+        QTRY_COMPARE(videoEvents(MIGO_VIDEO_EVENT_PLAY).size(), std::size_t{2});
+        QCOMPARE(videos.fixture->session.close(), MIGO_OK);
+    }
+
+    /// A player stands over the game on the screen -- a window of its own,
+    /// which the X server keeps above the game's -- and takes the player's
+    /// input only where its controls ask for it: with none of them, a click on
+    /// it is the game's.
+    void a_video_stands_over_the_game_and_passes_input_it_does_not_want() {
+        if (!require_xcb("xcb-only test", __FILE__, __LINE__)) return;
+        ManagedVideos videos;
+        QVERIFY(videos.view != nullptr);
+        QWidget &view = *videos.view;
+        QTRY_COMPARE(view.size(), QSize(320, 200));
+        QTRY_COMPARE(fake_migo::calls().attach, 1);
+        QTemporaryDir scratch;
+        const QString clip = scratch.filePath(QStringLiteral("clip.mp4"));
+        QVERIFY(QFile::copy(QStringLiteral(MIGO_TEST_PROBE_CLIP), clip));
+        // Looped, it plays on: a player that ended shows its middle button again.
+        tellVideo(MIGO_VIDEO_CREATE, {{"videoId", 1}, {"src", clip}, {"x", 40}, {"y", 30}, {"width", 200},
+                                      {"height", 120}, {"objectFit", "fill"}, {"loop", true}});
+        // Away from the middle button, which stands at the middle.
+        QTRY_VERIFY_WITH_TIMEOUT(videoShows(view, clipFrame(0), QPoint(20, 20)), 10000);
+        // On the screen, as the X server shows it.
+        const QPoint middle = view.mapToGlobal(QPoint(140, 90));
+        const auto onScreen = [&view](const QColor &want) {
+            const QRect around(view.mapToGlobal(QPoint(60, 50)) - QPoint(16, 16), QSize(32, 32));
+            const QImage shot = view.screen()->grabWindow(0, around.x(), around.y(), 32, 32).toImage();
+            return looksLike(shot, {16, 16}, want);
+        };
+        QTRY_VERIFY(onScreen(clipFrame(0)));
+
+        // The middle button is the player's: the click plays it, and the game
+        // hears nothing.
+        x11_player::Hands hands;
+        QCursor::setPos(middle);
+        QTest::qWait(50);
+        hands.click(1);
+        QTRY_COMPARE(videoEvents(MIGO_VIDEO_EVENT_PLAY).size(), std::size_t{1});
+        QVERIFY(!pressAt(QPointF(140, 90)));
+
+        // Playing, with none of its controls: a click on it is the game's.
+        tellVideo(MIGO_VIDEO_SET, {{"videoId", 1}, {"controls", false}, {"enableProgressGesture", false}});
+        QTest::qWait(100);
+        hands.click(1);
+        QTRY_VERIFY(pressAt(QPointF(140, 90)));
+        QCOMPARE(videoEvents(MIGO_VIDEO_EVENT_PAUSE).size(), std::size_t{0});
+        QCOMPARE(videos.fixture->session.close(), MIGO_OK);
     }
 
     /// GeoClue: a client of the App's own, named by its desktop file and asked
