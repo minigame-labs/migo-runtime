@@ -20,6 +20,13 @@
 //   TAP-TEXT <text>    the player taps the button, or the menu item, that says <text>
 //   TYPE-TEXT <text>   the player types <text> into the field that holds the focus
 //   PRESS-ENTER        the player presses Enter there
+//   PICK-NEWEST        the player picks the newest of their files -- those in their
+//                      Pictures folder -- of the kind the Host Kit's file dialog
+//                      is showing, and opens it
+//   CANCEL-PICK        the player cancels that dialog
+//   SAVE-FILE          the player saves, under the name the dialog offers, in the
+//                      folder MIGO_QT_HOST_SAVE_DIR names
+//   CLOSE-PREVIEW      the player closes the Host Kit's viewer, with Esc
 //   POINTER-OVER-GAME  the player is at the game: its window active, the game
 //                      holding the keyboard, the cursor in its middle
 //   MOVE-MOUSE <dx> <dy>  the player moves the mouse by that many pixels
@@ -28,7 +35,10 @@
 // are done in that order, each once it can be -- a dialog may not be up yet when
 // its line arrives, nor the keyboard's field have taken the focus. The keys are
 // key events sent to the focused field, as a keyboard's are, so what the field
-// reports is the Host Kit's own. The mouse and Esc are the X server's own input
+// reports is the Host Kit's own. The file dialog is Qt's own, which the Host Kit
+// shows, so its buttons are widgets this player presses; a desktop whose
+// platform theme draws the system's dialog instead has none here to press. The
+// mouse and Esc are the X server's own input
 // (XTest, tests/x11_player in the Host Kit): a pointer lock goes by the mouse's
 // raw motion, which no event sent to a widget carries.
 
@@ -42,11 +52,19 @@
 #include <QApplication>
 #include <QByteArray>
 #include <QCursor>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QDir>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QFileSystemModel>
 #include <QFile>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QMenu>
 #include <QPlainTextEdit>
+#include <QPushButton>
+#include <QStandardPaths>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -121,15 +139,20 @@ void press(QWidget *field, int key, const QString &text) {
     QCoreApplication::sendEvent(field, &up);
 }
 
-/// Types `text` into the focused field, if one holds the focus.
-bool type(const QString &text) {
-    QWidget *field = focusedField();
-    if (field == nullptr) return false;
+/// Types `text` into `field`, key by key.
+void typeInto(QWidget *field, const QString &text) {
     for (const QChar character : text) {
         const char16_t unit = character.unicode();
         const int key = unit >= 0x20 && unit < 0x7f ? static_cast<int>(character.toUpper().unicode()) : Qt::Key_unknown;
         press(field, key, QString(character));
     }
+}
+
+/// Types `text` into the focused field, if one holds the focus.
+bool type(const QString &text) {
+    QWidget *field = focusedField();
+    if (field == nullptr) return false;
+    typeInto(field, text);
     return true;
 }
 
@@ -139,6 +162,119 @@ bool enter() {
     if (field == nullptr) return false;
     press(field, Qt::Key_Return, QStringLiteral("\r"));
     return true;
+}
+
+/// Why the request at hand cannot be done yet, for the line the player prints
+/// when one has waited long: what it found in place of what it looked for.
+QString g_waiting_for;
+
+/// The file dialog the Host Kit has up, if one is.
+QFileDialog *fileDialog() {
+    for (QWidget *window : QApplication::topLevelWidgets()) {
+        if (!window->isVisible()) continue;
+        if (auto *dialog = qobject_cast<QFileDialog *>(window)) return dialog;
+    }
+    return nullptr;
+}
+
+/// One of that dialog's own buttons, if it is Qt's dialog and shows them; it
+/// may not be enabled yet -- "Open" is not until a file is chosen.
+QAbstractButton *dialogButton(const QFileDialog *dialog, QDialogButtonBox::StandardButton which) {
+    const auto *box = dialog->findChild<QDialogButtonBox *>();
+    QAbstractButton *button = box != nullptr ? box->button(which) : nullptr;
+    return button != nullptr && button->isVisible() ? button : nullptr;
+}
+
+/// Presses `button` if it can be pressed now.
+bool pressed(QAbstractButton *button) {
+    if (button == nullptr || !button->isEnabled()) return false;
+    button->click();
+    return true;
+}
+
+/// Picks the newest of the player's files -- those in their Pictures folder,
+/// which the player goes to wherever the dialog opened -- of the kind the
+/// dialog's filter shows, "Images (*.png *.jpg)", and opens it.
+bool pickNewest() {
+    QFileDialog *dialog = fileDialog();
+    if (dialog == nullptr || dialog->acceptMode() != QFileDialog::AcceptOpen) {
+        g_waiting_for = QStringLiteral("no file dialog is open to pick from");
+        return false;
+    }
+    QAbstractButton *open = dialogButton(dialog, QDialogButtonBox::Open);
+    if (open == nullptr) {
+        g_waiting_for = QStringLiteral("the file dialog shows no Open button: it is not Qt's own dialog");
+        return false;
+    }
+    const QString filter = dialog->selectedNameFilter();
+    const qsizetype from = filter.lastIndexOf(QLatin1Char('('));
+    const qsizetype to = filter.lastIndexOf(QLatin1Char(')'));
+    const QStringList patterns =
+        from >= 0 && to > from ? filter.mid(from + 1, to - from - 1).split(QLatin1Char(' '), Qt::SkipEmptyParts)
+                               : QStringList();
+    const QString library = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    const QFileInfoList files = QDir(library).entryInfoList(patterns, QDir::Files, QDir::Time);
+    if (files.isEmpty()) {
+        g_waiting_for = QStringLiteral("%1 holds no file the filter \"%2\" shows").arg(library, filter);
+        return false;
+    }
+    // The player goes to the folder once, and names the file until the dialog
+    // has listed it: "Open" is the dialog's to enable, when it knows the file.
+    const QString newest = files.first().absoluteFilePath();
+    if (QDir(dialog->directory().absolutePath()) != QDir(library)) {
+        dialog->setDirectory(library);
+        g_waiting_for = QStringLiteral("the dialog is on its way to %1").arg(library);
+        return false;
+    }
+    // Its name typed into the dialog's field, as a player names a file -- a
+    // dialog that is up takes no selection from its caller while that field
+    // holds the keyboard.
+    auto *name = dialog->findChild<QLineEdit *>();
+    if (name == nullptr) {
+        g_waiting_for = QStringLiteral("the file dialog has no field to name a file in");
+        return false;
+    }
+    if (name->text() != files.first().fileName()) {
+        name->clear();
+        typeInto(name, files.first().fileName());
+    }
+    const auto *listed = dialog->findChild<QFileSystemModel *>();
+    g_waiting_for = QStringLiteral("the dialog, in %1 with %2 file(s) listed, does not let %3 be opened")
+                        .arg(dialog->directory().absolutePath())
+                        .arg(listed != nullptr ? listed->rowCount(listed->index(dialog->directory().absolutePath())) : -1)
+                        .arg(newest);
+    return pressed(open);
+}
+
+/// Cancels the file dialog.
+bool cancelPick() {
+    QFileDialog *dialog = fileDialog();
+    return dialog != nullptr && pressed(dialogButton(dialog, QDialogButtonBox::Cancel));
+}
+
+/// Saves under the name the dialog offers, in the folder the environment
+/// names: the player's choice of where, which a run makes anew each time.
+bool saveFile() {
+    QFileDialog *dialog = fileDialog();
+    if (dialog == nullptr || dialog->acceptMode() != QFileDialog::AcceptSave) return false;
+    QAbstractButton *save = dialogButton(dialog, QDialogButtonBox::Save);
+    const QByteArray folder = qgetenv("MIGO_QT_HOST_SAVE_DIR");
+    const QString offered = QFileInfo(dialog->selectedFiles().value(0)).fileName();
+    if (save == nullptr || folder.isEmpty() || offered.isEmpty()) return false;
+    dialog->setDirectory(QString::fromLocal8Bit(folder));
+    dialog->selectFile(QDir(QString::fromLocal8Bit(folder)).filePath(offered));
+    return pressed(save);
+}
+
+/// Closes the Host Kit's viewer as a player does, with Esc.
+bool closePreview() {
+    for (QWidget *window : QApplication::topLevelWidgets()) {
+        if (!window->isVisible() || qobject_cast<QDialog *>(window) == nullptr) continue;
+        if (!QByteArray(window->metaObject()->className()).endsWith("MediaViewer")) continue;
+        press(window, Qt::Key_Escape, {});
+        return true;
+    }
+    return false;
 }
 
 /// The scripted player: reads the feed as it grows, and keeps each request,
@@ -172,6 +308,14 @@ private:
                 requests_.append(Request{Request::Type, line.mid(10)});
             } else if (line == QStringLiteral("PRESS-ENTER")) {
                 requests_.append(Request{Request::Enter, {}});
+            } else if (line == QStringLiteral("PICK-NEWEST")) {
+                requests_.append(Request{Request::PickNewest, {}});
+            } else if (line == QStringLiteral("CANCEL-PICK")) {
+                requests_.append(Request{Request::CancelPick, {}});
+            } else if (line == QStringLiteral("SAVE-FILE")) {
+                requests_.append(Request{Request::SaveFile, {}});
+            } else if (line == QStringLiteral("CLOSE-PREVIEW")) {
+                requests_.append(Request{Request::ClosePreview, {}});
             } else if (line == QStringLiteral("POINTER-OVER-GAME")) {
                 requests_.append(Request{Request::PointerOverGame, {}});
             } else if (line.startsWith(QStringLiteral("MOVE-MOUSE "))) {
@@ -180,11 +324,24 @@ private:
                 requests_.append(Request{Request::Escape, {}});
             }
         }
-        while (!requests_.isEmpty() && perform(requests_.first())) requests_.removeFirst();
+        while (!requests_.isEmpty() && perform(requests_.first())) {
+            requests_.removeFirst();
+            waited_ = 0;
+            g_waiting_for.clear();
+        }
+        // A request that has waited five seconds says so, once: a bundle that then
+        // times out says only that nothing happened.
+        if (!requests_.isEmpty() && ++waited_ == 100) {
+            std::fprintf(stderr, "[qt-host] the player's request %d still waits: %s\n",
+                         static_cast<int>(requests_.first().kind),
+                         g_waiting_for.isEmpty() ? "what it acts on is not up" : qPrintable(g_waiting_for));
+        }
     }
 
     struct Request {
-        enum Kind { Tap, Type, Enter, PointerOverGame, MoveMouse, Escape } kind;
+        enum Kind {
+            Tap, Type, Enter, PickNewest, CancelPick, SaveFile, ClosePreview, PointerOverGame, MoveMouse, Escape
+        } kind;
         QString text;
     };
 
@@ -193,6 +350,10 @@ private:
             case Request::Tap: return tap(request.text);
             case Request::Type: return type(request.text);
             case Request::Enter: return enter();
+            case Request::PickNewest: return pickNewest();
+            case Request::CancelPick: return cancelPick();
+            case Request::SaveFile: return saveFile();
+            case Request::ClosePreview: return closePreview();
             case Request::PointerOverGame: return pointerOverGame();
             case Request::MoveMouse: {
                 const QStringList by = request.text.split(QLatin1Char(' '), Qt::SkipEmptyParts);
@@ -224,6 +385,8 @@ private:
     }
 
     QWidget *game_;
+    /// How many 50 ms steps the request at hand has waited.
+    int waited_ = 0;
     std::unique_ptr<x11_player::Hands> hands_;
     QFile feed_;
     QByteArray buffered_;
