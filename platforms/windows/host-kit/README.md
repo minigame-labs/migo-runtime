@@ -42,7 +42,15 @@ It is being built in stages (migo-runtime's schedule item X1):
   App is defaults to its process's AppUserModelID, else its executable's name;
   content's setEnableDebug shows the debugging panel -- frames a second and
   content's console over the top of the game, taking no input -- and reports
-  the aids on (`debugAids`/`setDebugAids`).
+  the aids on (`debugAids`/`setDebugAids`); content's showKeyboard opens a
+  real text field along the bottom of the game (the system's edit control,
+  one line or several, digits only for a number keyboard, the limit in UTF-16
+  code units), reporting each edit, a confirm and its closing; the battery
+  (power-setting notifications to the App's window), the network (the Network
+  List Manager's events, the adapter's kind) and memory pressure (the system's
+  low-memory notification, as CRITICAL) are reported as they change; what a
+  desktop App is not gated on is reported authorized. The GUI thread is a
+  single-threaded COM apartment, joined if the App has not made it one.
 - `migo::windows-builtin-host-services`
   (`include/migo/windows/builtin_host_services.hpp`): what Windows already
   offers an App, answered with its own -- toasts and loading indicators (a
@@ -58,8 +66,7 @@ It is being built in stages (migo-runtime's schedule item X1):
   the window out of captures; setEnableDebug); the scopes a desktop decides
   (writePhotosAlbum granted). An App can use it in the Bound shape too.
 
-Next: the keyboard field; battery, network and memory reports; images and
-files; location; gamepads; videos; the recorder.
+Next: images and files; location; gamepads; videos; the recorder.
 
 Build it with CMake against the Migo Windows SDK package
 (`find_package(migo)`), and link the targets it exports

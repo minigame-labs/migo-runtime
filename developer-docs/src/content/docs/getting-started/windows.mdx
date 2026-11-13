@@ -116,7 +116,8 @@ migo_query_capabilities(&caps);
   由系统控件构成的模态框与动作表；系统剪贴板；
   窗口（`setWindowSize`、窗口状态、`setCursor`、指针锁定）；屏幕（方向即游戏画面的形状，`setDeviceOrientation`
   旋转窗口；`setVisualEffectOnCapture`；`setEnableDebug` 显示帧率与控制台的调试面板）；桌面自行决定的授权范围。
-  键盘输入框、电量与网络上报、文件、定位、手柄、视频、录音尚未提供：在此之前由 App 自己答复。
+  会话还为内容的 `showKeyboard` 打开文本输入框，并按 Windows 的通知上报电量、网络与内存压力。
+  文件、定位、手柄、视频、录音尚未提供：在此之前由 App 自己答复。
 - **`EglProvider` 实现**：尚未提供。
 
 ## 从源码构建

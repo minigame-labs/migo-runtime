@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Windows Host Kit's Managed session opens a real text field for content's `showKeyboard` (the system's edit
+  control along the bottom of the game: one line or several, digits only for a number keyboard, the limit in UTF-16
+  code units), and reports the battery (power-setting notifications), the network (the Network List Manager's events
+  and the adapter's kind) and memory pressure (the system's low-memory notification) as Windows does, and what a
+  desktop App is not gated on as authorized.
 - The Windows Host Kit's interaction service: toasts and loading indicators as a card over the middle of the game,
   drawn with Direct2D and DirectWrite on a layered window that takes no input (`mask` keeps the game's from it too);
   modals and action sheets as dialogs of the system's controls, modal to the App's window without holding its message

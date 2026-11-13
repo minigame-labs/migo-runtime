@@ -126,7 +126,8 @@ This phase does not include:
   window (`setWindowSize`, its state, `setCursor`, the pointer lock); the screen (orientation is the
   game's shape, turned by `setDeviceOrientation`; `setVisualEffectOnCapture`; `setEnableDebug`, which
   shows a debugging panel with the frame rate and content's console); the scopes a desktop decides.
-  The keyboard field, battery and network reports, files, location, gamepads, videos and the recorder
+  The session also opens a text field for content's `showKeyboard`, and reports the battery, the
+  network and memory pressure as Windows reports them. Files, location, gamepads, videos and the recorder
   are not there yet: until they are, an App answers them itself.
 - **`EglProvider` implementation**: not yet provided.
 

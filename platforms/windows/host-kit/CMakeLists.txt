@@ -124,9 +124,14 @@ list(APPEND _migo_windows_host_kit_targets migo_windows_builtin_host_services)
 add_library(migo_windows_managed_session STATIC
     include/migo/windows/managed_session.hpp
     src/managed_session.cpp
-    # Internal, not installed: the panel the debugging aids show.
+    # Internal, not installed: the panel the debugging aids show, the field
+    # content's showKeyboard opens, and what Windows says about the machine.
     src/debug_panel.hpp
     src/debug_panel.cpp
+    src/keyboard_field.hpp
+    src/keyboard_field.cpp
+    src/system_reports.hpp
+    src/system_reports.cpp
 )
 add_library(migo::windows-managed-session ALIAS migo_windows_managed_session)
 set_target_properties(migo_windows_managed_session PROPERTIES
@@ -141,7 +146,7 @@ target_include_directories(migo_windows_managed_session
 )
 target_link_libraries(migo_windows_managed_session
     PUBLIC migo::win32-surface-view migo::windows-host-services migo::windows-builtin-host-services
-    PRIVATE user32 gdi32 comctl32 shell32 ole32
+    PRIVATE user32 gdi32 comctl32 shell32 ole32 iphlpapi
 )
 list(APPEND _migo_windows_host_kit_targets migo_windows_managed_session)
 
