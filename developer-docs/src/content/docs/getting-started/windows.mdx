@@ -109,8 +109,10 @@ migo_query_capabilities(&caps);
   在你的窗口里创建一个子窗口，显示且有尺寸后挂接；尺寸为物理像素，缩放为窗口 DPI / 96（请把进程设为
   per-monitor DPI aware）；鼠标按住时为触摸、同时提供指针事件流；滚轮；触摸屏与笔；按键按 DOM 命名
   （`code` 来自扫描码，`key` 来自键盘布局）；输入法组合；焦点；指针锁定（原始输入，光标被限制并隐藏，
-  Esc 释放）；帧由桌面合成器节拍驱动（`requestFrame`）。托管会话（拥有 Session 与回调）和内置宿主服务
-  （提示、窗口、剪贴板、文件、定位、视频、录音）尚未提供：在此之前，App 自己安装回调并答复宿主服务。
+  Esc 释放）；帧由桌面合成器节拍驱动（`requestFrame`）。`migo::windows-managed-session`
+  拥有 Session、回调表、视图与收尾——引擎回调在 GUI 线程执行，视图挂接后加载内容，App 窗口显示且未最小化即游戏运行，
+  `setKeepScreenOn` 保持屏幕常亮——并把 App 声明的宿主服务交给它自己的提供者（`migo::windows-host-services`：通道、
+  提供者接口及其使用的 JSON）。内置宿主服务（提示、窗口、剪贴板、文件、定位、视频、录音）尚未提供：在此之前由 App 自己答复。
 - **`EglProvider` 实现**：尚未提供。
 
 ## 从源码构建

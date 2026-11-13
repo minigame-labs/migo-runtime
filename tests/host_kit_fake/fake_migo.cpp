@@ -278,15 +278,16 @@ namespace {
 /// the part that can go wrong.
 void dispatch_from_engine_thread(void (*body)(const MigoHostCallbacks &)) {
     if (g_callbacks.dispatch == nullptr) return;
-    static void (*s_body)(const MigoHostCallbacks &) = nullptr;
-    s_body = body;
-    std::thread engine_thread([] {
-        g_callbacks.dispatch(
+    // The body travels with its task: deliveries queued before any runs --
+    // ready, then an error -- each run their own.
+    std::thread engine_thread([body] {
+        const MigoResult dispatched = g_callbacks.dispatch(
             g_callbacks.dispatcher_data,
-            [](void *) {
-                if (s_body != nullptr) s_body(g_callbacks);
+            [](void *context) {
+                reinterpret_cast<void (*)(const MigoHostCallbacks &)>(context)(g_callbacks);
             },
-            nullptr);
+            reinterpret_cast<void *>(body));
+        (void)dispatched;
     });
     engine_thread.join();
 }

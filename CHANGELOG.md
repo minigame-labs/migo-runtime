@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Windows Host Kit's Managed session (`migo::windows-managed-session`) and host-service channel
+  (`migo::windows-host-services`): one Session owned with its callback table, its view and its teardown -- engine
+  callbacks run on the GUI thread through a message-only window, content loads once the view attaches, the App's window
+  shown and not minimized is the game running, frame requests go to the view, `setKeepScreenOn` holds the display
+  awake -- and the App's own host services answered through a provider interface, with the JSON (strict RFC 8259)
+  their requests and answers are made of.
 - The Windows Host Kit begins (`platforms/windows/host-kit`), the Win32 counterpart of the Linux Host Kit:
   `migo::windows-surface-host`, the Surface lifecycle controller for a child `HWND` with the Linux Host Kit's
   contract, and `migo::win32-surface-view`, the game's view -- a child window attached once shown at a size, its

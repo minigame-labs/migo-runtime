@@ -72,6 +72,50 @@ target_link_libraries(migo_win32_surface_view
 )
 list(APPEND _migo_windows_host_kit_targets migo_win32_surface_view)
 
+# The host-service channel -- answers and events back to one Session -- and the
+# JSON its requests and answers are made of.
+add_library(migo_windows_host_services STATIC
+    include/migo/windows/json.hpp
+    include/migo/windows/host_services.hpp
+    src/json.cpp
+    src/host_services.cpp
+)
+add_library(migo::windows-host-services ALIAS migo_windows_host_services)
+set_target_properties(migo_windows_host_services PROPERTIES
+    EXPORT_NAME windows-host-services
+    POSITION_INDEPENDENT_CODE ON
+)
+target_compile_features(migo_windows_host_services PUBLIC cxx_std_17)
+target_include_directories(migo_windows_host_services
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
+target_link_libraries(migo_windows_host_services PUBLIC migo::migo)
+list(APPEND _migo_windows_host_kit_targets migo_windows_host_services)
+
+# The Managed shape: one Session owned with its callbacks, its view and its teardown.
+add_library(migo_windows_managed_session STATIC
+    include/migo/windows/managed_session.hpp
+    src/managed_session.cpp
+)
+add_library(migo::windows-managed-session ALIAS migo_windows_managed_session)
+set_target_properties(migo_windows_managed_session PROPERTIES
+    EXPORT_NAME windows-managed-session
+    POSITION_INDEPENDENT_CODE ON
+)
+target_compile_features(migo_windows_managed_session PUBLIC cxx_std_17)
+target_include_directories(migo_windows_managed_session
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
+target_link_libraries(migo_windows_managed_session
+    PUBLIC migo::win32-surface-view migo::windows-host-services
+    PRIVATE user32 comctl32 shell32 ole32
+)
+list(APPEND _migo_windows_host_kit_targets migo_windows_managed_session)
+
 if(MIGO_WINDOWS_HOST_KIT_ENABLE_INSTALL)
     set(_migo_windows_host_kit_cmake_dir
         "${CMAKE_INSTALL_LIBDIR}/cmake/migo-windows-host-kit")
@@ -84,6 +128,9 @@ if(MIGO_WINDOWS_HOST_KIT_ENABLE_INSTALL)
     )
     install(FILES include/migo/windows/surface_host.hpp
                   include/migo/windows/win32_surface_view.hpp
+                  include/migo/windows/json.hpp
+                  include/migo/windows/host_services.hpp
+                  include/migo/windows/managed_session.hpp
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/migo/windows")
     install(FILES README.md
         DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/migo-windows-host-kit")

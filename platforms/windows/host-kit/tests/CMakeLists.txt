@@ -43,8 +43,20 @@ target_link_libraries(migo-win32-surface-view-test PRIVATE
     user32
 )
 
+add_executable(migo-windows-json-test json_test.cpp)
+target_link_libraries(migo-windows-json-test PRIVATE migo::windows-host-services migo_host_kit_fake_capi)
+
+add_executable(migo-windows-managed-session-test managed_session_test.cpp)
+target_link_libraries(migo-windows-managed-session-test PRIVATE
+    migo::windows-managed-session
+    migo_host_kit_fake_capi
+    user32
+)
+
 foreach(target migo_host_kit_fake_capi migo-windows-surface-host-test migo_windows_surface_host
-               migo-win32-surface-view-test migo_win32_surface_view)
+               migo-win32-surface-view-test migo_win32_surface_view
+               migo-windows-json-test migo_windows_host_services
+               migo-windows-managed-session-test migo_windows_managed_session)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4 /WX /utf-8 /permissive-)
     else()
@@ -55,3 +67,5 @@ endforeach()
 enable_testing()
 add_test(NAME migo-windows-surface-host COMMAND migo-windows-surface-host-test)
 add_test(NAME migo-win32-surface-view COMMAND migo-win32-surface-view-test)
+add_test(NAME migo-windows-json COMMAND migo-windows-json-test)
+add_test(NAME migo-windows-managed-session COMMAND migo-windows-managed-session-test)
