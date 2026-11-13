@@ -68,6 +68,7 @@ std::string g_launch_options;
 std::mutex g_answers_mutex;
 std::vector<fake_migo::HostServiceAnswer> g_answers;
 std::vector<fake_migo::HostServiceEvent> g_events;
+std::vector<fake_migo::RecorderFrame> g_recorder_frames;
 /// Calls delivered and not yet completed, with the service each is of.
 std::map<uint64_t, MigoHostService> g_open_calls;
 std::function<void(const fake_migo::HostServiceAnswer &)> g_completion;
@@ -110,6 +111,7 @@ void reset() noexcept {
         g_completion = nullptr;
     }
     g_events.clear();
+    g_recorder_frames.clear();
     g_surface = {};
     g_metrics = {};
     g_release_query = {};
@@ -259,6 +261,7 @@ void set_host_service_completion(std::function<void(const HostServiceAnswer &)> 
     g_completion = std::move(take);
 }
 const std::vector<HostServiceEvent> &host_service_events() noexcept { return g_events; }
+const std::vector<RecorderFrame> &recorder_frames() noexcept { return g_recorder_frames; }
 void set_session_create_result(MigoResult result) noexcept { g_session_create_result = result; }
 void set_set_callbacks_result(MigoResult result) noexcept { g_set_callbacks_result = result; }
 void set_load_content_result(MigoResult result) noexcept { g_load_content_result = result; }
@@ -773,6 +776,23 @@ extern "C" MigoResult MIGO_CALL migo_session_post_host_service_event(
     }
     if ((g_callbacks.host_services & (uint64_t{1} << service)) == 0) return MIGO_ERROR_INVALID_ARGUMENT;
     g_events.push_back({service, event, std::string(payload_json_utf8, payload_length)});
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_post_recorder_frame(MigoSession *session,
+                                                                 const MigoRecorderFrame *frame) {
+    // As strict as the library.
+    if (session != fake_migo::session() || !g_session_alive || frame == nullptr ||
+        frame->struct_size != sizeof(*frame) || frame->recording_id == 0 || frame->is_last_frame > 1 ||
+        frame->length > (1U << 20) || (frame->data == nullptr && frame->length != 0)) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    if ((g_callbacks.host_services & (uint64_t{1} << MIGO_HOST_SERVICE_RECORDER)) == 0) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    g_recorder_frames.push_back(
+        {frame->recording_id, std::string(reinterpret_cast<const char *>(frame->data), frame->length),
+         frame->is_last_frame != 0});
     return MIGO_OK;
 }
 

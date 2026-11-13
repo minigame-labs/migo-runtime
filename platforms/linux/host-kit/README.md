@@ -67,9 +67,13 @@ What is claimed:
   for: the play button in the middle, the bar a click shows (play or pause, the
   time, a progress bar, full screen -- the game's whole view), the progress
   line, the double click and the sideways drag; with none of them, a click on it
-  is the game's. An App links it and gives a `MigoQtMedia` to the Session
-  (`MigoManagedSession::Options::videos`); without it, videos are refused,
-  `createVideo` is the App's to answer, and nothing links GStreamer.
+  is the game's. It is the microphone too: `getRecorderManager` records the
+  desktop's default input, written as the Android and Apple SDKs write a
+  recording (PCM, wav, and AAC as an `.m4a` file or, with frames, an ADTS
+  stream), and `scope.record` is granted. An App links it and gives a
+  `MigoQtMedia` to the Session (`MigoManagedSession::Options::videos` and
+  `::microphone`); without it, videos are refused, `createVideo` and the
+  recorder are the App's to answer, and nothing links GStreamer.
 - Qt Wayland, Qt Quick and GTK 4 are not claimed, and the last two are blocked
   on the same thing -- see "Render-path limits".
 

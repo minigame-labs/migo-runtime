@@ -1,6 +1,7 @@
 #include <migo/linux/qt6/media.hpp>
 
 #include "media_playback.hpp"
+#include "media_recorder.hpp"
 #include "media_videos.hpp"
 
 #include <QHBoxLayout>
@@ -279,6 +280,12 @@ std::optional<MigoQtVideoSupport::Description> MigoQtMedia::describe(const QStri
 
 QWidget *MigoQtMedia::player(const QString &source, const QImage &poster, QWidget &parent) const {
     return new Player(uriOf(source), poster, started_, parent);
+}
+
+std::unique_ptr<MigoQtRecorder> MigoQtMedia::recorder(MigoQtRecorder::Post post, MigoQtRecorder::PostFrame frame,
+                                                      const QString &staging) const {
+    if (!started_) return nullptr;
+    return std::make_unique<GStreamerRecorder>(std::move(post), std::move(frame), staging);
 }
 
 std::unique_ptr<MigoQtVideoPlayers> MigoQtMedia::players(QWidget &stage, MigoQtVideoPlayers::Post post) const {

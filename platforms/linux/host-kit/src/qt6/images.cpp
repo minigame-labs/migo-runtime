@@ -1,6 +1,7 @@
 #include "images.hpp"
 
 #include "media_viewer.hpp"
+#include "staging.hpp"
 
 #include <QByteArray>
 #include <QDateTime>
@@ -38,44 +39,6 @@
 #include <utility>
 
 namespace migo::linux_host::qt6 {
-
-// ---- the staging directory -----------------------------------------------------------------
-
-/// The Host Kit's own files until the Session takes them. Shared with the work
-/// in flight, so the directory lasts as long as the last of it.
-class Images::Staging final {
-public:
-    explicit Staging(const QString &root) : dir_(make(root)) {}
-
-    /// A new file's path, with `suffix` when it has one; empty when there is
-    /// nowhere to put one.
-    [[nodiscard]] QString path(const QString &suffix) const {
-        if (dir_ == nullptr) return {};
-        QString name = QUuid::createUuid().toString(QUuid::WithoutBraces);
-        if (!suffix.isEmpty()) name += QLatin1Char('.') + suffix;
-        return dir_->filePath(name);
-    }
-
-    /// The directory, or empty when there is none.
-    [[nodiscard]] QString directory() const { return dir_ == nullptr ? QString() : dir_->path(); }
-
-private:
-    static std::unique_ptr<QTemporaryDir> make(const QString &root) {
-        const QString pattern = QStringLiteral("/migo-host-files-XXXXXX");
-        if (!root.isEmpty() && QDir().mkpath(root)) {
-            auto dir = std::make_unique<QTemporaryDir>(root + pattern);
-            if (dir->isValid()) return dir;
-        }
-        // The system's temporary directory: another volume more often than not,
-        // where taking a file costs the Session a copy.
-        auto dir = std::make_unique<QTemporaryDir>(QDir::tempPath() + pattern);
-        if (dir->isValid()) return dir;
-        qWarning("migo host kit: no staging directory for images: %s", qPrintable(dir->errorString()));
-        return nullptr;
-    }
-
-    std::unique_ptr<QTemporaryDir> dir_;
-};
 
 namespace {
 
@@ -233,7 +196,7 @@ const QHash<QByteArray, QString> &drawableFormats() {
 /// HEIF where a plugin reads it -- written upright, as a PNG when it has
 /// transparency and as a JPEG when it has none. Empty, with `error`, when there
 /// is no image to give.
-QString stageImage(const Images::Staging &staging, const QString &file, QString &error) {
+QString stageImage(const Staging &staging, const QString &file, QString &error) {
     const QString name = QFileInfo(file).fileName();
     QImageReader reader(file);
     reader.setDecideFormatFromContent(true);
@@ -321,7 +284,7 @@ QString videoFilter() { return filter(QStringLiteral("Videos"), videoPatterns())
 /// zeros and no cover where it cannot, as the other platforms answer. What it
 /// stages is added to `staged`; none, with `error`, when there is nowhere to
 /// put it.
-std::optional<QJsonObject> stageVideo(const Images::Staging &staging, const MigoQtVideoSupport &videos,
+std::optional<QJsonObject> stageVideo(const Staging &staging, const MigoQtVideoSupport &videos,
                                       const QString &file, QStringList &staged, QString &error) {
     const QFileInfo original(file);
     const QString copy = staging.path(original.suffix());
@@ -466,7 +429,7 @@ void Images::call(std::uint32_t method, const QJsonObject &request, MigoQtHostSe
     }
 }
 
-std::shared_ptr<Images::Staging> Images::staging() {
+std::shared_ptr<Staging> Images::staging() {
     if (staging_ == nullptr) staging_ = std::make_shared<Staging>(places_.staging);
     return staging_;
 }

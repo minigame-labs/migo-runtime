@@ -3,6 +3,7 @@
 #include "bluetooth.hpp"
 #include "fake_migo.hpp"
 #include "geolocation.hpp"
+#include "media_recorder.hpp"
 #include "media_viewer.hpp"
 #include "motion.hpp"
 #include "x11_player.hpp"
@@ -52,6 +53,7 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QVBoxLayout>
+#include <QtEndian>
 #include <QtTest>
 
 #include <algorithm>
@@ -70,6 +72,7 @@ using migo::linux_host::qt6::BluezInterfaces;
 using migo::linux_host::qt6::BluezObjects;
 using migo::linux_host::qt6::Geolocation;
 using migo::linux_host::qt6::hostServiceBit;
+using migo::linux_host::qt6::GStreamerRecorder;
 using migo::linux_host::qt6::MediaViewer;
 using migo::linux_host::qt6::MigoManagedSession;
 using migo::linux_host::qt6::MigoQtBuiltInHostServices;
@@ -912,6 +915,68 @@ struct ManagedVideos {
         fixture->container.show();
     }
 };
+
+
+/// What a recorder told, as the Session would hear it: its events, in order,
+/// and its frames; a STOP's file taken into `into`, as the Session takes it.
+struct Heard {
+    explicit Heard(QString into) : into_(std::move(into)) {}
+
+    struct Event {
+        std::uint32_t event = 0;
+        QJsonObject payload;
+    };
+    struct Frame {
+        std::uint32_t recording = 0;
+        QByteArray bytes;
+        bool last = false;
+    };
+    std::vector<Event> events;
+    std::vector<Frame> frames;
+
+    GStreamerRecorder::Post post() {
+        return [this](std::uint32_t event, const QJsonObject &payload) {
+            QJsonObject heard = payload;
+            if (event == MIGO_RECORDER_EVENT_STOP) {
+                const QString file = payload.value(QStringLiteral("tempFilePath")).toString();
+                const QString taken = into_ + QStringLiteral("/taken-") + QFileInfo(file).fileName();
+                if (QFile::rename(file, taken)) heard.insert(QStringLiteral("taken"), taken);
+            }
+            events.push_back({event, heard});
+        };
+    }
+    GStreamerRecorder::PostFrame frame() {
+        return [this](std::uint32_t recording, const QByteArray &bytes, bool last) {
+            frames.push_back({recording, bytes, last});
+        };
+    }
+
+    /// The `event`s heard so far.
+    [[nodiscard]] std::vector<QJsonObject> of(std::uint32_t event) const {
+        std::vector<QJsonObject> said;
+        for (const Event &heard : events) {
+            if (heard.event == event) said.push_back(heard.payload);
+        }
+        return said;
+    }
+
+private:
+    QString into_;
+};
+
+/// A tone, as a live microphone hands it over: in real time.
+const QByteArray kTone("audiotestsrc is-live=true wave=sine freq=440 volume=0.5");
+
+/// START's options for recording `id`.
+QJsonObject recordingOf(std::uint32_t id, QJsonObject options) {
+    options.insert(QStringLiteral("recordingId"), static_cast<qint64>(id));
+    return options;
+}
+
+QByteArray contentsOf(const QString &path) {
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
 
 }  // namespace
 
@@ -2466,6 +2531,229 @@ private slots:
         QTRY_VERIFY(pressAt(QPointF(140, 90)));
         QCOMPARE(videoEvents(MIGO_VIDEO_EVENT_PAUSE).size(), std::size_t{0});
         QCOMPARE(videos.fixture->session.close(), MIGO_OK);
+    }
+
+
+    /// A recording is written as content asks and ends on the sample its
+    /// duration ends on: a wav file whose header describes it, its frames the
+    /// samples, of the size asked for but the last, which says it is the last.
+    void a_recording_is_written_as_content_asks() {
+        const MigoQtMedia media;
+        QVERIFY(media.isValid());
+        QTemporaryDir scratch;
+        Heard heard(scratch.path());
+        {
+            GStreamerRecorder recorder(heard.post(), heard.frame(), scratch.filePath(QStringLiteral("cache")), kTone);
+            recorder.call(MIGO_RECORDER_START, recordingOf(1, {{"duration", 1000}, {"sampleRate", 16000},
+                                                              {"numberOfChannels", 1}, {"format", "wav"},
+                                                              {"frameSize", 1}}));
+            QTRY_COMPARE_WITH_TIMEOUT(heard.of(MIGO_RECORDER_EVENT_START).size(), std::size_t{1}, 5000);
+            QTRY_COMPARE_WITH_TIMEOUT(heard.of(MIGO_RECORDER_EVENT_STOP).size(), std::size_t{1}, 5000);
+        }
+        const QJsonObject stopped = heard.of(MIGO_RECORDER_EVENT_STOP).front();
+        QCOMPARE(stopped.value(QStringLiteral("recordingId")).toInt(), 1);
+        QCOMPARE(stopped.value(QStringLiteral("duration")).toInt(), 1000);
+        QCOMPARE(stopped.value(QStringLiteral("fileSize")).toInt(), 44 + 32000);
+        QVERIFY(stopped.value(QStringLiteral("tempFilePath")).toString().endsWith(QStringLiteral(".wav")));
+        const QByteArray file = contentsOf(stopped.value(QStringLiteral("taken")).toString());
+        QCOMPARE(file.size(), 44 + 32000);
+        QVERIFY(file.startsWith("RIFF") && file.mid(8, 8) == "WAVEfmt ");
+        QCOMPARE(qFromLittleEndian<quint32>(file.constData() + 24), 16000U);
+        QCOMPARE(qFromLittleEndian<quint16>(file.constData() + 22), quint16{1});
+        QCOMPARE(qFromLittleEndian<quint32>(file.constData() + 40), 32000U);
+        // The tone, not silence.
+        QVERIFY(file.mid(44).count('\0') < file.size() / 2);
+
+        QCOMPARE(heard.frames.size(), std::size_t{32});
+        QByteArray framed;
+        for (std::size_t index = 0; index < heard.frames.size(); ++index) {
+            const auto &frame = heard.frames[index];
+            QCOMPARE(frame.recording, 1U);
+            QCOMPARE(frame.last, index + 1 == heard.frames.size());
+            if (!frame.last) QCOMPARE(frame.bytes.size(), 1024);
+            framed += frame.bytes;
+        }
+        QCOMPARE(framed, file.mid(44));
+        // Taken as the event was posted, nothing is left behind.
+        QDir cache(scratch.filePath(QStringLiteral("cache")));
+        for (const QString &staging : cache.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+            QVERIFY(QDir(cache.filePath(staging)).isEmpty());
+        }
+    }
+
+    /// Paused, a recording holds no sound and leaves no gap; stopped, it ends
+    /// there. A request for another recording, or one in the wrong state, is
+    /// ignored.
+    void a_recording_pauses_resumes_and_stops_early() {
+        const MigoQtMedia media;
+        QTemporaryDir scratch;
+        Heard heard(scratch.path());
+        GStreamerRecorder recorder(heard.post(), heard.frame(), scratch.path(), kTone);
+        const QJsonObject options = recordingOf(4, {{"duration", 60000}, {"sampleRate", 16000},
+                                                    {"numberOfChannels", 1}, {"format", "PCM"}});
+        recorder.call(MIGO_RECORDER_START, options);
+        QTRY_COMPARE_WITH_TIMEOUT(heard.of(MIGO_RECORDER_EVENT_START).size(), std::size_t{1}, 5000);
+        recorder.call(MIGO_RECORDER_RESUME, recordingOf(4, {}));
+        QTest::qWait(300);
+        recorder.call(MIGO_RECORDER_PAUSE, recordingOf(5, {}));
+        recorder.call(MIGO_RECORDER_PAUSE, recordingOf(4, {}));
+        recorder.call(MIGO_RECORDER_PAUSE, recordingOf(4, {}));
+        QTest::qWait(600);
+        recorder.call(MIGO_RECORDER_RESUME, recordingOf(4, {}));
+        QTest::qWait(300);
+        recorder.call(MIGO_RECORDER_STOP, recordingOf(5, {}));
+        recorder.call(MIGO_RECORDER_STOP, recordingOf(4, {}));
+        QTRY_COMPARE_WITH_TIMEOUT(heard.of(MIGO_RECORDER_EVENT_STOP).size(), std::size_t{1}, 5000);
+        std::vector<std::uint32_t> order;
+        for (const Heard::Event &event : heard.events) order.push_back(event.event);
+        QCOMPARE(order, (std::vector<std::uint32_t>{MIGO_RECORDER_EVENT_START, MIGO_RECORDER_EVENT_PAUSE,
+                                                     MIGO_RECORDER_EVENT_RESUME, MIGO_RECORDER_EVENT_STOP}));
+        const QJsonObject stopped = heard.of(MIGO_RECORDER_EVENT_STOP).front();
+        const int duration = stopped.value(QStringLiteral("duration")).toInt();
+        // About 600 ms recorded of the 1200 that passed.
+        QVERIFY2(duration > 400 && duration < 900, qPrintable(QString::number(duration)));
+        QCOMPARE(stopped.value(QStringLiteral("fileSize")).toInt(), duration * 32);
+        QCOMPARE(contentsOf(stopped.value(QStringLiteral("taken")).toString()).size(), duration * 32);
+        QVERIFY(heard.frames.empty());
+    }
+
+    /// AAC as the other SDKs write it: an MPEG-4 file without frames, an ADTS
+    /// stream with them -- the frames its bytes -- and "mp3" recorded as AAC.
+    void a_recording_in_aac_is_an_mpeg4_file_or_an_adts_stream() {
+        const MigoQtMedia media;
+        QTemporaryDir scratch;
+        Heard heard(scratch.path());
+        GStreamerRecorder recorder(heard.post(), heard.frame(), scratch.path(), kTone);
+        const QJsonObject common{{"duration", 500}, {"sampleRate", 44100}, {"numberOfChannels", 2},
+                                 {"encodeBitRate", 96000}};
+        for (const char *format : {"aac", "mp3"}) {
+            QJsonObject options = common;
+            options.insert(QStringLiteral("format"), QLatin1String(format));
+            recorder.call(MIGO_RECORDER_START, recordingOf(1, options));
+            QTRY_COMPARE_WITH_TIMEOUT(heard.of(MIGO_RECORDER_EVENT_STOP).size(), std::size_t{1}, 5000);
+            const QJsonObject stopped = heard.of(MIGO_RECORDER_EVENT_STOP).front();
+            QVERIFY(stopped.value(QStringLiteral("tempFilePath")).toString().endsWith(QStringLiteral(".m4a")));
+            QCOMPARE(stopped.value(QStringLiteral("duration")).toInt(), 500);
+            const QByteArray file = contentsOf(stopped.value(QStringLiteral("taken")).toString());
+            QCOMPARE(file.size(), stopped.value(QStringLiteral("fileSize")).toInt());
+            QCOMPARE(file.mid(4, 4), QByteArray("ftyp"));
+            heard.events.clear();
+        }
+
+        QJsonObject framed = common;
+        framed.insert(QStringLiteral("format"), QStringLiteral("aac"));
+        framed.insert(QStringLiteral("frameSize"), 1);
+        recorder.call(MIGO_RECORDER_START, recordingOf(2, framed));
+        QTRY_COMPARE_WITH_TIMEOUT(heard.of(MIGO_RECORDER_EVENT_STOP).size(), std::size_t{1}, 5000);
+        const QJsonObject stopped = heard.of(MIGO_RECORDER_EVENT_STOP).front();
+        QVERIFY(stopped.value(QStringLiteral("tempFilePath")).toString().endsWith(QStringLiteral(".aac")));
+        const QByteArray file = contentsOf(stopped.value(QStringLiteral("taken")).toString());
+        QVERIFY(file.size() > 1024);
+        // An ADTS header's sync word.
+        QCOMPARE(static_cast<unsigned char>(file.at(0)), 0xFFU);
+        QCOMPARE(static_cast<unsigned char>(file.at(1)) & 0xF0U, 0xF0U);
+        QByteArray bytes;
+        for (const auto &frame : heard.frames) bytes += frame.bytes;
+        QCOMPARE(bytes, file);
+        QVERIFY(heard.frames.back().last);
+    }
+
+    /// A recording that cannot be made says why, once: options the reference
+    /// does not allow, a microphone that is not there. Another START takes the
+    /// place of the one under way, which is not reported and leaves no file;
+    /// one under way when the game ends goes the same way.
+    void a_recording_that_cannot_be_made_says_why() {
+        const MigoQtMedia media;
+        QTemporaryDir scratch;
+        Heard heard(scratch.path());
+        const QString cache = scratch.filePath(QStringLiteral("cache"));
+        const auto leftOver = [&cache] {
+            QStringList files;
+            QDir root(cache);
+            for (const QString &staging : root.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+                files << QDir(root.filePath(staging)).entryList(QDir::Files);
+            }
+            return files;
+        };
+        {
+            GStreamerRecorder recorder(heard.post(), heard.frame(), cache, kTone);
+            recorder.call(MIGO_RECORDER_START, recordingOf(1, {{"sampleRate", 12345}}));
+            recorder.call(MIGO_RECORDER_START, recordingOf(2, {{"format", "ogg"}}));
+            recorder.call(MIGO_RECORDER_START, recordingOf(3, {{"duration", 600001}}));
+            QCOMPARE(heard.of(MIGO_RECORDER_EVENT_ERROR).size(), std::size_t{3});
+            for (const QJsonObject &error : heard.of(MIGO_RECORDER_EVENT_ERROR)) {
+                QCOMPARE(error.value(QStringLiteral("errMsg")).toString(),
+                         QStringLiteral("recorderManager.start:fail invalid audio parameters"));
+            }
+
+            recorder.call(MIGO_RECORDER_START, recordingOf(4, {{"format", "wav"}}));
+            QTRY_COMPARE_WITH_TIMEOUT(heard.of(MIGO_RECORDER_EVENT_START).size(), std::size_t{1}, 5000);
+            recorder.call(MIGO_RECORDER_START, recordingOf(5, {{"format", "wav"}}));
+            QTRY_COMPARE_WITH_TIMEOUT(heard.of(MIGO_RECORDER_EVENT_START).size(), std::size_t{2}, 5000);
+            QCOMPARE(heard.of(MIGO_RECORDER_EVENT_START).back().value(QStringLiteral("recordingId")).toInt(), 5);
+            QCOMPARE(leftOver().size(), 1);
+            recorder.call(MIGO_RECORDER_STOP, recordingOf(4, {}));
+            QTest::qWait(300);
+            QVERIFY(heard.of(MIGO_RECORDER_EVENT_STOP).empty());
+        }
+        // Gone with the game, unreported.
+        QVERIFY(heard.of(MIGO_RECORDER_EVENT_STOP).empty());
+        QVERIFY(leftOver().isEmpty());
+
+        GStreamerRecorder deaf(heard.post(), heard.frame(), cache, "filesrc location=/nonexistent/migo ! wavparse");
+        deaf.call(MIGO_RECORDER_START, recordingOf(6, {{"format", "wav"}}));
+        QTRY_COMPARE_WITH_TIMEOUT(heard.of(MIGO_RECORDER_EVENT_ERROR).size(), std::size_t{4}, 5000);
+        QTest::qWait(300);
+        QCOMPARE(heard.of(MIGO_RECORDER_EVENT_ERROR).size(), std::size_t{4});
+        const QJsonObject failed = heard.of(MIGO_RECORDER_EVENT_ERROR).back();
+        QCOMPARE(failed.value(QStringLiteral("recordingId")).toInt(), 6);
+        QVERIFY2(failed.value(QStringLiteral("errMsg")).toString().startsWith(
+                     QStringLiteral("recorderManager.start:fail the microphone could not record: ")),
+                 qPrintable(failed.value(QStringLiteral("errMsg")).toString()));
+        QCOMPARE(heard.of(MIGO_RECORDER_EVENT_START).size(), std::size_t{2});
+        QVERIFY(leftOver().isEmpty());
+    }
+
+    /// Where the App gives a microphone, a Managed Session declares the
+    /// recorder and grants scope.record, which a desktop does not gate; where
+    /// it gives none, both are the App's.
+    void a_managed_session_records_where_the_app_gives_a_microphone() {
+        const auto record = [](std::uint64_t call) {
+            fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_PERMISSION,
+                                                                    MIGO_PERMISSION_REQUEST_SCOPE, call,
+                                                                    json({{"scopeId", int(MIGO_SCOPE_RECORD)}}));
+            (void)QTest::qWaitFor([call] { return answerTo(call).has_value(); }, 5000);
+            return answerTo(call);
+        };
+        {
+            Managed without;
+            QVERIFY((fake_migo::installed_callbacks().host_services & hostServiceBit(MIGO_HOST_SERVICE_RECORDER)) == 0);
+            const auto refused = record(1);
+            QVERIFY(refused.has_value());
+            QCOMPARE(refused->message, std::string("auth deny"));
+            QCOMPARE(without.session.close(), MIGO_OK);
+        }
+        fake_migo::reset();
+        MigoManagedSession::Options options;
+        options.microphone = std::make_shared<MigoQtMedia>();
+        Managed with(options);
+        QVERIFY((fake_migo::installed_callbacks().host_services & hostServiceBit(MIGO_HOST_SERVICE_RECORDER)) != 0);
+        const auto granted = record(2);
+        QVERIFY(granted.has_value());
+        QCOMPARE(granted->status, MIGO_HOST_SERVICE_STATUS_OK);
+        QCOMPARE(fake_migo::scope_state(MIGO_SCOPE_RECORD), MIGO_SCOPE_STATE_GRANTED);
+        // A recording's frames reach the Session through the channel, the last flagged.
+        const auto channel = MigoQtHostServiceChannel::open(fake_migo::session());
+        QCOMPARE(channel->postRecorderFrame(3, QByteArray("abc"), false), MIGO_OK);
+        QCOMPARE(channel->postRecorderFrame(3, QByteArray(), true), MIGO_OK);
+        QCOMPARE(channel->postRecorderFrame(0, QByteArray("x"), false), MIGO_ERROR_INVALID_ARGUMENT);
+        QCOMPARE(fake_migo::recorder_frames().size(), std::size_t{2});
+        QCOMPARE(fake_migo::recorder_frames().front().bytes, std::string("abc"));
+        QVERIFY(!fake_migo::recorder_frames().front().last && fake_migo::recorder_frames().back().last);
+        channel->close();
+        QCOMPARE(channel->postRecorderFrame(3, QByteArray("abc"), false), MIGO_OK);
+        QCOMPARE(fake_migo::recorder_frames().size(), std::size_t{2});
+        QCOMPARE(with.session.close(), MIGO_OK);
     }
 
     /// GeoClue: a client of the App's own, named by its desktop file and asked

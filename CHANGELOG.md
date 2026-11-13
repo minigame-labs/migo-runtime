@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `getRecorderManager` on Linux: the Host Kit's `migo::qt6-media` component records the desktop's default input
+  through GStreamer (PipeWire, PulseAudio or ALSA, as GStreamer finds it), at the rate and channels content asks for,
+  written as the Android and Apple SDKs write a recording -- PCM, wav, and AAC (`mp3` too) as an `.m4a` file or,
+  with frames, an ADTS stream whose bytes the frames are. A recording ends on the sample its duration ends on, a
+  paused one leaves no gap, and `onStart` waits until the input records. `MigoQtMicrophone` is the role a support
+  plays (`MigoQtMedia` plays it), `MigoManagedSession::Options::microphone` gives it to the Session and
+  `MigoQtBuiltInHostServices` takes it beside the videos; with it the built-in permission service grants
+  `scope.record`. `MigoQtHostServiceChannel::postRecorderFrame` delivers a recording's frames.
 - `createVideo` on Linux: the Host Kit's `migo::qt6-media` component plays content's videos over the game through
   GStreamer, as the Android and Apple SDKs do. Each player is an X window inside the game's view -- kept above the
   game's frames by the X server, cut to the view, moving, hiding and going with it, with no window manager involved

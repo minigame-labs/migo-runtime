@@ -295,8 +295,28 @@ desktop already offers with Qt's own:
   (and `scope.userLocationBackground`: a desktop has no other) is GeoClue's -- its agent, or inside a sandbox the
   portal, asks the player the first time the App asks -- and is recorded as decided; with no GeoClue there is no one to
   ask, and the scope stays undecided. `scope.writePhotosAlbum` is granted: the player's Pictures folder is theirs and
-  the App's, which a desktop does not gate. Any other scope is refused (`auth deny`): an App that decides scopes --
-  sign-in, its own consent dialog -- answers the permission service itself, all of it.
+  the App's, which a desktop does not gate; so is `scope.record` where the Host Kit records (below). Any other scope is
+  refused (`auth deny`): an App that decides scopes -- sign-in, its own consent dialog -- answers the permission
+  service itself, all of it.
+- **Recording** (`getRecorderManager`), with `migo::qt6-media`: the desktop's default input -- PipeWire's, PulseAudio's
+  or ALSA's, as GStreamer finds it -- converted to the `sampleRate` and `numberOfChannels` content asks for. Give the
+  Session the same `MigoQtMedia` as its microphone:
+
+  ```cpp
+  const auto media = std::make_shared<MigoQtMedia>();
+  options.videos = media;
+  options.microphone = media;
+  ```
+
+  A recording is written as on Android and the Apple platforms: `PCM` raw, `wav` behind its header, and `aac` -- and
+  `mp3`, which no system encodes -- as AAC in an MPEG-4 file (`.m4a`), or as an ADTS stream (`.aac`) when content asks
+  for frames, which are then the stream's bytes. `onFrameRecorded` hands over frames of `frameSize` KB as they are
+  recorded, the last flagged; a recording ends on the sample its `duration` ends on, and a paused one leaves no gap.
+  `onStart` is heard once the input records, `onError` with why when it cannot (`invalid audio parameters`, or the
+  sound server's reason). A desktop has one input and no interruptions: `audioSource` names none of its own, and
+  `onInterruptionBegin` is never heard. AAC needs one of GStreamer's AAC encoders: libav's (`gstreamer1.0-libav`), or
+  FDK's, VisualOn's or FAAC's. Without `migo::qt6-media` the recorder is the App's to answer
+  (`MIGO_HOST_SERVICE_RECORDER`).
 
 `MigoManagedSession` reads the gamepads the kernel shows (`getGamepads`, `onGamepadConnected`,
 `onGamepadDisconnected`, `vibrationActuator`): the evdev devices udev tags as joysticks, found as they come and go. A
