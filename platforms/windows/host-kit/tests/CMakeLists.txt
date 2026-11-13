@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.24)
 project(migo_windows_host_kit_tests LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -65,10 +65,12 @@ foreach(target migo_host_kit_fake_capi migo-windows-surface-host-test migo_windo
                migo-windows-json-test migo_windows_host_services
                migo-windows-managed-session-test migo_windows_managed_session
                migo-windows-builtin-host-services-test migo_windows_builtin_host_services)
+    # Every warning an error, in the compiler's own spelling.
+    set_target_properties(${target} PROPERTIES COMPILE_WARNING_AS_ERROR ON)
     if(MSVC)
-        target_compile_options(${target} PRIVATE /W4 /WX /utf-8 /permissive-)
+        target_compile_options(${target} PRIVATE /W4 /utf-8 /permissive-)
     else()
-        target_compile_options(${target} PRIVATE -Wall -Wextra -Werror)
+        target_compile_options(${target} PRIVATE -Wall -Wextra)
     endif()
 endforeach()
 
