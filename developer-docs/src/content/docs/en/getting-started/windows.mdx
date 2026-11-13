@@ -115,10 +115,13 @@ This phase does not include:
   and as the pointer stream, the wheel, touch screens and pens, keys named as the DOM names them
   (`code` from the scan code, `key` from the layout), the IME's composition, focus, a pointer lock
   (raw input, the cursor confined and hidden; Esc releases it), and frames paced by the desktop
-  compositor (`requestFrame`). A Managed session that owns the Session and its callbacks, and the
-  built-in host services (toasts, the window, the clipboard, files, location, videos, the recorder),
-  are not there yet: until they are, an App installs its own callbacks and answers the host services
-  itself.
+  compositor (`requestFrame`). `migo::windows-managed-session` owns a Session with its callback
+  table, its view and its teardown -- engine callbacks run on the GUI thread, content loads once the
+  view attaches, the App's window shown and not minimized is the game running, `setKeepScreenOn` holds
+  the display awake -- and routes the host services the App names to its own provider
+  (`migo::windows-host-services`: the channel, the provider interface and the JSON they speak). The
+  built-in host services (toasts, the window, the clipboard, files, location, videos, the recorder)
+  are not there yet: until they are, an App answers them itself.
 - **`EglProvider` implementation**: not yet provided.
 
 ## Building from source
