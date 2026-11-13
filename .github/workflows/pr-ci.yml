@@ -1471,6 +1471,27 @@ jobs:
         run: |
           python scripts/testing/check_cpal_scheduling.py "$PWD" "$RUNNER_TEMP/migo-wasapi-scheduling" --native
 
+  # The Windows Host Kit (platforms/windows/host-kit), built with MSVC and run
+  # against the strict fake of the C ABI its tests link -- no engine, no V8 --
+  # as linux-qt-host-kit does for the Linux one. Windows has no machine of the
+  # project's own, so this job is where the Win32 code is compiled and run.
+  windows-host-kit:
+    runs-on: windows-2025
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Setup MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+
+      - name: Windows Host Kit contract
+        shell: bash
+        run: bash scripts/test-windows-host-kit.sh
+
   host-engine-tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 90

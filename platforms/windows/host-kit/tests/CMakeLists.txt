@@ -1,0 +1,57 @@
+cmake_minimum_required(VERSION 3.16)
+project(migo_windows_host_kit_tests LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(NOT DEFINED MIGO_REPOSITORY_ROOT)
+    get_filename_component(MIGO_REPOSITORY_ROOT
+        "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
+endif()
+
+get_filename_component(HOST_KIT_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+set(MIGO_PUBLIC_INCLUDE "${MIGO_REPOSITORY_ROOT}/include")
+
+# The strict fake of the public C ABI every Host Kit's tests link (tests/host_kit_fake).
+set(MIGO_HOST_KIT_FAKE "${MIGO_REPOSITORY_ROOT}/tests/host_kit_fake")
+add_library(migo_host_kit_fake_capi STATIC "${MIGO_HOST_KIT_FAKE}/fake_migo.cpp")
+target_include_directories(migo_host_kit_fake_capi PUBLIC
+    "${MIGO_PUBLIC_INCLUDE}"
+    "${MIGO_HOST_KIT_FAKE}"
+)
+
+# Model a separately installed core SDK: the Host Kit sees only the public
+# include contract; test executables link the fake explicitly to resolve migo_*.
+add_library(migo::migo INTERFACE IMPORTED GLOBAL)
+set_target_properties(migo::migo PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${MIGO_PUBLIC_INCLUDE}"
+)
+
+add_subdirectory("${HOST_KIT_ROOT}" host-kit)
+
+add_executable(migo-windows-surface-host-test surface_host_test.cpp)
+target_link_libraries(migo-windows-surface-host-test PRIVATE
+    migo::windows-surface-host
+    migo_host_kit_fake_capi
+)
+
+add_executable(migo-win32-surface-view-test win32_surface_view_test.cpp)
+target_link_libraries(migo-win32-surface-view-test PRIVATE
+    migo::win32-surface-view
+    migo_host_kit_fake_capi
+    user32
+)
+
+foreach(target migo_host_kit_fake_capi migo-windows-surface-host-test migo_windows_surface_host
+               migo-win32-surface-view-test migo_win32_surface_view)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /WX /utf-8 /permissive-)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Werror)
+    endif()
+endforeach()
+
+enable_testing()
+add_test(NAME migo-windows-surface-host COMMAND migo-windows-surface-host-test)
+add_test(NAME migo-win32-surface-view COMMAND migo-win32-surface-view-test)

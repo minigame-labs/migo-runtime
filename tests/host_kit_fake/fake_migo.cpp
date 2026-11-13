@@ -15,6 +15,7 @@ MigoSurfaceMetrics g_metrics{};
 MigoSurfaceReleaseStatus g_release_query{};
 MigoX11WindowDescriptor g_x11{};
 MigoWaylandSurfaceDescriptor g_wayland{};
+MigoWin32HwndDescriptor g_win32{};
 MigoResult g_attach_result = MIGO_OK;
 bool g_attach_returns_null = false;
 bool g_attach_writes_handle_on_error = false;
@@ -117,6 +118,7 @@ void reset() noexcept {
     g_release_query = {};
     g_x11 = {};
     g_wayland = {};
+    g_win32 = {};
     g_attach_result = MIGO_OK;
     g_attach_returns_null = false;
     g_attach_writes_handle_on_error = false;
@@ -181,6 +183,7 @@ const MigoSurfaceMetrics &last_metrics() noexcept { return g_metrics; }
 const MigoSurfaceReleaseStatus &last_release_query() noexcept { return g_release_query; }
 const MigoX11WindowDescriptor &last_x11() noexcept { return g_x11; }
 const MigoWaylandSurfaceDescriptor &last_wayland() noexcept { return g_wayland; }
+const MigoWin32HwndDescriptor &last_win32() noexcept { return g_win32; }
 
 void set_attach_result(MigoResult result) noexcept { g_attach_result = result; }
 void set_attach_returns_null(bool returns_null) noexcept { g_attach_returns_null = returns_null; }
@@ -436,6 +439,9 @@ migo_session_attach_surface(MigoSession *session, const MigoSurfaceDescriptor *d
         } else if (descriptor->platform_kind == MIGO_PLATFORM_WAYLAND_SURFACE) {
             std::memcpy(&g_wayland, descriptor->platform_descriptor, sizeof(g_wayland));
             g_surface.platform_descriptor = &g_wayland;
+        } else if (descriptor->platform_kind == MIGO_PLATFORM_WIN32_HWND) {
+            std::memcpy(&g_win32, descriptor->platform_descriptor, sizeof(g_win32));
+            g_surface.platform_descriptor = &g_win32;
         }
     }
     if (g_attach_result == MIGO_OK && !g_attach_returns_null) g_has_host = true;

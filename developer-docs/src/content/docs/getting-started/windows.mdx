@@ -103,8 +103,14 @@ migo_query_capabilities(&caps);
 
 - **WinUI 集成**：`MigoWinuiSwapChainPanelDescriptor` 标注为 "A future implementation"，
   目前不可用。
-- **Win32 host-kit 封装**：当前只到 C ABI 层，没有类似 Linux Qt host-kit 那样的
-  现成宿主封装（无应用窗口管理、无输入适配器）。
+- **Win32 Host Kit 的宿主服务**：Windows Host Kit（`platforms/windows/host-kit`）正在分阶段构建。
+  已有前两部分：`migo::windows-surface-host`——Surface 生命周期控制器（挂接子 `HWND`、更新尺寸、
+  退役并等待释放，单线程，与 Linux Host Kit 同一契约）；`migo::win32-surface-view`——游戏视图：
+  在你的窗口里创建一个子窗口，显示且有尺寸后挂接；尺寸为物理像素，缩放为窗口 DPI / 96（请把进程设为
+  per-monitor DPI aware）；鼠标按住时为触摸、同时提供指针事件流；滚轮；触摸屏与笔；按键按 DOM 命名
+  （`code` 来自扫描码，`key` 来自键盘布局）；输入法组合；焦点；指针锁定（原始输入，光标被限制并隐藏，
+  Esc 释放）；帧由桌面合成器节拍驱动（`requestFrame`）。托管会话（拥有 Session 与回调）和内置宿主服务
+  （提示、窗口、剪贴板、文件、定位、视频、录音）尚未提供：在此之前，App 自己安装回调并答复宿主服务。
 - **`EglProvider` 实现**：尚未提供。
 
 ## 从源码构建
