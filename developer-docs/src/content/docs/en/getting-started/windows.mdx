@@ -106,8 +106,19 @@ This phase does not include:
 
 - **WinUI integration**: `MigoWinuiSwapChainPanelDescriptor` is marked "A future implementation"
   and is currently unavailable.
-- **Win32 host-kit wrapper**: only the C ABI layer currently exists; there is no ready-made host
-  wrapper like the Linux Qt host-kit (no application-window management or input adapter).
+- **Win32 Host Kit services**: the Windows Host Kit (`platforms/windows/host-kit`) is being built in
+  stages. Its first two pieces exist: `migo::windows-surface-host`, the Surface lifecycle
+  controller (attach a child `HWND`, update its metrics, retire it and observe its release, on one
+  thread -- the Linux Host Kit's contract), and `migo::win32-surface-view`, the game's view: a child
+  window it creates in yours, attached once shown at a size, its metrics in physical pixels at the
+  window's DPI over 96 (make the process per-monitor DPI aware), the mouse as a touch while pressed
+  and as the pointer stream, the wheel, touch screens and pens, keys named as the DOM names them
+  (`code` from the scan code, `key` from the layout), the IME's composition, focus, a pointer lock
+  (raw input, the cursor confined and hidden; Esc releases it), and frames paced by the desktop
+  compositor (`requestFrame`). A Managed session that owns the Session and its callbacks, and the
+  built-in host services (toasts, the window, the clipboard, files, location, videos, the recorder),
+  are not there yet: until they are, an App installs its own callbacks and answers the host services
+  itself.
 - **`EglProvider` implementation**: not yet provided.
 
 ## Building from source

@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Windows Host Kit begins (`platforms/windows/host-kit`), the Win32 counterpart of the Linux Host Kit:
+  `migo::windows-surface-host`, the Surface lifecycle controller for a child `HWND` with the Linux Host Kit's
+  contract, and `migo::win32-surface-view`, the game's view -- a child window attached once shown at a size, its
+  metrics in physical pixels at the window's DPI, the mouse as touch and pointer streams, the wheel, touch screens
+  and pens, keys named as the DOM names them, the IME's composition, focus, a pointer lock through raw input, and
+  frames paced by the desktop compositor. Built and run against a strict fake of the C ABI on Windows in PR CI
+  (`windows-host-kit`); the fake is shared with the Linux Host Kit's tests (`tests/host_kit_fake`).
 - `getRecorderManager` on Linux: the Host Kit's `migo::qt6-media` component records the desktop's default input
   through GStreamer (PipeWire, PulseAudio or ALSA, as GStreamer finds it), at the rate and channels content asks for,
   written as the Android and Apple SDKs write a recording -- PCM, wav, and AAC (`mp3` too) as an `.m4a` file or,

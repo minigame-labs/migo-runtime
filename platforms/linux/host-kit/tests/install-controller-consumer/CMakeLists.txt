@@ -5,10 +5,12 @@ if(NOT DEFINED MIGO_PUBLIC_INCLUDE)
     message(FATAL_ERROR "MIGO_PUBLIC_INCLUDE must point at the core SDK's public headers")
 endif()
 
-add_library(migo_install_consumer_fake_capi STATIC ../fake_migo.cpp)
+# The strict fake of the public C ABI, beside the public headers in the repository.
+get_filename_component(MIGO_HOST_KIT_FAKE "${MIGO_PUBLIC_INCLUDE}/../tests/host_kit_fake" ABSOLUTE)
+add_library(migo_install_consumer_fake_capi STATIC "${MIGO_HOST_KIT_FAKE}/fake_migo.cpp")
 target_include_directories(migo_install_consumer_fake_capi PUBLIC
     "${MIGO_PUBLIC_INCLUDE}"
-    "${CMAKE_CURRENT_LIST_DIR}/.."
+    "${MIGO_HOST_KIT_FAKE}"
 )
 add_library(migo::migo ALIAS migo_install_consumer_fake_capi)
 

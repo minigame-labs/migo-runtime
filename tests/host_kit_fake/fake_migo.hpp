@@ -4,6 +4,7 @@
 #include <migo/input.h>
 #include <migo/migo.h>
 #include <migo/platform/wayland.h>
+#include <migo/platform/win32.h>
 #include <migo/platform/x11.h>
 
 #include <functional>
@@ -238,6 +239,7 @@ const MigoSurfaceMetrics &last_metrics() noexcept;
 const MigoSurfaceReleaseStatus &last_release_query() noexcept;
 const MigoX11WindowDescriptor &last_x11() noexcept;
 const MigoWaylandSurfaceDescriptor &last_wayland() noexcept;
+const MigoWin32HwndDescriptor &last_win32() noexcept;
 
 void set_attach_result(MigoResult result) noexcept;
 void set_attach_returns_null(bool returns_null) noexcept;

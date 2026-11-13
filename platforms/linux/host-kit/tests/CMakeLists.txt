@@ -13,10 +13,12 @@ endif()
 get_filename_component(HOST_KIT_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 set(MIGO_PUBLIC_INCLUDE "${MIGO_REPOSITORY_ROOT}/include")
 
-add_library(migo_host_kit_fake_capi STATIC fake_migo.cpp)
+# The strict fake of the public C ABI every Host Kit's tests link (tests/host_kit_fake).
+set(MIGO_HOST_KIT_FAKE "${MIGO_REPOSITORY_ROOT}/tests/host_kit_fake")
+add_library(migo_host_kit_fake_capi STATIC "${MIGO_HOST_KIT_FAKE}/fake_migo.cpp")
 target_include_directories(migo_host_kit_fake_capi PUBLIC
     "${MIGO_PUBLIC_INCLUDE}"
-    "${CMAKE_CURRENT_LIST_DIR}"
+    "${MIGO_HOST_KIT_FAKE}"
 )
 
 # Model a separately installed core SDK: the Host Kit must see only the public

@@ -8,10 +8,12 @@ endif()
 # Model the real core SDK as a separately built linkable target. Linking an
 # executable (rather than another archive) proves that every dependency of the
 # installed static Host Kit closes through its exported CMake targets.
-add_library(migo_install_consumer_fake_capi STATIC ../fake_migo.cpp)
+# The strict fake of the public C ABI, beside the public headers in the repository.
+get_filename_component(MIGO_HOST_KIT_FAKE "${MIGO_PUBLIC_INCLUDE}/../tests/host_kit_fake" ABSOLUTE)
+add_library(migo_install_consumer_fake_capi STATIC "${MIGO_HOST_KIT_FAKE}/fake_migo.cpp")
 target_include_directories(migo_install_consumer_fake_capi PUBLIC
     "${MIGO_PUBLIC_INCLUDE}"
-    "${CMAKE_CURRENT_LIST_DIR}/.."
+    "${MIGO_HOST_KIT_FAKE}"
 )
 add_library(migo::migo ALIAS migo_install_consumer_fake_capi)
 
