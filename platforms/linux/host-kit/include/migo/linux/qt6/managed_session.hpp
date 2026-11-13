@@ -66,9 +66,11 @@ public:
         /// with Qt's own (`MigoQtBuiltInHostServices`). It must outlive the
         /// Session, and is called on the GUI thread.
         MigoQtHostServiceProvider *appServices = nullptr;
-        /// What describes and plays videos for the image service --
-        /// `MigoQtMedia`, from the `migo::qt6-media` component -- or null,
-        /// which refuses videos.
+        /// What describes and plays videos -- for the image service, and
+        /// createVideo's players over the game -- `MigoQtMedia`, from the
+        /// `migo::qt6-media` component; or null, which refuses videos and
+        /// leaves createVideo to `appServices`. The players hold still while
+        /// the window is minimized, as the game does.
         std::shared_ptr<const MigoQtVideoSupport> videos;
     };
 

@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `createVideo` on Linux: the Host Kit's `migo::qt6-media` component plays content's videos over the game through
+  GStreamer, as the Android and Apple SDKs do. Each player is an X window inside the game's view -- kept above the
+  game's frames by the X server, cut to the view, moving, hiding and going with it, with no window manager involved
+  -- where content put it; it shows its poster until it plays, fits its picture as `objectFit` says, answers a play
+  once it plays and a seek once there, reports what it does as the other SDKs do, holds still while the game is
+  paused, and has the controls content asks for (the play button in the middle, the bar, the progress line, the
+  double click and the sideways drag), passing a click to the game where it has none. `MigoQtVideoSupport::players`
+  is how a video support makes them (`MigoQtVideoPlayers`); `MigoQtBuiltInHostServices` answers the video service
+  with them and `setRunning` holds them still, which `MigoManagedSession` calls as the window is minimized and
+  restored. An App without `migo::qt6-media` answers `createVideo` itself, as before.
 - On iOS a `chooseImage` or `chooseMedia` that allows the camera only (`sourceType: ["camera"]`) takes a photo or a
   video with the system's camera screen, when the app links MigoAppleCamera: one photo as a JPEG, or -- when
   content asked for videos only -- one video of at most `maxDuration` seconds (3 to 60, 10 unless said), on the

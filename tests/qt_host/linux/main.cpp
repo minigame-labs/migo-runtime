@@ -18,6 +18,8 @@
 // file that whoever runs the host appends lines to while it runs, and
 //
 //   TAP-TEXT <text>    the player taps the button, or the menu item, that says <text>
+//                      -- or the button showing only an icon that assistive
+//                      technology names <text>, as a video's controls are
 //   TYPE-TEXT <text>   the player types <text> into the field that holds the focus
 //   PRESS-ENTER        the player presses Enter there
 //   PICK-NEWEST        the player picks the newest of their files -- those in their
@@ -112,7 +114,8 @@ bool tap(const QString &text) {
             }
         }
         for (QAbstractButton *button : window->findChildren<QAbstractButton *>()) {
-            if (button->isVisible() && button->isEnabled() && button->text() == text) {
+            const bool named = button->text() == text || (button->text().isEmpty() && button->accessibleName() == text);
+            if (button->isVisible() && button->isEnabled() && named) {
                 button->click();
                 return true;
             }
