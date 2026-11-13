@@ -63,9 +63,6 @@ source "$SCRIPT_DIR/lib/android-ndk.sh"
 android_ndk_read_pin "$REPO_ROOT/contracts/artifact-manifest/android-v8.lock.json" || exit 1
 android_ndk_resolve || { err "cannot resolve the pinned Android NDK"; exit 1; }
 NDK_BIN="$(echo "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin)"
-export ANDROID_NDK_HOME
-# skia-bindings reads ANDROID_NDK (not _HOME) when picking its toolchain.
-export ANDROID_NDK="$ANDROID_NDK_HOME"
 export PATH="$NDK_BIN:$PATH"
 
 # engine/.cargo/config.toml names <triple>-ar without a path; the NDK ships it

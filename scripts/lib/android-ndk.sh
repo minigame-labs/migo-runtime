@@ -43,8 +43,14 @@ PY
 )" || { _android_ndk_err "cannot read the ndk pin from $lock"; return 1; }
 }
 
-# Sets ANDROID_NDK_HOME to an NDK whose own Pkg.Revision equals the pin, and
-# LIBCLANG_PATH to that NDK's libclang.
+# Sets ANDROID_NDK_HOME and ANDROID_NDK to an NDK whose own Pkg.Revision equals
+# the pin, and LIBCLANG_PATH to that NDK's libclang.
+#
+# Both names, because a build reads both: cargo-ndk the first, and the build
+# scripts of what it compiles -- skia-bindings, ada-url -- the second. One left
+# to whatever the environment held is another NDK's headers under this one's
+# compiler; one left unset is a build that stops for want of it, as the snapshot
+# generator's did once ada-url joined what it links.
 #
 # The second is part of the same toolchain. bindgen (clang-sys) parses the NDK's
 # libc++ and bionic headers when it generates a binding for an Android target --
@@ -71,7 +77,8 @@ android_ndk_resolve() {
         revision="$(android_ndk_revision "$candidate")" || continue
         if [[ "$revision" == "$ANDROID_NDK_PIN" ]]; then
             ANDROID_NDK_HOME="$candidate"
-            export ANDROID_NDK_HOME
+            ANDROID_NDK="$candidate"
+            export ANDROID_NDK_HOME ANDROID_NDK
             android_ndk_libclang || return 1
             return 0
         fi

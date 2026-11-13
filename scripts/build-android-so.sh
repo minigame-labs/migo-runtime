@@ -140,11 +140,6 @@ check_dependencies() {
     android_ndk_read_pin "$PROJECT_ROOT/contracts/artifact-manifest/android-v8.lock.json" || exit 1
     android_ndk_resolve || { print_error "cannot resolve the pinned Android NDK"; exit 1; }
 
-    # skia-bindings' build script reads ANDROID_NDK (not _HOME).  Keep
-    # them in sync so Skia cross-compile picks the same toolchain as
-    # cargo-ndk.
-    export ANDROID_NDK="$ANDROID_NDK_HOME"
-
     print_success "All dependencies are ready (ANDROID_NDK=$ANDROID_NDK)"
 }
 
