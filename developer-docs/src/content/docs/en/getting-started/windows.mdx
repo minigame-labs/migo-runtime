@@ -120,7 +120,11 @@ This phase does not include:
   view attaches, the App's window shown and not minimized is the game running, `setKeepScreenOn` holds
   the display awake -- and routes the host services the App names to its own provider
   (`migo::windows-host-services`: the channel, the provider interface and the JSON they speak). The
-  built-in host services (toasts, the window, the clipboard, files, location, videos, the recorder)
+  Host Kit answers the rest it can (`migo::windows-builtin-host-services`): the system clipboard; the
+  window (`setWindowSize`, its state, `setCursor`, the pointer lock); the screen (orientation is the
+  game's shape, turned by `setDeviceOrientation`; `setVisualEffectOnCapture`; `setEnableDebug`, which
+  shows a debugging panel with the frame rate and content's console); the scopes a desktop decides.
+  Toasts and dialogs, battery and network reports, files, location, gamepads, videos and the recorder
   are not there yet: until they are, an App answers them itself.
 - **`EglProvider` implementation**: not yet provided.
 

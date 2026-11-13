@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Windows Host Kit's built-in host services (`migo::windows-builtin-host-services`), which the Managed session
+  answers what the App does not with: the system clipboard; the window (`setWindowSize`, its state reported,
+  `setCursor` from a CSS keyword or a cursor file, the pointer lock reported and a refusal said); the screen
+  (orientation is the game's shape, reported as it crosses and turned by `setDeviceOrientation`;
+  `setVisualEffectOnCapture` keeps the window out of captures; `setEnableDebug` shows a debugging panel with the frame
+  rate and content's console, taking no input); the scopes a desktop decides. The API platform matrix now reads the
+  Windows Host Kit as Windows' host layer.
 - The Windows Host Kit's Managed session (`migo::windows-managed-session`) and host-service channel
   (`migo::windows-host-services`): one Session owned with its callback table, its view and its teardown -- engine
   callbacks run on the GUI thread through a message-only window, content loads once the view attaches, the App's window

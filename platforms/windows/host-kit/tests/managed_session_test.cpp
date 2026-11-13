@@ -161,7 +161,9 @@ void it_creates_the_session_and_installs_its_callbacks() {
     const MigoHostCallbacks &installed = fake_migo::installed_callbacks();
     CHECK(installed.dispatch != nullptr && installed.on_ready != nullptr && installed.on_request_frame != nullptr);
     CHECK(installed.on_keep_screen_on != nullptr);
-    CHECK(installed.host_services == hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD));
+    // The App's services, and the Host Kit's own.
+    CHECK((installed.host_services & hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD)) != 0);
+    CHECK((installed.host_services & hostServiceBit(MIGO_HOST_SERVICE_WINDOW)) != 0);
     // Not named: the executable's name.
     CHECK(fake_migo::reported_host_app_id() == "migo-windows-managed-session-test");
 }

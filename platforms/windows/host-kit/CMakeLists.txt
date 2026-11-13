@@ -94,10 +94,36 @@ target_include_directories(migo_windows_host_services
 target_link_libraries(migo_windows_host_services PUBLIC migo::migo)
 list(APPEND _migo_windows_host_kit_targets migo_windows_host_services)
 
+# The services Windows already offers an App, answered with its own: the
+# clipboard, the window, the screen, the scopes a desktop decides.
+add_library(migo_windows_builtin_host_services STATIC
+    include/migo/windows/builtin_host_services.hpp
+    src/builtin_host_services.cpp
+)
+add_library(migo::windows-builtin-host-services ALIAS migo_windows_builtin_host_services)
+set_target_properties(migo_windows_builtin_host_services PROPERTIES
+    EXPORT_NAME windows-builtin-host-services
+    POSITION_INDEPENDENT_CODE ON
+)
+target_compile_features(migo_windows_builtin_host_services PUBLIC cxx_std_17)
+target_include_directories(migo_windows_builtin_host_services
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
+target_link_libraries(migo_windows_builtin_host_services
+    PUBLIC migo::win32-surface-view migo::windows-host-services
+    PRIVATE user32 comctl32
+)
+list(APPEND _migo_windows_host_kit_targets migo_windows_builtin_host_services)
+
 # The Managed shape: one Session owned with its callbacks, its view and its teardown.
 add_library(migo_windows_managed_session STATIC
     include/migo/windows/managed_session.hpp
     src/managed_session.cpp
+    # Internal, not installed: the panel the debugging aids show.
+    src/debug_panel.hpp
+    src/debug_panel.cpp
 )
 add_library(migo::windows-managed-session ALIAS migo_windows_managed_session)
 set_target_properties(migo_windows_managed_session PROPERTIES
@@ -111,8 +137,8 @@ target_include_directories(migo_windows_managed_session
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 target_link_libraries(migo_windows_managed_session
-    PUBLIC migo::win32-surface-view migo::windows-host-services
-    PRIVATE user32 comctl32 shell32 ole32
+    PUBLIC migo::win32-surface-view migo::windows-host-services migo::windows-builtin-host-services
+    PRIVATE user32 gdi32 comctl32 shell32 ole32
 )
 list(APPEND _migo_windows_host_kit_targets migo_windows_managed_session)
 
@@ -130,6 +156,7 @@ if(MIGO_WINDOWS_HOST_KIT_ENABLE_INSTALL)
                   include/migo/windows/win32_surface_view.hpp
                   include/migo/windows/json.hpp
                   include/migo/windows/host_services.hpp
+                  include/migo/windows/builtin_host_services.hpp
                   include/migo/windows/managed_session.hpp
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/migo/windows")
     install(FILES README.md

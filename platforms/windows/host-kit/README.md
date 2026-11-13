@@ -38,10 +38,23 @@ It is being built in stages (migo-runtime's schedule item X1):
   attaches; the App's top-level window being shown and not minimized is the
   game running and showing, reported as it changes; frame requests go to the
   view, setKeepScreenOn holds the display awake while the game runs; the App's
-  services answer what it names; who the App is defaults to its process's
-  AppUserModelID, else its executable's name.
+  services answer what it names, the Host Kit's built-in ones the rest; who the
+  App is defaults to its process's AppUserModelID, else its executable's name;
+  content's setEnableDebug shows the debugging panel -- frames a second and
+  content's console over the top of the game, taking no input -- and reports
+  the aids on (`debugAids`/`setDebugAids`).
+- `migo::windows-builtin-host-services`
+  (`include/migo/windows/builtin_host_services.hpp`): what Windows already
+  offers an App, answered with its own -- the system clipboard (text); the
+  window (setWindowSize sizes the game, its state reported, setCursor from a
+  CSS keyword or a .cur/.ani file, the view's pointer lock reported and a
+  refusal said); the screen (orientation is the game's shape, reported as it
+  crosses and turned by setDeviceOrientation; setVisualEffectOnCapture keeps
+  the window out of captures; setEnableDebug); the scopes a desktop decides
+  (writePhotosAlbum granted). An App can use it in the Bound shape too.
 
-Next: the built-in services the platform's API asks of a Windows PC.
+Next: toasts, loading, modals and action sheets; battery, network and memory
+reports; images and files; location; gamepads; videos; the recorder.
 
 Build it with CMake against the Migo Windows SDK package
 (`find_package(migo)`), and link the targets it exports
