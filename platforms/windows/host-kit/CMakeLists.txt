@@ -124,6 +124,9 @@ set_target_properties(migo_windows_builtin_host_services PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 target_compile_features(migo_windows_builtin_host_services PUBLIC cxx_std_17)
+# C++/WinRT (the location service) awaits through C++20's coroutines; the
+# experimental ones it falls back to before C++20 are gone from current MSVC.
+target_compile_features(migo_windows_builtin_host_services PRIVATE cxx_std_20)
 target_include_directories(migo_windows_builtin_host_services
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
