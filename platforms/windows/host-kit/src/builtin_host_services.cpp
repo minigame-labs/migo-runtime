@@ -1,5 +1,6 @@
 #include <migo/windows/builtin_host_services.hpp>
 
+#include "images.hpp"
 #include "interaction.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -93,8 +94,10 @@ HCURSOR cursor_of(std::string_view keyword) noexcept {
 
 class Win32BuiltInHostServices::Impl final {
 public:
-    Impl(Win32SurfaceView &view, std::shared_ptr<HostServiceChannel> channel, std::function<void(bool)> debug_aids)
-        : view_(view), channel_(std::move(channel)), debug_aids_(std::move(debug_aids)), interaction_(view) {
+    Impl(Win32SurfaceView &view, std::shared_ptr<HostServiceChannel> channel, std::function<void(bool)> debug_aids,
+         const FileLocations &files)
+        : view_(view), channel_(std::move(channel)), debug_aids_(std::move(debug_aids)), interaction_(view),
+          images_(GetAncestor(view.hwnd(), GA_ROOT), placesOf(files)) {
         root_ = GetAncestor(view_.hwnd(), GA_ROOT);
         if (root_ != nullptr) {
             reported_state_ = state_of(root_);
@@ -120,6 +123,9 @@ public:
         switch (service) {
             case MIGO_HOST_SERVICE_INTERACTION:
                 interaction_.call(method, request, std::move(reply));
+                return;
+            case MIGO_HOST_SERVICE_IMAGE:
+                images_.call(method, request, std::move(reply));
                 return;
             case MIGO_HOST_SERVICE_CLIPBOARD:
                 clipboard(method, request, std::move(reply));
@@ -444,17 +450,26 @@ private:
     HCURSOR owned_cursor_ = nullptr;
     bool excluded_from_capture_ = false;
     Interaction interaction_;
+    Images images_;
+
+    static Images::Places placesOf(const FileLocations &files) {
+        Images::Places places = Images::Places::system();
+        if (!files.staging.empty()) places.staging = files.staging.wstring();
+        if (!files.album.empty()) places.album = files.album.wstring();
+        return places;
+    }
 };
 
 Win32BuiltInHostServices::Win32BuiltInHostServices(Win32SurfaceView &view, std::shared_ptr<HostServiceChannel> channel,
-                                                   std::function<void(bool on)> debug_aids)
-    : impl_(std::make_unique<Impl>(view, std::move(channel), std::move(debug_aids))) {}
+                                                   std::function<void(bool on)> debug_aids, FileLocations files)
+    : impl_(std::make_unique<Impl>(view, std::move(channel), std::move(debug_aids), files)) {}
 
 Win32BuiltInHostServices::~Win32BuiltInHostServices() = default;
 
 std::uint64_t Win32BuiltInHostServices::services() const noexcept {
     std::uint64_t builtIn = 0;
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_INTERACTION);
+    builtIn |= hostServiceBit(MIGO_HOST_SERVICE_IMAGE);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_WINDOW);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_SCREEN);
