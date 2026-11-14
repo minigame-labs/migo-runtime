@@ -120,7 +120,7 @@ migo_query_capabilities(&caps);
   图片与文件也已内置——系统的打开/保存对话框、WIC 处理图片、Media Foundation 读取视频信息、自带预览窗口。
   定位来自 Windows 定位服务，受其隐私设置约束；手柄来自 Windows.Gaming.Input，Xbox 类手柄映射到标准布局并支持震动。
   录音经 WASAPI 采集、Media Foundation 编码；createVideo 的播放器由 Media Foundation 媒体引擎解码、Direct2D 绘制。
-  播放器自带控件。预览中的视频尚未提供。
+  播放器自带控件；预览也能播放视频；屏幕亮度经 DDC/CI 或 WMI。App 在自己的提供者里声明某项服务，即由 App 自己答复。
 - **`EglProvider` 实现**：尚未提供。
 
 ## 从源码构建

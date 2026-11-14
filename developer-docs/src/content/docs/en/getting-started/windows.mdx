@@ -132,8 +132,8 @@ This phase does not include:
   Location comes from Windows' location service, as its privacy settings allow; gamepads from
   Windows.Gaming.Input, an Xbox-class pad on the standard layout with rumble; the recorder through
   WASAPI and Media Foundation; createVideo's players through Media Foundation's media engine, drawn
-  with Direct2D, with their on-screen controls. Videos in previews
-  are not there yet: until they are, an App answers them itself.
+  with Direct2D, with their on-screen controls; previews play videos too; the screen's brightness
+  through DDC/CI or WMI. An App answers a service itself by naming it in its own provider.
 - **`EglProvider` implementation**: not yet provided.
 
 ## Building from source

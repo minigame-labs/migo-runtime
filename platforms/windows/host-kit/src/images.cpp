@@ -380,8 +380,8 @@ std::pair<std::uint32_t, std::uint32_t> Images::targetSize(std::uint32_t source_
 
 class Images::Impl final {
 public:
-    Impl(HWND owner, Places places)
-        : owner_(owner), post_(queue_.poster()), places_(std::move(places)),
+    Impl(HWND owner, Places places, MediaViewer::VideoMaker videos)
+        : owner_(owner), post_(queue_.poster()), places_(std::move(places)), videos_(std::move(videos)),
           dialog_done_(CreateEventW(nullptr, TRUE, TRUE, nullptr)) {}
 
     ~Impl() {
@@ -417,24 +417,28 @@ public:
                 saveImageToPhotosAlbum(request, std::move(reply));
                 return;
             case MIGO_IMAGE_PREVIEW_IMAGE: {
-                std::vector<std::string> urls;
-                for (const Json &url : request["urls"].items()) urls.push_back(url.string());
+                std::vector<PreviewSource> sources;
+                for (const Json &url : request["urls"].items()) sources.push_back({url.string(), false, {}});
                 // `current` is one of them, made a real path as they were.
-                const auto at = std::find(urls.begin(), urls.end(), request["current"].string());
-                preview(std::move(urls), at == urls.end() ? 0 : static_cast<int>(at - urls.begin()), std::move(reply));
+                const std::string &current = request["current"].string();
+                const auto at = std::find_if(sources.begin(), sources.end(),
+                                             [&current](const PreviewSource &source) { return source.url == current; });
+                preview(std::move(sources), at == sources.end() ? 0 : static_cast<int>(at - sources.begin()),
+                        std::move(reply));
                 return;
             }
             case MIGO_IMAGE_PREVIEW_MEDIA: {
-                std::vector<std::string> urls;
+                std::vector<PreviewSource> sources;
                 for (const Json &source : request["sources"].items()) {
-                    // Videos once the Host Kit plays them.
-                    if (source["type"].string() == "video") {
+                    const bool video = source["type"].string() == "video";
+                    // Videos where the Host Kit plays them.
+                    if (video && !videos_) {
                         (void)reply.fail(kNotSupported);
                         return;
                     }
-                    urls.push_back(source["url"].string());
+                    sources.push_back({source["url"].string(), video, video ? source["poster"].string() : std::string()});
                 }
-                preview(std::move(urls), static_cast<int>(request["current"].numberOr(0)), std::move(reply));
+                preview(std::move(sources), static_cast<int>(request["current"].numberOr(0)), std::move(reply));
                 return;
             }
             default:
@@ -876,9 +880,16 @@ private:
 
     // ---- the previews -----------------------------------------------------------------------------
 
-    void preview(std::vector<std::string> sources, int current, HostServiceReply reply) {
-        if (sources.empty() ||
-            std::any_of(sources.begin(), sources.end(), [](const std::string &source) { return source.empty(); })) {
+    /// One thing to preview: an image or a video, a path or an http(s) URL, a video's poster.
+    struct PreviewSource {
+        std::string url;
+        bool video = false;
+        std::string poster;
+    };
+
+    void preview(std::vector<PreviewSource> sources, int current, HostServiceReply reply) {
+        if (sources.empty() || std::any_of(sources.begin(), sources.end(),
+                                           [](const PreviewSource &source) { return source.url.empty(); })) {
             (void)reply.fail("nothing to preview");
             return;
         }
@@ -894,8 +905,10 @@ private:
         };
         std::vector<std::pair<std::size_t, std::wstring>> remotes;
         for (std::size_t index = 0; index < sources.size(); ++index) {
-            const std::wstring source = wideOf(sources[index]);
-            if (isRemote(sources[index])) {
+            const std::wstring source = wideOf(sources[index].url);
+            // A video on the network is streamed as it plays.
+            if (sources[index].video && isRemote(sources[index].url)) continue;
+            if (isRemote(sources[index].url)) {
                 const std::wstring path = staging()->path(L"");
                 HANDLE file = path.empty() ? INVALID_HANDLE_VALUE
                                            : CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
@@ -922,8 +935,9 @@ private:
             }
             (*files)[index] = file;
         }
+        auto shared_sources = std::make_shared<std::vector<PreviewSource>>(std::move(sources));
         if (remotes.empty()) {
-            showPreview(std::move(*files), current, std::move(reply));
+            showPreview(std::move(*files), *shared_sources, current, std::move(reply));
             return;
         }
         // The downloads on a thread of their own; the viewer shown, on the GUI
@@ -939,38 +953,50 @@ private:
         auto finished = std::make_shared<std::atomic<bool>>(false);
         auto answer = std::make_shared<HostServiceReply>(std::move(reply));
         std::thread thread([this, alive = alive_, post = post_, downloads, finished, files, remotes = std::move(remotes),
-                            current, answer, release] {
+                            shared_sources, current, answer, release] {
             std::string error;
             for (const auto &[index, url] : remotes) {
                 error = download(*downloads, url, (*files)[index]);
                 if (!error.empty()) break;
             }
             finished->store(true);
-            post([this, alive, downloads, files, current, answer, error, release] {
+            post([this, alive, downloads, files, shared_sources, current, answer, error, release] {
                 if (!*alive || !error.empty() || downloads->stopped()) {
                     release(*files);
                     (void)answer->fail(error.empty() ? std::string("download failed: stopped") : error);
                     return;
                 }
-                showPreview(std::move(*files), current, std::move(*answer));
+                showPreview(std::move(*files), *shared_sources, current, std::move(*answer));
             });
         });
         loaders_.push_back(Loader{std::move(thread), std::move(downloads), std::move(finished)});
     }
 
-    void showPreview(std::vector<HANDLE> files, int current, HostServiceReply reply) {
+    void showPreview(std::vector<HANDLE> files, const std::vector<PreviewSource> &sources, int current,
+                     HostServiceReply reply) {
         // Another preview replaces the one shown.
         viewer_.reset();
-        std::vector<void *> held(files.begin(), files.end());
+        std::vector<MediaViewer::Item> items;
+        for (std::size_t index = 0; index < sources.size(); ++index) {
+            MediaViewer::Item item;
+            item.file = files[index] == INVALID_HANDLE_VALUE ? nullptr : files[index];
+            item.video = sources[index].video;
+            item.url = sources[index].url;
+            item.poster = sources[index].poster;
+            items.push_back(std::move(item));
+        }
         std::shared_ptr<bool> alive = alive_;
         const std::uint64_t shown = ++viewers_shown_;
-        viewer_ = std::make_unique<MediaViewer>(owner_, std::move(held), current, [this, alive, shown] {
-            // Gone once the message that closed it is handled -- unless another
-            // preview has replaced it by then.
-            post_([this, alive, shown] {
-                if (*alive && viewers_shown_ == shown) viewer_.reset();
-            });
-        });
+        viewer_ = std::make_unique<MediaViewer>(
+            owner_, std::move(items), current,
+            [this, alive, shown] {
+                // Gone once the message that closed it is handled -- unless
+                // another preview has replaced it by then.
+                post_([this, alive, shown] {
+                    if (*alive && viewers_shown_ == shown) viewer_.reset();
+                });
+            },
+            videos_);
         (void)reply.succeed();
     }
 
@@ -980,6 +1006,8 @@ private:
     GuiQueue queue_;
     const GuiQueue::Post post_;
     const Places places_;
+    /// What plays a previewed video; none where nothing does.
+    const MediaViewer::VideoMaker videos_;
     std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
     std::shared_ptr<Staging> staging_;
 
@@ -1001,7 +1029,8 @@ private:
     std::vector<Loader> loaders_;
 };
 
-Images::Images(HWND__ *owner, Places places) : impl_(std::make_unique<Impl>(owner, std::move(places))) {}
+Images::Images(HWND__ *owner, Places places, MediaViewer::VideoMaker videos)
+    : impl_(std::make_unique<Impl>(owner, std::move(places), std::move(videos))) {}
 
 Images::~Images() = default;
 

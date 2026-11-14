@@ -1,6 +1,7 @@
 #include "media_viewer.hpp"
 
 #include "image_codec.hpp"
+#include "videos.hpp"
 
 #include <commctrl.h>
 #include <d2d1.h>
@@ -35,8 +36,8 @@ constexpr float kCloseReach = 56;
 
 class MediaViewer::Impl final {
 public:
-    Impl(HWND owner, std::vector<void *> files, int current, std::function<void()> closed)
-        : owner_(owner), files_(std::move(files)), closed_(std::move(closed)) {
+    Impl(HWND owner, std::vector<Item> items, int current, std::function<void()> closed, VideoMaker videos)
+        : owner_(owner), items_(std::move(items)), closed_(std::move(closed)), videos_(std::move(videos)) {
         static std::once_flag registered;
         std::call_once(registered, [] {
             WNDCLASSEXW viewer{};
@@ -47,7 +48,7 @@ public:
             viewer.lpszClassName = kViewerClass;
             if (RegisterClassExW(&viewer) == 0) fatal("RegisterClassExW failed for the media viewer");
         });
-        current_ = std::clamp(current, 0, std::max(0, static_cast<int>(files_.size()) - 1));
+        current_ = std::clamp(current, 0, std::max(0, static_cast<int>(items_.size()) - 1));
         window_ = CreateWindowExW(WS_EX_TOOLWINDOW, kViewerClass, L"", WS_POPUP, 0, 0, 1, 1, owner_, nullptr,
                                   GetModuleHandleW(nullptr), this);
         if (window_ == nullptr) fatal("CreateWindowExW failed for the media viewer");
@@ -74,14 +75,15 @@ public:
             SetWindowLongPtrW(window_, GWLP_USERDATA, 0);
             DestroyWindow(window_);
         }
-        for (void *file : files_) {
-            if (file != nullptr && file != INVALID_HANDLE_VALUE) CloseHandle(file);
+        video_.reset();
+        for (const Item &item : items_) {
+            if (item.file != nullptr && item.file != INVALID_HANDLE_VALUE) CloseHandle(item.file);
         }
     }
 
     HWND hwnd() const noexcept { return window_; }
     int current() const noexcept { return current_; }
-    int count() const noexcept { return static_cast<int>(files_.size()); }
+    int count() const noexcept { return static_cast<int>(items_.size()); }
     bool showsImage() const noexcept { return decoded_; }
 
     void showPrevious() {
@@ -152,6 +154,7 @@ private:
     void close() {
         if (closing_) return;
         closing_ = true;
+        video_.reset();
         ShowWindow(window_, SW_HIDE);
         if (closed_) closed_();
     }
@@ -169,6 +172,18 @@ private:
             SetWindowPos(window_, nullptr, origin.x, origin.y, std::max(1L, area.right), std::max(1L, area.bottom),
                          SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         }
+        placeVideo();
+    }
+
+    /// A video plays between the arrows, under the close box: they stay the viewer's.
+    void placeVideo() {
+        if (video_ == nullptr) return;
+        RECT area{};
+        GetClientRect(window_, &area);
+        const float reach = scale();
+        const int side = static_cast<int>(kArrowReach * reach);
+        const int top = static_cast<int>(kCloseReach * reach);
+        video_->place(side, top, std::max(0L, area.right - 2 * side), std::max(0L, area.bottom - top));
     }
 
     void clicked(int x, int y) {
@@ -186,6 +201,18 @@ private:
 
     void present(int index) {
         current_ = index;
+        video_.reset();
+        const Item &item = items_[static_cast<std::size_t>(current_)];
+        if (item.video && videos_) {
+            // Its own handle to the file the viewer holds: it may be shown again.
+            HANDLE file = INVALID_HANDLE_VALUE;
+            if (item.file != nullptr && item.file != INVALID_HANDLE_VALUE) {
+                DuplicateHandle(GetCurrentProcess(), item.file, GetCurrentProcess(), &file, 0, FALSE,
+                                DUPLICATE_SAME_ACCESS);
+            }
+            video_ = videos_(window_, file == INVALID_HANDLE_VALUE ? nullptr : file, item.url, item.poster);
+            placeVideo();
+        }
         render();
         InvalidateRect(window_, nullptr, FALSE);
     }
@@ -208,8 +235,11 @@ private:
         bitmap_.Reset();
         decoded_ = false;
         if (current_ < 0 || current_ >= count() || wic_ == nullptr || !ensureTarget()) return;
+        const Item &item = items_[static_cast<std::size_t>(current_)];
+        // A video is the player's to draw.
+        if (item.video) return;
         std::string error;
-        const std::optional<codec::Opened> image = codec::open(*wic_.Get(), files_[static_cast<std::size_t>(current_)], error);
+        const std::optional<codec::Opened> image = codec::open(*wic_.Get(), item.file, error);
         if (!image.has_value()) return;
         RECT area{};
         GetClientRect(window_, &area);
@@ -246,7 +276,10 @@ private:
                 const float left = std::round((size.width - shown.width) / 2);
                 const float top = std::round((size.height - shown.height) / 2);
                 target_->DrawBitmap(bitmap_.Get(), D2D1::RectF(left, top, left + shown.width, top + shown.height));
-            } else if (ink != nullptr) {
+            } else if (ink != nullptr && !items_[static_cast<std::size_t>(current_)].video) {
+                drawWarning(size, ink.Get());
+            } else if (ink != nullptr && video_ == nullptr) {
+                // A video that cannot be played here.
                 drawWarning(size, ink.Get());
             }
             if (ink != nullptr) drawControls(size, ink.Get());
@@ -296,8 +329,10 @@ private:
     }
 
     const HWND owner_;
-    std::vector<void *> files_;
+    std::vector<Item> items_;
     const std::function<void()> closed_;
+    const VideoMaker videos_;
+    std::unique_ptr<EmbeddedVideo> video_;
     HWND window_ = nullptr;
     bool following_ = false;
     bool closing_ = false;
@@ -309,8 +344,9 @@ private:
     ComPtr<ID2D1Bitmap> bitmap_;
 };
 
-MediaViewer::MediaViewer(HWND__ *owner, std::vector<void *> files, int current, std::function<void()> closed)
-    : impl_(std::make_unique<Impl>(owner, std::move(files), current, std::move(closed))) {}
+MediaViewer::MediaViewer(HWND__ *owner, std::vector<Item> items, int current, std::function<void()> closed,
+                         VideoMaker videos)
+    : impl_(std::make_unique<Impl>(owner, std::move(items), current, std::move(closed), std::move(videos))) {}
 MediaViewer::~MediaViewer() = default;
 HWND__ *MediaViewer::hwnd() const noexcept { return impl_->hwnd(); }
 int MediaViewer::current() const noexcept { return impl_->current(); }

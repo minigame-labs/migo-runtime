@@ -103,8 +103,12 @@ public:
     Impl(Win32SurfaceView &view, std::shared_ptr<HostServiceChannel> channel, std::function<void(bool)> debug_aids,
          const FileLocations &files)
         : view_(view), channel_(std::move(channel)), debug_aids_(std::move(debug_aids)), interaction_(view),
-          images_(GetAncestor(view.hwnd(), GA_ROOT), placesOf(files)),
-          recorder_(channel_, placesOf(files).staging), videos_(view, channel_) {
+          videos_(view, channel_),
+          images_(GetAncestor(view.hwnd(), GA_ROOT), placesOf(files),
+                  [this](HWND__ *window, void *file, const std::string &url, const std::string &poster) {
+                      return videos_.embed(window, file, url, poster);
+                  }),
+          recorder_(channel_, placesOf(files).staging) {
         root_ = GetAncestor(view_.hwnd(), GA_ROOT);
         if (root_ != nullptr) {
             reported_state_ = state_of(root_);
@@ -560,9 +564,10 @@ private:
     HCURSOR owned_cursor_ = nullptr;
     bool excluded_from_capture_ = false;
     Interaction interaction_;
+    // Before the image service, so they outlive the viewer that shows a video with them.
+    Videos videos_;
     Images images_;
     Recorder recorder_;
-    Videos videos_;
 
 public:
     void setRunning(bool running) { videos_.setRunning(running); }
