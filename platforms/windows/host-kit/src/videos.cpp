@@ -18,6 +18,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <map>
 #include <mutex>
@@ -91,16 +92,27 @@ std::optional<D2D1_COLOR_F> color_of(const std::string &text) {
         }
         return std::nullopt;
     }
-    float r = 0;
-    float g = 0;
-    float b = 0;
-    float a = 1;
-    if (std::sscanf(text.c_str(), "rgba(%f,%f,%f,%f)", &r, &g, &b, &a) == 4 ||
-        std::sscanf(text.c_str(), "rgb(%f,%f,%f)", &r, &g, &b) == 3) {
-        const auto clamp = [](float value, float top) { return std::clamp(value, 0.0F, top); };
-        return D2D1::ColorF(clamp(r, 255) / 255.0F, clamp(g, 255) / 255.0F, clamp(b, 255) / 255.0F, clamp(a, 1));
+    // rgb(r, g, b) or rgba(r, g, b, a): the numbers between the parentheses.
+    const bool alpha = text.rfind("rgba(", 0) == 0;
+    if (!alpha && text.rfind("rgb(", 0) != 0) return std::nullopt;
+    const std::size_t open = text.find('(');
+    const std::size_t close = text.rfind(')');
+    if (close == std::string::npos || close < open) return std::nullopt;
+    std::vector<float> numbers;
+    const char *at = text.c_str() + open + 1;
+    const char *const end = text.c_str() + close;
+    while (at < end) {
+        char *after = nullptr;
+        const float value = std::strtof(at, &after);
+        if (after == at) return std::nullopt;
+        numbers.push_back(value);
+        at = after;
+        while (at < end && (*at == ' ' || *at == ',')) ++at;
     }
-    return std::nullopt;
+    if (numbers.size() != (alpha ? 4U : 3U)) return std::nullopt;
+    const auto clamp = [](float value, float top) { return std::clamp(value, 0.0F, top); };
+    return D2D1::ColorF(clamp(numbers[0], 255) / 255.0F, clamp(numbers[1], 255) / 255.0F,
+                        clamp(numbers[2], 255) / 255.0F, alpha ? clamp(numbers[3], 1) : 1.0F);
 }
 
 /// What a source names, as the media engine opens it: a URL as it is, a path
