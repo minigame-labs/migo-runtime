@@ -3,6 +3,7 @@
 #include <migo/windows/builtin_host_services.hpp>
 
 #include "debug_panel.hpp"
+#include "gamepads.hpp"
 #include "keyboard_field.hpp"
 #include "system_reports.hpp"
 
@@ -141,6 +142,7 @@ public:
         callbacks.on_show_keyboard = &Impl::onShowKeyboard;
         callbacks.on_hide_keyboard = &Impl::onHideKeyboard;
         callbacks.on_update_keyboard = &Impl::onUpdateKeyboard;
+        callbacks.on_gamepad_rumble = &Impl::onGamepadRumble;
         // The App's services, and the Host Kit's for the rest.
         callbacks.on_host_service_call = &Impl::onHostServiceCall;
         callbacks.host_services = app_mask_ | built_in_->services();
@@ -161,6 +163,18 @@ public:
         reportAuthorizations();
         // Made before any task can run: tasks are queued to the GUI thread, which is this one.
         keyboard_ = std::make_unique<KeyboardField>(session_, *view_);
+        // The gamepads, told to the Session while it has a Surface to deliver
+        // to: before its first attach there is nobody to tell, and the pads are
+        // announced as it attaches.
+        gamepads_ = std::make_unique<Gamepads>(Gamepads::Sink{
+            [this](const MigoGamepadInfo &info, bool connected) {
+                if (session_ == nullptr || closing_ || !attached_) return;
+                (void)migo_session_set_gamepad_connected(session_, &info, connected ? 1U : 0U);
+            },
+            [this](const MigoGamepadStateEvent &sample) {
+                if (session_ == nullptr || closing_ || !attached_) return;
+                (void)migo_session_send_gamepad_state(session_, &sample);
+            }});
 
         // Whether the game runs and shows is its window's: the App's top-level.
         root_ = GetAncestor(parent, GA_ROOT);
@@ -178,6 +192,7 @@ public:
         stopAccepting();
         unwatch();
         // What holds COM objects goes before the apartment is left.
+        gamepads_.reset();
         reports_.reset();
         keyboard_.reset();
         debug_panel_.reset();
@@ -239,7 +254,8 @@ public:
         unwatch();
         // What the game showed, and held, goes with it: the panel reads the
         // Session, the services hold the pointer and the window's capture,
-        // the field the keyboard; the reports go quiet.
+        // the field the keyboard, the pads their motors; the reports go quiet.
+        gamepads_.reset();
         reports_.reset();
         keyboard_.reset();
         debug_panel_.reset();
@@ -350,6 +366,11 @@ private:
         if (impl != nullptr && impl->keyboard_ != nullptr && options != nullptr) impl->keyboard_->show(*options);
     }
 
+    static void MIGO_CALL onGamepadRumble(void *user_data, MigoSession *, const MigoGamepadRumble *rumble) {
+        auto *impl = static_cast<Impl *>(user_data);
+        if (impl != nullptr && impl->gamepads_ != nullptr && rumble != nullptr) impl->gamepads_->rumble(*rumble);
+    }
+
     static void MIGO_CALL onHideKeyboard(void *user_data, MigoSession *) {
         auto *impl = static_cast<Impl *>(user_data);
         if (impl != nullptr && impl->keyboard_ != nullptr) impl->keyboard_->hide();
@@ -432,6 +453,10 @@ private:
     void surfaceAttached() {
         attached_ = true;
         reportWindowState();
+        if (gamepads_ != nullptr) {
+            gamepads_->announceAll();
+            gamepads_->setActive(running_);
+        }
         if (!pending_id_.empty()) {
             const std::string id = std::move(pending_id_);
             const std::string entry = std::move(pending_entry_);
@@ -472,6 +497,7 @@ private:
             running_ = running;
             (void)migo_session_set_lifecycle(session_, running ? MIGO_LIFECYCLE_RUNNING : MIGO_LIFECYCLE_PAUSED);
             keepAwake(screen_wanted_ && running_);
+            if (gamepads_ != nullptr) gamepads_->setActive(running_);
         }
     }
 
@@ -540,6 +566,7 @@ private:
     std::unique_ptr<Win32BuiltInHostServices> built_in_;
     std::unique_ptr<DebugPanel> debug_panel_;
     std::unique_ptr<KeyboardField> keyboard_;
+    std::unique_ptr<Gamepads> gamepads_;
     std::unique_ptr<SystemReports> reports_;
     bool debug_aids_ = false;
     std::uint64_t app_mask_ = 0;

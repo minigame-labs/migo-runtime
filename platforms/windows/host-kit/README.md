@@ -48,7 +48,11 @@ It is being built in stages (migo-runtime's schedule item X1):
   code units), reporting each edit, a confirm and its closing; the battery
   (power-setting notifications to the App's window), the network (the Network
   List Manager's events, the adapter's kind) and memory pressure (the system's
-  low-memory notification, as CRITICAL) are reported as they change; what a
+  low-memory notification, as CRITICAL) are reported as they change; the
+  gamepads Windows.Gaming.Input sees are announced as the view attaches and
+  read while the game runs -- an Xbox-class pad on the W3C standard layout
+  with dual and trigger rumble, any other controller as its driver gives it;
+  what a
   desktop App is not gated on is reported authorized. The GUI thread is a
   single-threaded COM apartment, joined if the App has not made it one.
 - `migo::windows-builtin-host-services`
@@ -76,7 +80,7 @@ It is being built in stages (migo-runtime's schedule item X1):
   settings let desktop Apps use it, which also decide scope.userLocation. An
   App can use it in the Bound shape too.
 
-Next: gamepads; videos; the recorder.
+Next: videos; the recorder.
 
 Build it with CMake against the Migo Windows SDK package
 (`find_package(migo)`), and link the targets it exports
