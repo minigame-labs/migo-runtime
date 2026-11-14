@@ -175,7 +175,11 @@ bool tap(const std::wstring &text) {
             },
             reinterpret_cast<LPARAM>(&search));
         if (search.found != nullptr) {
-            SetForegroundWindow(window);
+            // A click brings the App forward at the window clicked -- or, where that
+            // one never takes the activation (a video's controls), at the window of
+            // the App's that has it.
+            const bool activates = (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_NOACTIVATE) == 0;
+            SetForegroundWindow(activates ? window : GetLastActivePopup(GetAncestor(window, GA_ROOTOWNER)));
             SendMessageW(search.found, BM_CLICK, 0, 0);
             return true;
         }
