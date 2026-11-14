@@ -68,7 +68,7 @@ target_include_directories(migo_win32_surface_view
 )
 target_link_libraries(migo_win32_surface_view
     PUBLIC migo::windows-surface-host
-    PRIVATE user32 dwmapi imm32
+    PRIVATE user32 comctl32 dwmapi imm32
 )
 list(APPEND _migo_windows_host_kit_targets migo_win32_surface_view)
 

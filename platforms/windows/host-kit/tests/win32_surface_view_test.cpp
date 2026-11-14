@@ -127,6 +127,29 @@ void it_attaches_once_shown_at_a_size() {
     CHECK(fake_migo::last_win32().hwnd == shown.view.hwnd());
 }
 
+void it_attaches_once_its_window_is_shown_after_it() {
+    fake_migo::reset();
+    // The order an App most often shows them in: the view, then its window.
+    HWND frame = CreateWindowExW(0, L"MigoViewTestFrame", L"view test", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, 0, 0,
+                                 900, 700, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    SurfaceHost host{fake_migo::session()};
+    {
+        Win32SurfaceView view{host, frame, Win32SurfaceView::Listener()};
+        MoveWindow(view.hwnd(), 0, 0, 640, 360, TRUE);
+        ShowWindow(view.hwnd(), SW_SHOW);
+        pump();
+        // Not on screen yet: nothing to bind.
+        CHECK(view.surfaceState() == SurfaceState::Detached);
+        ShowWindow(frame, SW_SHOWNORMAL);
+        CHECK(pump_until([&view] { return view.surfaceState() == SurfaceState::Attached; }));
+        CHECK(fake_migo::calls().attach == 1);
+        view.close();
+        fake_migo::set_release_status(view.generation(), MIGO_SURFACE_RELEASE_RELEASED);
+        CHECK(pump_until([&view] { return view.hwnd() == nullptr; }));
+    }
+    DestroyWindow(frame);
+}
+
 void a_resize_updates_the_surface_once() {
     fake_migo::reset();
     Shown shown;
@@ -313,6 +336,7 @@ int main() {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     cursor_away();
     it_attaches_once_shown_at_a_size();
+    it_attaches_once_its_window_is_shown_after_it();
     a_resize_updates_the_surface_once();
     the_mouse_is_a_touch_while_pressed_and_a_pointer_always();
     the_wheel_is_three_lines_a_notch();

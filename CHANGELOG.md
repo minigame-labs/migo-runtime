@@ -1070,6 +1070,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- The Windows Host Kit's view attaches when its top-level window is shown after it -- the order an App most often
+  shows them in: a child is not told its window was shown, so the view watches it.
 - On Android `closeBLEConnection` tells content the connection is gone: `onBLEConnectionStateChange` hears
   `connected: false` for a disconnect content asked for, as the reference says it does. The SDK left that to the
   system's callback, which closing a connection takes away, so content heard nothing -- found with a phone as the
