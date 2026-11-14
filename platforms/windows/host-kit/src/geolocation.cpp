@@ -10,7 +10,10 @@
 
 #include <winrt/Windows.Devices.Geolocation.h>
 #include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.System.Threading.h>
 
+#include <atomic>
+#include <memory>
 #include <utility>
 
 namespace migo::windows_host {
@@ -21,6 +24,7 @@ namespace geo = winrt::Windows::Devices::Geolocation;
 using winrt::Windows::Foundation::AsyncStatus;
 using winrt::Windows::Foundation::IAsyncOperation;
 using winrt::Windows::Foundation::TimeSpan;
+using winrt::Windows::System::Threading::ThreadPoolTimer;
 
 constexpr char kNoPosition[] = "unable to get location";
 constexpr char kUnavailable[] = "location services are not available";
@@ -81,9 +85,30 @@ void Geolocation::locate(Accuracy accuracy, std::chrono::milliseconds timeout, A
                     locator.DesiredAccuracy(geo::PositionAccuracy::High);
                     break;
             }
-            // A fresh position, within the time content waits.
-            locator.GetGeopositionAsync(TimeSpan::zero(), std::chrono::duration_cast<TimeSpan>(timeout))
-                .Completed([answer, locator](IAsyncOperation<geo::Geoposition> const &operation, AsyncStatus status) {
+            // A fresh position, within the time content waits -- which the Host
+            // Kit keeps itself: the service's own timeout is not kept everywhere
+            // (a machine with no source can leave the request waiting), so
+            // whichever comes first, the position or the deadline, answers, and
+            // the deadline cancels what still waits.
+            const TimeSpan deadline = std::chrono::duration_cast<TimeSpan>(timeout);
+            auto answered = std::make_shared<std::atomic<bool>>(false);
+            IAsyncOperation<geo::Geoposition> request = locator.GetGeopositionAsync(TimeSpan::zero(), deadline);
+            ThreadPoolTimer::CreateTimer(
+                [answer, answered, request](ThreadPoolTimer const &) {
+                    if (answered->exchange(true)) return;
+                    try {
+                        request.Cancel();
+                    } catch (const winrt::hresult_error &) {
+                    }
+                    Outcome outcome;
+                    outcome.allowed = true;
+                    outcome.error = kNoPosition;
+                    answer(outcome);
+                },
+                deadline);
+            request.Completed(
+                [answer, answered, locator](IAsyncOperation<geo::Geoposition> const &operation, AsyncStatus status) {
+                    if (answered->exchange(true)) return;
                     Outcome outcome;
                     outcome.allowed = true;
                     if (status != AsyncStatus::Completed) {
