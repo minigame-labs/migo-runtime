@@ -161,6 +161,8 @@ void it_creates_the_session_and_installs_its_callbacks() {
     const MigoHostCallbacks &installed = fake_migo::installed_callbacks();
     CHECK(installed.dispatch != nullptr && installed.on_ready != nullptr && installed.on_request_frame != nullptr);
     CHECK(installed.on_keep_screen_on != nullptr);
+    // The pads' motors are the Host Kit's to drive.
+    CHECK(installed.on_gamepad_rumble != nullptr);
     // The App's services, and the Host Kit's own.
     CHECK((installed.host_services & hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD)) != 0);
     CHECK((installed.host_services & hostServiceBit(MIGO_HOST_SERVICE_WINDOW)) != 0);
@@ -358,6 +360,29 @@ void the_machine_is_reported_as_windows_tells_it() {
     CHECK(granted.camera == MIGO_AUTHORIZATION_NOT_DETERMINED && granted.location == MIGO_AUTHORIZATION_NOT_DETERMINED);
 }
 
+void gamepads_are_announced_as_the_view_attaches() {
+    fake_migo::reset();
+    Running running;
+    // Nothing to announce to before the Surface.
+    CHECK(fake_migo::gamepad_announcements().empty());
+    running.show();
+    // This machine's pads, whichever it has: each announced connected, with a
+    // layout the engine holds.
+    for (const auto &announced : fake_migo::gamepad_announcements()) {
+        CHECK(announced.connected);
+        CHECK(announced.info.axis_count <= MIGO_GAMEPAD_MAX_AXES && announced.info.button_count <= MIGO_GAMEPAD_MAX_BUTTONS);
+    }
+    // A rumble for a pad there is not is nothing.
+    MigoGamepadRumble rumble{};
+    rumble.struct_size = static_cast<std::uint32_t>(sizeof rumble);
+    rumble.abi_version = MIGO_ABI_VERSION_1;
+    rumble.index = 99;
+    rumble.duration_ms = 100;
+    rumble.strong_magnitude = 1;
+    fake_migo::installed_callbacks().on_gamepad_rumble(fake_migo::installed_callbacks().user_data,
+                                                       fake_migo::session(), &rumble);
+}
+
 void a_session_never_shown_closes_at_once() {
     fake_migo::reset();
     Running running;
@@ -382,6 +407,7 @@ int main() {
     show_keyboard_opens_a_field_over_the_game();
     escape_and_hide_keyboard_put_the_field_away();
     the_machine_is_reported_as_windows_tells_it();
+    gamepads_are_announced_as_the_view_attaches();
     if (g_failures != 0) {
         std::fprintf(stderr, "%d Win32ManagedSession assertion(s) failed\n", g_failures);
         return 1;

@@ -151,6 +151,9 @@ add_library(migo_windows_managed_session STATIC
     src/keyboard_field.cpp
     src/system_reports.hpp
     src/system_reports.cpp
+    src/gamepad_mapping.hpp
+    src/gamepads.hpp
+    src/gamepads.cpp
 )
 add_library(migo::windows-managed-session ALIAS migo_windows_managed_session)
 set_target_properties(migo_windows_managed_session PROPERTIES
@@ -158,6 +161,8 @@ set_target_properties(migo_windows_managed_session PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 target_compile_features(migo_windows_managed_session PUBLIC cxx_std_17)
+# C++/WinRT (the gamepads) awaits through C++20's coroutines.
+target_compile_features(migo_windows_managed_session PRIVATE cxx_std_20)
 target_include_directories(migo_windows_managed_session
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -165,7 +170,7 @@ target_include_directories(migo_windows_managed_session
 )
 target_link_libraries(migo_windows_managed_session
     PUBLIC migo::win32-surface-view migo::windows-host-services migo::windows-builtin-host-services
-    PRIVATE user32 gdi32 comctl32 shell32 ole32 iphlpapi
+    PRIVATE user32 gdi32 comctl32 shell32 ole32 iphlpapi windowsapp
 )
 list(APPEND _migo_windows_host_kit_targets migo_windows_managed_session)
 
