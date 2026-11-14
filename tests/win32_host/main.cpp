@@ -98,16 +98,26 @@ std::wstring wide_of(std::string_view utf8) {
     return out;
 }
 
+/// The environment variable `name`, or empty when it is not set.
+std::wstring env(const wchar_t *name) {
+    const DWORD needed = GetEnvironmentVariableW(name, nullptr, 0);
+    if (needed == 0) return {};
+    std::wstring value(needed, L'\0');
+    const DWORD length = GetEnvironmentVariableW(name, value.data(), needed);
+    value.resize(length < needed ? length : 0);
+    return value;
+}
+
 /// A setting's JSON, read whole from the file the environment variable `name`
 /// names, or empty when it names none. A file that cannot be read stops the
 /// host: running without the setting would fail every check that needs it for a
 /// reason no check names.
 std::string read_setting(const wchar_t *name) {
-    const wchar_t *path = _wgetenv(name);
-    if (path == nullptr || path[0] == L'\0') return {};
+    const std::wstring path = env(name);
+    if (path.empty()) return {};
     std::ifstream file(fs::path(path), std::ios::binary);
     if (!file) {
-        std::fprintf(stderr, "[win32-host] cannot read %ls=%ls\n", name, path);
+        std::fprintf(stderr, "[win32-host] cannot read %ls=%ls\n", name, path.c_str());
         std::exit(2);
     }
     return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
@@ -254,9 +264,7 @@ bool shown_by(const std::wstring &type, const fs::path &file) {
 
 /// The player's Pictures folder: the run's own where it names one.
 fs::path pictures() {
-    if (const wchar_t *named = _wgetenv(L"MIGO_WIN32_HOST_PICTURES"); named != nullptr && named[0] != L'\0') {
-        return fs::path(named);
-    }
+    if (const std::wstring named = env(L"MIGO_WIN32_HOST_PICTURES"); !named.empty()) return fs::path(named);
     PWSTR path = nullptr;
     fs::path found;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Pictures, 0, nullptr, &path)) && path != nullptr) found = path;
@@ -307,9 +315,9 @@ bool save_file(HWND frame) {
     HWND dialog = file_dialog(frame);
     if (dialog == nullptr) return false;
     HWND name = file_name_box(dialog);
-    const wchar_t *folder = _wgetenv(L"MIGO_WIN32_HOST_SAVE_DIR");
+    const std::wstring folder = env(L"MIGO_WIN32_HOST_SAVE_DIR");
     const std::wstring offered = name != nullptr ? text_of(name) : std::wstring();
-    if (name == nullptr || folder == nullptr || folder[0] == L'\0' || offered.empty()) {
+    if (name == nullptr || folder.empty() || offered.empty()) {
         g_waiting_for = "the save dialog offers no name, or MIGO_WIN32_HOST_SAVE_DIR names no folder";
         return false;
     }
@@ -341,8 +349,8 @@ void send_key(WORD key) {
 /// order, until it can be done.
 class Player final {
 public:
-    Player(const wchar_t *path, HWND frame, Win32ManagedSession &game) : frame_(frame), game_(game) {
-        if (path != nullptr && path[0] != L'\0') path_ = path;
+    Player(const std::wstring &path, HWND frame, Win32ManagedSession &game) : frame_(frame), game_(game) {
+        if (!path.empty()) path_ = path;
     }
 
     /// One step, every 50 ms.
@@ -391,9 +399,11 @@ private:
         if (line == L"CLOSE-PREVIEW") return close_preview();
         if (line == L"POINTER-OVER-GAME") return pointerOverGame();
         if (starts(L"MOVE-MOUSE ")) {
-            int dx = 0;
-            int dy = 0;
-            if (std::swscanf(line.c_str() + 11, L"%d %d", &dx, &dy) == 2) {
+            wchar_t *after_dx = nullptr;
+            wchar_t *after_dy = nullptr;
+            const long dx = std::wcstol(line.c_str() + 11, &after_dx, 10);
+            const long dy = std::wcstol(after_dx, &after_dy, 10);
+            if (after_dx != line.c_str() + 11 && after_dy != after_dx) {
                 INPUT move = {};
                 move.type = INPUT_MOUSE;
                 move.mi.dx = dx;
@@ -555,7 +565,7 @@ int wmain(int argc, wchar_t **argv) {
             return 1;
         }
         g_host.game = &game;
-        Player player(_wgetenv(L"MIGO_WIN32_HOST_FEED"), frame, game);
+        Player player(env(L"MIGO_WIN32_HOST_FEED"), frame, game);
         g_host.player = &player;
 
         RECT client{};
