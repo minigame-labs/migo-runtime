@@ -661,8 +661,9 @@ void compress_image_scales_and_reencodes() {
         const SIZE size = image_size(g_taken[compressed]);
         CHECK(size.cx == 50 && size.cy == 25);
     }
-    // What was not taken is gone: the staged file was the Session's to take.
-    CHECK(!fs::exists(fs::u8path(compressed)));
+    // What was not taken goes, once the answer is given: the staged file was
+    // the Session's to take.
+    CHECK(pump_until([&compressed] { return !fs::exists(fs::u8path(compressed)); }));
     CHECK(failure_of(ask(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_COMPRESS_IMAGE,
                          Json::object().set("src", utf8_path(work / L"missing.png")))) == "file not found");
     fake_migo::set_host_service_completion({});
