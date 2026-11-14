@@ -256,17 +256,53 @@ private:
         HWND made = CreateWindowExW(0, L"BUTTON", name, WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 1, 1, parent,
                                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), GetModuleHandleW(nullptr),
                                     nullptr);
-        // The keyboard is the game's: a click on a control gives it straight back.
-        SetWindowSubclass(made, &Impl::keepFocus, kButtonWatch, 0);
+        SetWindowSubclass(made, &Impl::pressWithoutFocus, kButtonWatch, 0);
         return made;
     }
 
-    static LRESULT CALLBACK keepFocus(HWND window, UINT message, WPARAM wparam, LPARAM lparam, UINT_PTR, DWORD_PTR) {
-        if (message == WM_SETFOCUS && wparam != 0 && IsWindow(reinterpret_cast<HWND>(wparam))) {
-            SetFocus(reinterpret_cast<HWND>(wparam));
-            return 0;
+    /// The keyboard is the game's, and the system's button takes it on a press
+    /// -- and drops the press, unclicked, when the focus is then taken back from
+    /// it. So the press is carried here, where it takes nothing: down holds the
+    /// mouse and shows the button pushed, up over the button is the click. What
+    /// presses it without a mouse (BM_CLICK, as assistive technology does) sends
+    /// it the same two messages, and so clicks it the same way.
+    static LRESULT CALLBACK pressWithoutFocus(HWND window, UINT message, WPARAM wparam, LPARAM lparam, UINT_PTR,
+                                              DWORD_PTR) {
+        const auto over = [window, lparam] {
+            RECT area{};
+            GetClientRect(window, &area);
+            return PtInRect(&area, POINT{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)}) != FALSE;
+        };
+        switch (message) {
+            case WM_LBUTTONDOWN:
+            case WM_LBUTTONDBLCLK:
+                SetCapture(window);
+                SendMessageW(window, BM_SETSTATE, TRUE, 0);
+                return 0;
+            case WM_MOUSEMOVE:
+                // Dragged off it, it is let go of; back over it, pushed again.
+                if (GetCapture() == window) SendMessageW(window, BM_SETSTATE, over() ? TRUE : FALSE, 0);
+                return 0;
+            case WM_LBUTTONUP: {
+                if (GetCapture() != window) return 0;
+                const bool clicked = over();
+                // Its WM_CAPTURECHANGED lets the button up.
+                ReleaseCapture();
+                if (clicked) {
+                    SendMessageW(GetParent(window), WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(window), BN_CLICKED),
+                                 reinterpret_cast<LPARAM>(window));
+                }
+                return 0;
+            }
+            case WM_CAPTURECHANGED:
+                SendMessageW(window, BM_SETSTATE, FALSE, 0);
+                return 0;
+            case WM_NCDESTROY:
+                RemoveWindowSubclass(window, &Impl::pressWithoutFocus, kButtonWatch);
+                break;
+            default:
+                break;
         }
-        if (message == WM_NCDESTROY) RemoveWindowSubclass(window, &Impl::keepFocus, kButtonWatch);
         return DefSubclassProc(window, message, wparam, lparam);
     }
 
