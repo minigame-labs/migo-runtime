@@ -1,5 +1,7 @@
 #include <migo/windows/builtin_host_services.hpp>
 
+#include "interaction.hpp"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -92,7 +94,7 @@ HCURSOR cursor_of(std::string_view keyword) noexcept {
 class Win32BuiltInHostServices::Impl final {
 public:
     Impl(Win32SurfaceView &view, std::shared_ptr<HostServiceChannel> channel, std::function<void(bool)> debug_aids)
-        : view_(view), channel_(std::move(channel)), debug_aids_(std::move(debug_aids)) {
+        : view_(view), channel_(std::move(channel)), debug_aids_(std::move(debug_aids)), interaction_(view) {
         root_ = GetAncestor(view_.hwnd(), GA_ROOT);
         if (root_ != nullptr) {
             reported_state_ = state_of(root_);
@@ -116,6 +118,9 @@ public:
 
     void call(MigoHostService service, std::uint32_t method, const Json &request, HostServiceReply reply) {
         switch (service) {
+            case MIGO_HOST_SERVICE_INTERACTION:
+                interaction_.call(method, request, std::move(reply));
+                return;
             case MIGO_HOST_SERVICE_CLIPBOARD:
                 clipboard(method, request, std::move(reply));
                 return;
@@ -438,6 +443,7 @@ private:
     const char *reported_orientation_ = "landscape";
     HCURSOR owned_cursor_ = nullptr;
     bool excluded_from_capture_ = false;
+    Interaction interaction_;
 };
 
 Win32BuiltInHostServices::Win32BuiltInHostServices(Win32SurfaceView &view, std::shared_ptr<HostServiceChannel> channel,
@@ -448,6 +454,7 @@ Win32BuiltInHostServices::~Win32BuiltInHostServices() = default;
 
 std::uint64_t Win32BuiltInHostServices::services() const noexcept {
     std::uint64_t builtIn = 0;
+    builtIn |= hostServiceBit(MIGO_HOST_SERVICE_INTERACTION);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_WINDOW);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_SCREEN);

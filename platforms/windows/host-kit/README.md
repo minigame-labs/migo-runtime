@@ -45,7 +45,12 @@ It is being built in stages (migo-runtime's schedule item X1):
   the aids on (`debugAids`/`setDebugAids`).
 - `migo::windows-builtin-host-services`
   (`include/migo/windows/builtin_host_services.hpp`): what Windows already
-  offers an App, answered with its own -- the system clipboard (text); the
+  offers an App, answered with its own -- toasts and loading indicators (a
+  card over the game drawn with Direct2D on a layered window, taking no input,
+  `mask` keeping the game's from it); modals and action sheets (dialogs of the
+  system's controls, modal to the App's window without holding its message
+  loop, the keyboard's dialog navigation through a thread message hook); the
+  system clipboard (text); the
   window (setWindowSize sizes the game, its state reported, setCursor from a
   CSS keyword or a .cur/.ani file, the view's pointer lock reported and a
   refusal said); the screen (orientation is the game's shape, reported as it
@@ -53,8 +58,8 @@ It is being built in stages (migo-runtime's schedule item X1):
   the window out of captures; setEnableDebug); the scopes a desktop decides
   (writePhotosAlbum granted). An App can use it in the Bound shape too.
 
-Next: toasts, loading, modals and action sheets; battery, network and memory
-reports; images and files; location; gamepads; videos; the recorder.
+Next: the keyboard field; battery, network and memory reports; images and
+files; location; gamepads; videos; the recorder.
 
 Build it with CMake against the Migo Windows SDK package
 (`find_package(migo)`), and link the targets it exports

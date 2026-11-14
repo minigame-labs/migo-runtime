@@ -99,6 +99,9 @@ list(APPEND _migo_windows_host_kit_targets migo_windows_host_services)
 add_library(migo_windows_builtin_host_services STATIC
     include/migo/windows/builtin_host_services.hpp
     src/builtin_host_services.cpp
+    # Internal, not installed: toasts, loading, modals and action sheets.
+    src/interaction.hpp
+    src/interaction.cpp
 )
 add_library(migo::windows-builtin-host-services ALIAS migo_windows_builtin_host_services)
 set_target_properties(migo_windows_builtin_host_services PROPERTIES
@@ -113,7 +116,7 @@ target_include_directories(migo_windows_builtin_host_services
 )
 target_link_libraries(migo_windows_builtin_host_services
     PUBLIC migo::win32-surface-view migo::windows-host-services
-    PRIVATE user32 comctl32
+    PRIVATE user32 gdi32 comctl32 d2d1 dwrite
 )
 list(APPEND _migo_windows_host_kit_targets migo_windows_builtin_host_services)
 
