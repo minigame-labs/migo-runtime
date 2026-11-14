@@ -3,6 +3,8 @@
 #include <migo/windows/builtin_host_services.hpp>
 
 #include "debug_panel.hpp"
+#include "keyboard_field.hpp"
+#include "system_reports.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -15,11 +17,13 @@
 #endif
 #include <windows.h>
 #include <commctrl.h>
+#include <objbase.h>
 #include <shobjidl.h>
 
 #include <atomic>
 #include <cstdio>
 #include <exception>
+#include <functional>
 #include <mutex>
 #include <string_view>
 #include <thread>
@@ -30,6 +34,8 @@ namespace migo::windows_host {
 namespace {
 
 constexpr UINT kTaskMessage = WM_APP + 1;
+// The Host Kit's own work for the GUI thread, from its watchers' threads.
+constexpr UINT kHostTaskMessage = WM_APP + 2;
 constexpr wchar_t kTaskWindowClass[] = L"MigoWin32SessionTasks";
 // The id this session's watch on the App's window goes by.
 constexpr UINT_PTR kWatchId = 0x4D69676F;  // "Migo"
@@ -75,6 +81,11 @@ class Win32ManagedSession::Impl final {
 public:
     Impl(MigoEngine &engine, HWND parent, Options options, Listener listener)
         : options_(std::move(options)), listener_(std::move(listener)), owner_(std::this_thread::get_id()) {
+        // The GUI thread is a single-threaded COM apartment -- what the
+        // system's dialogs and the network's events need -- unless the App
+        // made it another; it stays one for as long as this session does.
+        const HRESULT apartment = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        com_joined_ = SUCCEEDED(apartment);
         static std::once_flag registered;
         std::call_once(registered, [] {
             WNDCLASSEXW tasks{};
@@ -128,6 +139,9 @@ public:
         callbacks.on_exit_requested = &Impl::onExitRequested;
         callbacks.on_request_frame = &Impl::onRequestFrame;
         callbacks.on_keep_screen_on = &Impl::onKeepScreenOn;
+        callbacks.on_show_keyboard = &Impl::onShowKeyboard;
+        callbacks.on_hide_keyboard = &Impl::onHideKeyboard;
+        callbacks.on_update_keyboard = &Impl::onUpdateKeyboard;
         // The App's services, and the Host Kit's for the rest.
         callbacks.on_host_service_call = &Impl::onHostServiceCall;
         callbacks.host_services = app_mask_ | built_in_->services();
@@ -145,21 +159,34 @@ public:
         }
         app_id_ = options_.appId.empty() ? default_app_id() : options_.appId;
         (void)reportAppInfo();
+        reportAuthorizations();
+        // Made before any task can run: tasks are queued to the GUI thread, which is this one.
+        keyboard_ = std::make_unique<KeyboardField>(session_, *view_);
 
         // Whether the game runs and shows is its window's: the App's top-level.
         root_ = GetAncestor(parent, GA_ROOT);
         if (root_ != nullptr && SetWindowSubclass(root_, &Impl::watchProcedure, kWatchId, reinterpret_cast<DWORD_PTR>(this))) {
             watching_ = true;
         }
+        // The battery, the network and memory, as the system says they are
+        // and each time they change; the Session keeps what it was told.
+        reports_ = std::make_unique<SystemReports>(session_, root_,
+                                                   [this](std::function<void()> task) { postToGui(std::move(task)); });
     }
 
     ~Impl() {
         if (session_ != nullptr && !closed_) fatal("Win32ManagedSession destroyed while its Session runs");
         stopAccepting();
         unwatch();
+        // What holds COM objects goes before the apartment is left.
+        reports_.reset();
+        keyboard_.reset();
+        debug_panel_.reset();
+        built_in_.reset();
         // Tasks the engine handed over before the door closed run exactly once.
         drainTasks();
         if (task_window_ != nullptr) DestroyWindow(task_window_);
+        if (com_joined_) CoUninitialize();
     }
 
     bool isValid() const noexcept { return session_ != nullptr && !closed_; }
@@ -212,7 +239,10 @@ public:
         keepAwake(false);
         unwatch();
         // What the game showed, and held, goes with it: the panel reads the
-        // Session, the services hold the pointer and the window's capture.
+        // Session, the services hold the pointer and the window's capture,
+        // the field the keyboard; the reports go quiet.
+        reports_.reset();
+        keyboard_.reset();
         debug_panel_.reset();
         built_in_.reset();
         if (view_ != nullptr && view_->surfaceState() != SurfaceState::Detached) {
@@ -308,7 +338,28 @@ private:
             run.function(run.context);
             return 0;
         }
+        if (message == kHostTaskMessage) {
+            const std::unique_ptr<std::function<void()>> task(reinterpret_cast<std::function<void()> *>(lparam));
+            (*task)();
+            return 0;
+        }
         return DefWindowProcW(window, message, wparam, lparam);
+    }
+
+    static void MIGO_CALL onShowKeyboard(void *user_data, MigoSession *, const MigoKeyboardShowOptions *options) {
+        auto *impl = static_cast<Impl *>(user_data);
+        if (impl != nullptr && impl->keyboard_ != nullptr && options != nullptr) impl->keyboard_->show(*options);
+    }
+
+    static void MIGO_CALL onHideKeyboard(void *user_data, MigoSession *) {
+        auto *impl = static_cast<Impl *>(user_data);
+        if (impl != nullptr && impl->keyboard_ != nullptr) impl->keyboard_->hide();
+    }
+
+    static void MIGO_CALL onUpdateKeyboard(void *user_data, MigoSession *, const char *value, std::uint32_t length) {
+        auto *impl = static_cast<Impl *>(user_data);
+        if (impl == nullptr || impl->keyboard_ == nullptr) return;
+        impl->keyboard_->replaceText(value != nullptr ? std::string_view(value, length) : std::string_view());
     }
 
     /// The App's top-level window: shown and minimized, as it changes.
@@ -341,9 +392,36 @@ private:
     void drainTasks() {
         if (task_window_ == nullptr) return;
         MSG message;
-        while (PeekMessageW(&message, task_window_, kTaskMessage, kTaskMessage, PM_REMOVE)) {
+        while (PeekMessageW(&message, task_window_, kTaskMessage, kHostTaskMessage, PM_REMOVE)) {
             DispatchMessageW(&message);
         }
+    }
+
+    /// The Host Kit's own work, run on the GUI thread; dropped once teardown
+    /// has begun, when there is no Session left to do it for.
+    void postToGui(std::function<void()> task) {
+        const std::lock_guard<std::mutex> lock(door_);
+        if (!accepting_.load(std::memory_order_acquire)) return;
+        auto *queued = new (std::nothrow) std::function<void()>(std::move(task));
+        if (queued == nullptr) return;
+        if (!PostMessageW(task_window_, kHostTaskMessage, 0, reinterpret_cast<LPARAM>(queued))) delete queued;
+    }
+
+    /// What Windows lets the App do, as getAppAuthorizeSetting reads it. A
+    /// desktop App -- one not packaged into an app container -- is not gated
+    /// on its files, its notifications, Bluetooth or the calendar; the camera,
+    /// the microphone and location are the privacy settings', decided when
+    /// content asks for them, and not reported here.
+    void reportAuthorizations() {
+        MigoAppAuthorizeSetting granted{};
+        granted.struct_size = static_cast<std::uint32_t>(sizeof granted);
+        granted.abi_version = MIGO_ABI_VERSION_1;
+        for (std::uint8_t *field : {&granted.album, &granted.bluetooth, &granted.notification,
+                                    &granted.notification_alert, &granted.notification_badge,
+                                    &granted.notification_sound, &granted.phone_calendar}) {
+            *field = MIGO_AUTHORIZATION_AUTHORIZED;
+        }
+        (void)migo_session_set_app_authorize_setting(session_, &granted);
     }
 
     void unwatch() {
@@ -449,6 +527,7 @@ private:
     const Options options_;
     const Listener listener_;
     const std::thread::id owner_;
+    bool com_joined_ = false;
     HWND task_window_ = nullptr;
     std::mutex door_;
     std::atomic<bool> accepting_{false};
@@ -461,6 +540,8 @@ private:
     // After the view, so they go before it: both hold it.
     std::unique_ptr<Win32BuiltInHostServices> built_in_;
     std::unique_ptr<DebugPanel> debug_panel_;
+    std::unique_ptr<KeyboardField> keyboard_;
+    std::unique_ptr<SystemReports> reports_;
     bool debug_aids_ = false;
     std::uint64_t app_mask_ = 0;
     std::string app_id_;

@@ -240,6 +240,124 @@ void closing_retires_the_view_then_destroys_the_session() {
     CHECK(running.session->isClosed());
 }
 
+HWND keyboard_field(HWND owner) {
+    HWND window = nullptr;
+    while ((window = FindWindowExW(nullptr, window, L"MigoKeyboardField", nullptr)) != nullptr) {
+        if (GetWindow(window, GW_OWNER) == owner) return window;
+    }
+    return nullptr;
+}
+
+std::wstring text_of(HWND window) {
+    wchar_t text[256] = {};
+    GetWindowTextW(window, text, 256);
+    return text;
+}
+
+bool heard_keyboard(MigoKeyboardEventType type, const std::string &value) {
+    for (const auto &event : fake_migo::keyboard_events()) {
+        if (event.event_type == type && event.value == value) return true;
+    }
+    return false;
+}
+
+MigoKeyboardShowOptions keyboard_options(MigoKeyboardFlags flags, std::uint32_t max_length, MigoKeyboardType type) {
+    MigoKeyboardShowOptions options{};
+    options.struct_size = static_cast<std::uint32_t>(sizeof options);
+    options.abi_version = MIGO_ABI_VERSION_1;
+    options.flags = flags;
+    options.max_length = max_length;
+    options.keyboard_type = type;
+    return options;
+}
+
+void show_keyboard_opens_a_field_over_the_game() {
+    fake_migo::reset();
+    Running running;
+    running.show();
+    fake_migo::deliver_show_keyboard_from_engine_thread(
+        keyboard_options(MIGO_KEYBOARD_FLAG_NONE, 6, MIGO_KEYBOARD_TYPE_TEXT), "hi");
+    HWND field = nullptr;
+    CHECK(pump_until([&] { return (field = keyboard_field(running.frame)) != nullptr && IsWindowVisible(field); }));
+    if (field == nullptr) return;
+    const HWND editor = FindWindowExW(field, nullptr, L"Edit", nullptr);
+    CHECK(editor != nullptr && text_of(editor) == L"hi");
+    // Along the bottom of the game, its full width; content is told its height.
+    RECT placed{};
+    GetWindowRect(field, &placed);
+    POINT corner{0, 360};
+    ClientToScreen(running.session->view()->hwnd(), &corner);
+    CHECK(placed.left == corner.x && placed.bottom == corner.y && placed.right - placed.left == 640);
+    CHECK(!fake_migo::keyboard_events().empty() &&
+          fake_migo::keyboard_events().front().event_type == MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE &&
+          fake_migo::keyboard_events().front().height_css_px > 0);
+    if (editor == nullptr) return;
+    // The player's typing is reported, whole; the limit holds.
+    for (wchar_t typed : {L'!', L'?', L'a', L'b', L'c'}) SendMessageW(editor, WM_CHAR, typed, 1);
+    CHECK(text_of(editor) == L"hi!?ab");
+    CHECK(heard_keyboard(MIGO_KEYBOARD_EVENT_INPUT, "hi!"));
+    CHECK(heard_keyboard(MIGO_KEYBOARD_EVENT_INPUT, "hi!?ab"));
+    // Content's own correction is not reported back to it.
+    const std::size_t heard = fake_migo::keyboard_events().size();
+    fake_migo::deliver_update_keyboard_from_engine_thread("fixed");
+    CHECK(pump_until([editor] { return text_of(editor) == L"fixed"; }));
+    CHECK(fake_migo::keyboard_events().size() == heard);
+    // Enter confirms, and the field goes with what it held.
+    SendMessageW(editor, WM_KEYDOWN, VK_RETURN, 1);
+    CHECK(heard_keyboard(MIGO_KEYBOARD_EVENT_CONFIRM, "fixed"));
+    CHECK(heard_keyboard(MIGO_KEYBOARD_EVENT_COMPLETE, "fixed"));
+    CHECK(!IsWindowVisible(field));
+}
+
+void escape_and_hide_keyboard_put_the_field_away() {
+    fake_migo::reset();
+    Running running;
+    running.show();
+    fake_migo::deliver_show_keyboard_from_engine_thread(
+        keyboard_options(MIGO_KEYBOARD_FLAG_CONFIRM_HOLD, 0, MIGO_KEYBOARD_TYPE_NUMBER), "12");
+    HWND field = nullptr;
+    CHECK(pump_until([&] { return (field = keyboard_field(running.frame)) != nullptr && IsWindowVisible(field); }));
+    if (field == nullptr) return;
+    const HWND editor = FindWindowExW(field, nullptr, L"Edit", nullptr);
+    CHECK(editor != nullptr && (GetWindowLongPtrW(editor, GWL_STYLE) & ES_NUMBER) != 0);
+    if (editor == nullptr) return;
+    // A confirm content holds keeps the field up.
+    SendMessageW(editor, WM_KEYDOWN, VK_RETURN, 1);
+    CHECK(heard_keyboard(MIGO_KEYBOARD_EVENT_CONFIRM, "12"));
+    CHECK(IsWindowVisible(field));
+    SendMessageW(editor, WM_KEYDOWN, VK_ESCAPE, 1);
+    CHECK(heard_keyboard(MIGO_KEYBOARD_EVENT_COMPLETE, "12"));
+    CHECK(!IsWindowVisible(field));
+
+    fake_migo::deliver_show_keyboard_from_engine_thread(
+        keyboard_options(MIGO_KEYBOARD_FLAG_MULTIPLE, 0, MIGO_KEYBOARD_TYPE_TEXT), "line");
+    CHECK(pump_until([&] { return IsWindowVisible(field) != FALSE; }));
+    fake_migo::deliver_hide_keyboard_from_engine_thread();
+    CHECK(pump_until([&] { return !IsWindowVisible(field); }));
+    CHECK(heard_keyboard(MIGO_KEYBOARD_EVENT_COMPLETE, "line"));
+}
+
+void the_machine_is_reported_as_windows_tells_it() {
+    fake_migo::reset();
+    Running running;
+    // The network, at once: this machine's, through the Network List Manager.
+    CHECK(!fake_migo::network_reports().empty());
+    if (!fake_migo::network_reports().empty()) {
+        const auto &network = fake_migo::network_reports().back();
+        CHECK(network.type != MIGO_NETWORK_NONE || network.connected == 0);
+    }
+    // The battery, where there is one.
+    SYSTEM_POWER_STATUS power{};
+    GetSystemPowerStatus(&power);
+    const bool has_battery = (power.BatteryFlag & BATTERY_FLAG_NO_BATTERY) == 0 && power.BatteryFlag != BATTERY_FLAG_UNKNOWN &&
+                             power.BatteryLifePercent <= 100;
+    CHECK(fake_migo::battery_reports().empty() == !has_battery);
+    // What a desktop App is not gated on; the privacy settings decide the rest when asked.
+    const MigoAppAuthorizeSetting &granted = fake_migo::reported_app_authorization();
+    CHECK(granted.album == MIGO_AUTHORIZATION_AUTHORIZED && granted.notification == MIGO_AUTHORIZATION_AUTHORIZED);
+    CHECK(granted.camera == MIGO_AUTHORIZATION_NOT_DETERMINED && granted.location == MIGO_AUTHORIZATION_NOT_DETERMINED);
+}
+
 void a_session_never_shown_closes_at_once() {
     fake_migo::reset();
     Running running;
@@ -261,6 +379,9 @@ int main() {
     the_apps_services_answer_on_the_gui_thread();
     closing_retires_the_view_then_destroys_the_session();
     a_session_never_shown_closes_at_once();
+    show_keyboard_opens_a_field_over_the_game();
+    escape_and_hide_keyboard_put_the_field_away();
+    the_machine_is_reported_as_windows_tells_it();
     if (g_failures != 0) {
         std::fprintf(stderr, "%d Win32ManagedSession assertion(s) failed\n", g_failures);
         return 1;
