@@ -89,7 +89,13 @@ It is being built in stages (migo-runtime's schedule item X1):
   an external monitor's through DDC/CI, a laptop panel's through WMI. An App
   can use it in the Bound shape too.
 
-Next: the video players' controls, and videos in the preview viewer.
+The players' controls are the other SDKs' -- a centre play button, a bar
+(play or pause, the time, a progress bar, the length, full screen) a click
+shows and hides, a progress line, a double click to play or pause, a sideways
+drag to seek -- the system's buttons in a colour-keyed window above the player,
+named "play", "play or pause" and "full screen".
+
+Next: videos in the preview viewer.
 
 Build it with CMake against the Migo Windows SDK package
 (`find_package(migo)`), and link the targets it exports

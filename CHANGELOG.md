@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Windows Host Kit's video players' controls, as content's options ask: a centre play button, a bar (play or
+  pause, the time, a progress bar, the length, full screen) that a click shows and hides and that hides again while
+  playing, a progress line, a double click that plays or pauses, a sideways drag that seeks. The buttons are the
+  system's, named as assistive technology reads them; with none asked for, a click on the video is the game's.
 - The Windows Host Kit's screen brightness: getScreenBrightness and setScreenBrightness for the screen the game is on --
   an external monitor through DDC/CI, a laptop's panel through WMI -- off the GUI thread; a screen with neither says so.
 - The Windows Host Kit's video players: createVideo's players, each a window of its own over the game, played by Media
