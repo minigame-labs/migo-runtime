@@ -121,6 +121,8 @@ add_library(migo_windows_builtin_host_services STATIC
     src/recorder.cpp
     src/videos.hpp
     src/videos.cpp
+    src/video_controls.hpp
+    src/video_controls.cpp
     src/http_download.hpp
     src/http_download.cpp
     src/background.hpp

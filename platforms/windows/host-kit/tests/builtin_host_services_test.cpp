@@ -980,10 +980,29 @@ void a_video_player_stands_where_content_put_it() {
     CHECK(placed(0, 0, 640, 360));
     CHECK(answered_ok(ask(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_EXIT_FULL_SCREEN, Json::object().set("videoId", 1))));
     CHECK(placed(600, 20, 40, 100));
+    // Its controls, over it: the system's buttons, named as assistive technology reads them.
+    const HWND controls = find_owned(L"MigoVideoControls", running.frame);
+    CHECK(controls != nullptr && IsWindowVisible(controls));
+    if (controls != nullptr) {
+        RECT over{};
+        RECT under{};
+        GetWindowRect(controls, &over);
+        GetWindowRect(player, &under);
+        CHECK(EqualRect(&over, &under));
+        CHECK(FindWindowExW(controls, nullptr, L"Button", L"play") != nullptr);
+        const HWND bar = FindWindowExW(controls, nullptr, L"MigoVideoBar", nullptr);
+        CHECK(bar != nullptr && FindWindowExW(bar, nullptr, L"Button", L"play or pause") != nullptr &&
+              FindWindowExW(bar, nullptr, L"Button", L"full screen") != nullptr);
+    }
+    // With controls, a click on the video is theirs; with none asked for, the game's.
+    CHECK(SendMessageW(player, WM_NCHITTEST, 0, 0) == HTCLIENT);
+    tell(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_SET,
+         Json::object().set("videoId", 1).set("controls", false).set("showCenterPlayBtn", false)
+             .set("enableProgressGesture", false));
+    CHECK(SendMessageW(player, WM_NCHITTEST, 0, 0) == HTTRANSPARENT);
     tell(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_SET, Json::object().set("videoId", 1).set("underGameView", true));
     CHECK(!IsWindowVisible(player));
-    // A click on a video is the game's.
-    CHECK(SendMessageW(player, WM_NCHITTEST, 0, 0) == HTTRANSPARENT);
+    CHECK(controls == nullptr || !IsWindowVisible(controls));
     tell(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_DESTROY, Json::object().set("videoId", 1));
     CHECK(video_player(running.frame) == nullptr);
     CHECK(failure_of(ask(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_PLAY, Json::object().set("videoId", 1))) ==
@@ -1022,6 +1041,20 @@ void a_video_plays() {
         return red;
     }, 5000);
     CHECK(red);
+    // The player's own button pauses it, as a click would: content hears it.
+    if (const HWND controls = find_owned(L"MigoVideoControls", running.frame); controls != nullptr) {
+        // A click on the picture shows the bar.
+        SendMessageW(player, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(50, 50));
+        SendMessageW(player, WM_LBUTTONUP, 0, MAKELPARAM(50, 50));
+        const HWND bar = FindWindowExW(controls, nullptr, L"MigoVideoBar", nullptr);
+        CHECK(bar != nullptr && IsWindowVisible(bar));
+        const HWND toggle = bar != nullptr ? FindWindowExW(bar, nullptr, L"Button", L"play or pause") : nullptr;
+        if (toggle != nullptr) {
+            SendMessageW(toggle, BM_CLICK, 0, 0);
+            CHECK(pump_until([] { return video_event(MIGO_VIDEO_EVENT_PAUSE).has_value(); }));
+            SendMessageW(toggle, BM_CLICK, 0, 0);
+        }
+    }
     CHECK(pump_until([] { return video_event(MIGO_VIDEO_EVENT_ENDED).has_value(); }, 10000));
     const std::optional<Json> time = video_event(MIGO_VIDEO_EVENT_TIME_UPDATE);
     CHECK(time.has_value() && (*time)["duration"].numberOr(0) > 0.5);

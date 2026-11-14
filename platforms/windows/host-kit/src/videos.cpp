@@ -3,6 +3,7 @@
 #include "gui_queue.hpp"
 #include "http_download.hpp"
 #include "image_codec.hpp"
+#include "video_controls.hpp"
 #include "win32_text.hpp"
 
 #include <commctrl.h>
@@ -237,6 +238,7 @@ public:
             player.lpfnWndProc = &Impl::playerProcedure;
             player.hInstance = GetModuleHandleW(nullptr);
             player.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+            player.style = CS_DBLCLKS;
             player.lpszClassName = kPlayerClass;
             if (RegisterClassExW(&player) == 0) fatal("RegisterClassExW failed for the video players");
         });
@@ -306,12 +308,15 @@ private:
 
 // ---- one player ------------------------------------------------------------------------------------
 
-class Videos::Impl::Player final {
+class Videos::Impl::Player final : public VideoControlled {
 public:
     Player(Impl &owner, std::int64_t id, Json options) : owner_(owner), id_(id), options_(std::move(options)) {
         window_ = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, kPlayerClass, L"", WS_POPUP, 0, 0, 1, 1,
                                   owner_.root(), nullptr, GetModuleHandleW(nullptr), this);
         if (window_ == nullptr) fatal("CreateWindowExW failed for a video player");
+        // Made after the player's window, so above it.
+        controls_ = std::make_unique<VideoControls>(owner_.root(), *this);
+        controls_->configure(options_);
         startAt_ = number("initialTime", 0);
         playWanted_ = flag("autoplay", false);
         place();
@@ -380,7 +385,6 @@ public:
 
     void fullScreen(bool on, HostServiceReply reply) {
         fullScreen_ = on;
-        if (on) SetWindowPos(window_, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         place();
         // Laid out: the window moved as it was asked to.
         (void)reply.succeed();
@@ -398,6 +402,13 @@ public:
         if (has("muted") && engine_ != nullptr) engine_->SetMuted(flag("muted", false) ? TRUE : FALSE);
         if (has("loop") && engine_ != nullptr) engine_->SetLoop(flag("loop", false) ? TRUE : FALSE);
         if (has("playbackRate") && playing_ && engine_ != nullptr) engine_->SetPlaybackRate(rate());
+        for (const char *option : {"controls", "showProgress", "showProgressInControlMode", "showCenterPlayBtn",
+                                   "enablePlayGesture", "enableProgressGesture"}) {
+            if (has(option)) {
+                controls_->configure(options_);
+                break;
+            }
+        }
         if (has("poster")) loadPoster();
         if (has("src")) {
             playWanted_ = false;
@@ -433,6 +444,7 @@ public:
         KillTimer(window_, kTimeTimer);
         closeEngine();
         ShowWindow(window_, SW_HIDE);
+        controls_->place(window_, 0, 0, 0, 0, 1, false);
     }
 
     /// Where content put it -- or the whole of the game's view when full
@@ -455,6 +467,7 @@ public:
         if (!IsWindowVisible(view) || (flag("underGameView", false) && !fullScreen_) ||
             !IntersectRect(&shown, &wanted, &client)) {
             ShowWindow(window_, SW_HIDE);
+            controls_->place(window_, 0, 0, 0, 0, 1, false);
             return;
         }
         content_ = SIZE{wanted.right - wanted.left, wanted.bottom - wanted.top};
@@ -464,9 +477,43 @@ public:
         const SIZE size{shown.right - shown.left, shown.bottom - shown.top};
         SetWindowPos(window_, nullptr, origin.x, origin.y, size.cx, size.cy,
                      SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+        controls_->place(window_, origin.x, origin.y, size.cx, size.cy, owner_.view().scale(), true);
         resize(size);
         render();
     }
+
+    // ---- what the controls drive ------------------------------------------------------------------
+
+    [[nodiscard]] bool isPlaying() const override { return playing_; }
+    [[nodiscard]] bool isFullScreen() const override { return fullScreen_; }
+
+    void togglePlay() override {
+        if (released_ || engine_ == nullptr || !broken_.empty()) return;
+        if (playing_) {
+            playWanted_ = false;
+            pauseNow();
+        } else {
+            playWanted_ = true;
+            if (prepared_ && !suspended_) start();
+        }
+    }
+
+    void seekTo(double seconds) override {
+        if (released_ || !prepared_ || engine_ == nullptr || !broken_.empty()) return;
+        seekPlayback(seconds);
+        controls_->refresh();
+    }
+
+    void toggleFullScreen() override {
+        if (released_) return;
+        fullScreen_ = !fullScreen_;
+        place();
+    }
+
+    void inputChanged() override {}
+
+    [[nodiscard]] bool takesInput() const { return !released_ && controls_->takesInput(); }
+    bool mouse(UINT message, WPARAM wparam, LPARAM lparam) { return controls_->mouse(message, wparam, lparam); }
 
     /// One beat of the compositor: a new frame drawn, where the engine has one.
     void beat() {
@@ -481,6 +528,7 @@ public:
     /// Four times a second while it plays: where it is, and what it holds.
     void tick() {
         if (released_ || !playing_) return;
+        controls_->refresh();
         owner_.tell(id_, MIGO_VIDEO_EVENT_TIME_UPDATE,
                     Json::object().set("position", position()).set("duration", duration()));
         reportBuffered();
@@ -499,6 +547,10 @@ public:
                 // A seek a later one overtakes arrives where the later one asked:
                 // the later one's answer is the answer to both.
                 answer(pendingSeeks_, std::nullopt);
+                controls_->refresh();
+                break;
+            case MF_MEDIA_ENGINE_EVENT_DURATIONCHANGE:
+                controls_->refresh();
                 break;
             case MF_MEDIA_ENGINE_EVENT_PLAYING:
                 waiting_ = false;
@@ -666,6 +718,7 @@ private:
         }
         if (playWanted_ && !suspended_) start();
         reportBuffered();
+        controls_->refresh();
     }
 
     void start() {
@@ -682,6 +735,7 @@ private:
         SetTimer(window_, kTimeTimer, kTimeUpdateMs, nullptr);
         owner_.clock();
         render();
+        controls_->refresh();
     }
 
     /// Paused, as content's call does.
@@ -691,6 +745,7 @@ private:
             owner_.tell(id_, MIGO_VIDEO_EVENT_PAUSE, Json::object());
         }
         resumeAfterSuspend_ = false;
+        controls_->refresh();
     }
 
     /// Not playing, without telling content.
@@ -712,6 +767,7 @@ private:
         playWanted_ = false;
         ended_ = true;
         owner_.tell(id_, MIGO_VIDEO_EVENT_ENDED, Json::object());
+        controls_->refresh();
     }
 
     /// It cannot play this source: content is told once, and its calls fail.
@@ -722,16 +778,17 @@ private:
         halt();
         playWanted_ = false;
         owner_.tell(id_, MIGO_VIDEO_EVENT_ERROR, Json::object().set("errMsg", "video:fail " + reason));
+        controls_->refresh();
     }
 
-    [[nodiscard]] double position() const {
+    [[nodiscard]] double position() const override {
         if (!prepared_ || engine_ == nullptr) return 0;
         if (ended_) return duration();
         const double at = engine_->GetCurrentTime();
         return std::isfinite(at) && at > 0 ? at : 0;
     }
 
-    [[nodiscard]] double duration() const {
+    [[nodiscard]] double duration() const override {
         if (!prepared_ || engine_ == nullptr) return 0;
         const double length = engine_->GetDuration();
         return std::isfinite(length) && length > 0 ? length : 0;
@@ -942,6 +999,7 @@ private:
     Json options_;
     const std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
     HWND window_ = nullptr;
+    std::unique_ptr<VideoControls> controls_;
 
     ComPtr<IMFMediaEngine> engine_;
     std::uint64_t engineGeneration_ = 0;
@@ -1105,8 +1163,18 @@ LRESULT CALLBACK Videos::Impl::playerProcedure(HWND window, UINT message, WPARAM
             if (player != nullptr && wparam == kTimeTimer) player->tick();
             return 0;
         case WM_NCHITTEST:
-            // A click on the video is the game's.
-            return HTTRANSPARENT;
+            // With none of its controls asked for, a click on the video is the game's.
+            return player != nullptr && player->takesInput() ? HTCLIENT : HTTRANSPARENT;
+        case WM_LBUTTONDOWN:
+        case WM_LBUTTONUP:
+        case WM_LBUTTONDBLCLK:
+        case WM_MOUSEMOVE: {
+            // A press is followed wherever the mouse goes until its release.
+            if (message == WM_LBUTTONDOWN) SetCapture(window);
+            if (message == WM_LBUTTONUP && GetCapture() == window) ReleaseCapture();
+            if (player != nullptr && player->mouse(message, wparam, lparam)) return 0;
+            return DefWindowProcW(window, message, wparam, lparam);
+        }
         case WM_MOUSEACTIVATE:
             return MA_NOACTIVATE;
         case WM_ERASEBKGND:
