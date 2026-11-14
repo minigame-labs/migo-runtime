@@ -30,7 +30,7 @@
 //   CLOSE-PREVIEW      the player closes the Host Kit's viewer, with Esc
 //   POINTER-OVER-GAME  the player is at the game: its window in front, the game
 //                      holding the keyboard, the cursor in its middle
-//   MOVE-MOUSE <dx> <dy>  the player moves the mouse by that many pixels
+//   MOVE-MOUSE <dx> <dy>  the player moves the mouse by that many of content's pixels
 //   PRESS-ESCAPE       the player presses Esc
 //
 // are done in that order, each once it can be -- a dialog may not be up yet when
@@ -56,6 +56,7 @@
 #include <shlwapi.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
@@ -429,10 +430,13 @@ private:
             const long dx = std::wcstol(line.c_str() + 11, &after_dx, 10);
             const long dy = std::wcstol(after_dx, &after_dy, 10);
             if (after_dx != line.c_str() + 11 && after_dy != after_dx) {
+                // Content's pixels are logical ones, the mouse's counts the screen's:
+                // the screen's scale is between them.
+                const double scale = GetDpiForWindow(frame_) / 96.0;
                 INPUT move = {};
                 move.type = INPUT_MOUSE;
-                move.mi.dx = dx;
-                move.mi.dy = dy;
+                move.mi.dx = std::lround(dx * scale);
+                move.mi.dy = std::lround(dy * scale);
                 move.mi.dwFlags = MOUSEEVENTF_MOVE;
                 SendInput(1, &move, sizeof move);
             }
