@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Windows Host Kit's video players: createVideo's players, each a window of its own over the game, played by Media
+  Foundation's media engine in frame-server mode on a Direct3D 11 device (WARP and the software decoders where there is
+  no GPU) and drawn with Direct2D into a flip-model swap chain at the compositor's beat -- the poster until it plays,
+  objectFit, the background, loop, mute, rate, full screen over the game's view, events and answers as content's
+  calls expect, holding still while the game does.
 - The Windows Host Kit's recorder: getRecorderManager through WASAPI's shared-mode capture of the default input (the
   system converting to the rate asked), written as PCM, WAV or AAC through Media Foundation -- an MPEG-4 file, or an
   ADTS stream cut into onFrameRecorded's frames -- one recording at a time on a thread of its own, its events and frames

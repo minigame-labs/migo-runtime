@@ -498,6 +498,8 @@ private:
             (void)migo_session_set_lifecycle(session_, running ? MIGO_LIFECYCLE_RUNNING : MIGO_LIFECYCLE_PAUSED);
             keepAwake(screen_wanted_ && running_);
             if (gamepads_ != nullptr) gamepads_->setActive(running_);
+            // What plays over the game holds still with it.
+            if (built_in_ != nullptr) built_in_->setRunning(running_);
         }
     }
 

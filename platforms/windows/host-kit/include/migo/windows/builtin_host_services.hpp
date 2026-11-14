@@ -56,6 +56,9 @@ namespace migo::windows_host {
 /// privacy settings let desktop Apps use it; getFuzzyLocation at a city's
 /// accuracy, getLocation at a street's or, isHighAccuracy, the finest.
 ///
+/// Videos: createVideo's players, each a window of its own over the game,
+/// played by Media Foundation's media engine and drawn with Direct2D.
+///
 /// Permission: the scopes the desktop decides. `scope.userLocation` (and its
 /// background form) is Windows' location privacy setting's to decide.
 /// `scope.writePhotosAlbum` is granted -- the player's Pictures folder is
@@ -95,6 +98,11 @@ public:
 
     [[nodiscard]] std::uint64_t services() const noexcept override;
     void call(MigoHostService service, std::uint32_t method, const Json &request, HostServiceReply reply) override;
+
+    /// Whether the game runs: what plays over it -- its videos -- holds still
+    /// while it does not, and plays on as it comes back. Whoever owns the
+    /// Session's lifecycle passes it on.
+    void setRunning(bool running);
 
     /// The view's pointer lock was taken or released: reported to content.
     /// Whoever listens to the view (`Win32SurfaceView::Listener::pointerLockChanged`)
