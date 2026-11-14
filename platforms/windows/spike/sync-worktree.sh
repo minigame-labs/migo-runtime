@@ -21,7 +21,17 @@ if [[ -d "$WIN_WORKTREE_UNIX/.git" ]]; then
     # this, anything a previous Windows build left behind survives every future
     # sync and can change what `cargo check` resolves. The overlay below then
     # re-adds exactly the untracked files the WSL tree carries.
-    git -C "$WIN_WORKTREE_UNIX" clean -xdff
+    #
+    # What the vendored skia-bindings build script downloads into its own
+    # directory stays: Skia's sources at the version that directory is named for,
+    # and the dependencies git-sync-deps clones beside them (ICU alone is a
+    # quarter of an hour over a slow link). They are that version's and nothing
+    # of a build's, the script takes a directory it finds over downloading one,
+    # and removing them made every sync an hour of downloads before the first
+    # line was compiled.
+    git -C "$WIN_WORKTREE_UNIX" clean -xdff \
+        -e 'engine/third_party/skia-bindings-*/skia/' \
+        -e 'engine/third_party/skia-bindings-*/depot_tools/'
 else
     echo "[sync] cloning into $WIN_WORKTREE_UNIX"
     rm -rf "$WIN_WORKTREE_UNIX"
