@@ -1,4 +1,5 @@
 #include "debug_panel.hpp"
+#include "win32_text.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -40,15 +41,6 @@ constexpr int kCopyAttempts = 4;
     std::fprintf(stderr, "migo windows host kit: %s\n", why);
     std::fflush(stderr);
     std::terminate();
-}
-
-std::wstring wide_of(std::string_view utf8) {
-    if (utf8.empty()) return {};
-    const int units = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
-    if (units <= 0) return {};
-    std::wstring out(static_cast<std::size_t>(units), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), out.data(), units);
-    return out;
 }
 
 wchar_t mark_of(int level) noexcept {
@@ -218,7 +210,7 @@ void DebugPanel::readConsole() {
     if (!read.has_value()) return;
     for (const Json &log : (*read)["logs"].items()) {
         const int level = static_cast<int>(log["l"].numberOr(1));
-        const std::wstring text = wide_of(log["m"].string());
+        const std::wstring text = wideOf(log["m"].string());
         // A line content wrote with breaks in it is shown as the lines it holds.
         std::size_t start = 0;
         bool first = true;
