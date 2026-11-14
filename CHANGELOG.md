@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Windows Host Kit's image service: chooseImage, chooseMedia and chooseMessageFile through the system's open dialog
+  (on a thread of its own, modal to the App's window), what is picked copied -- images the engine draws as they are,
+  others written upright, videos described by Media Foundation with the shell's thumbnail as cover; compressImage
+  through WIC; saveImageToPhotosAlbum into the Pictures folder; saveFileToDisk through the save dialog; previews in a
+  Direct2D viewer, http(s) images downloaded first. `FileLocations` places the staging directory and the album.
 - The Windows Host Kit's Managed session opens a real text field for content's `showKeyboard` (the system's edit
   control along the bottom of the game: one line or several, digits only for a number keyboard, the limit in UTF-16
   code units), and reports the battery (power-setting notifications), the network (the Network List Manager's events

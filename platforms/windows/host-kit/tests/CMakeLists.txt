@@ -58,6 +58,8 @@ target_link_libraries(migo-windows-builtin-host-services-test PRIVATE
     migo::windows-managed-session
     migo_host_kit_fake_capi
     user32
+    ole32
+    windowscodecs
 )
 
 foreach(target migo_host_kit_fake_capi migo-windows-surface-host-test migo_windows_surface_host

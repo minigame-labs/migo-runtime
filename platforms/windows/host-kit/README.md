@@ -64,9 +64,17 @@ It is being built in stages (migo-runtime's schedule item X1):
   refusal said); the screen (orientation is the game's shape, reported as it
   crosses and turned by setDeviceOrientation; setVisualEffectOnCapture keeps
   the window out of captures; setEnableDebug); the scopes a desktop decides
-  (writePhotosAlbum granted). An App can use it in the Bound shape too.
+  (writePhotosAlbum granted); images and files -- the system's open dialog
+  on a thread of its own (modal to the App's window, its message loop
+  untouched), what is picked copied and staged, images through WIC (drawable
+  formats kept, others written upright), videos described by Media Foundation
+  with the shell's thumbnail as cover, compressImage, saveImageToPhotosAlbum
+  into the Pictures folder, saveFileToDisk through the save dialog, and the
+  previews in a Direct2D viewer, http(s) images downloaded first
+  (`FileLocations` moves the staging directory and the album). An App can use
+  it in the Bound shape too.
 
-Next: images and files; location; gamepads; videos; the recorder.
+Next: location; gamepads; videos; the recorder.
 
 Build it with CMake against the Migo Windows SDK package
 (`find_package(migo)`), and link the targets it exports

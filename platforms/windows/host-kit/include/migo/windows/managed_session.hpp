@@ -2,6 +2,7 @@
 #define MIGO_WINDOWS_MANAGED_SESSION_HPP_
 
 #include <migo/migo.h>
+#include <migo/windows/builtin_host_services.hpp>
 #include <migo/windows/host_services.hpp>
 #include <migo/windows/win32_surface_view.hpp>
 
@@ -56,6 +57,8 @@ public:
         /// names are its; it outlives the Session and is called on the GUI
         /// thread.
         HostServiceProvider *appServices = nullptr;
+        /// Where the Host Kit's image service stages and saves files.
+        FileLocations files;
     };
 
     /// What the session reports, on the GUI thread; any may be empty.

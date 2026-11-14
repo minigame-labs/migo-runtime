@@ -5,6 +5,7 @@
 #include <migo/windows/win32_surface_view.hpp>
 
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
 
@@ -42,6 +43,15 @@ namespace migo::windows_host {
 /// Windows tells an App of neither a screenshot nor a recording, so those
 /// observers and getScreenRecordingState are refused, as on Linux.
 ///
+/// Images and files: the player's pictures and files through the system's
+/// open dialog -- modal to the App's window, run on a thread of its own so the
+/// App's message loop goes on -- copied, never lent; compressImage through
+/// the Windows Imaging Component; saveImageToPhotosAlbum into the player's
+/// Pictures folder and saveFileToDisk through the system's save dialog; the
+/// previews in a viewer of the Host Kit's own, http(s) images downloaded
+/// first. The camera is not offered; a video in previewMedia is refused until
+/// the Host Kit plays videos.
+///
 /// Permission: the scopes the desktop decides. `scope.writePhotosAlbum` is
 /// granted -- the player's Pictures folder is theirs and the App's, which a
 /// desktop does not gate. Any other scope is the App's to decide, and refused
@@ -54,13 +64,25 @@ namespace migo::windows_host {
 /// as provided on Windows.
 ///
 /// GUI thread only. What it shows goes with it.
+/// Where the image service keeps what it hands over and what it saves.
+struct FileLocations {
+    /// The directory the files handed to the Session -- a picked image's copy,
+    /// a compressed image -- wait in until it takes them; best on the volume of
+    /// the engine's cache, so taking one is a rename. Empty: the user's
+    /// temporary directory.
+    std::filesystem::path staging;
+    /// The player's photo album, which saveImageToPhotosAlbum saves to and the
+    /// pickers open in. Empty: their Pictures folder.
+    std::filesystem::path album;
+};
+
 class Win32BuiltInHostServices final : public HostServiceProvider {
 public:
     /// `view` is the game's: its window's top-level is the window these
     /// services are of. `channel` is the Session's, which events are reported
     /// through. `debug_aids` is called with content's setEnableDebug.
     Win32BuiltInHostServices(Win32SurfaceView &view, std::shared_ptr<HostServiceChannel> channel,
-                             std::function<void(bool on)> debug_aids = {});
+                             std::function<void(bool on)> debug_aids = {}, FileLocations files = {});
     ~Win32BuiltInHostServices() override;
 
     Win32BuiltInHostServices(const Win32BuiltInHostServices &) = delete;

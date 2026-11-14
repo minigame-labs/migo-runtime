@@ -123,9 +123,8 @@ public:
         };
         view_ = std::make_unique<Win32SurfaceView>(*surface_host_, parent, std::move(heard));
         channel_ = HostServiceChannel::open(session_);
-        built_in_ = std::make_unique<Win32BuiltInHostServices>(*view_, channel_, [this](bool on) {
-            (void)setDebugAids(on);
-        });
+        built_in_ = std::make_unique<Win32BuiltInHostServices>(
+            *view_, channel_, [this](bool on) { (void)setDebugAids(on); }, options_.files);
         app_mask_ = options_.appServices != nullptr ? options_.appServices->services() : 0;
 
         MigoHostCallbacks callbacks{};

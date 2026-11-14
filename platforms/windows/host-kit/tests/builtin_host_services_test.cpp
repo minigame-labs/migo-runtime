@@ -16,10 +16,15 @@
 #define UNICODE
 #endif
 #include <windows.h>
+#include <wincodec.h>
 
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <vector>
 #include <optional>
 #include <string>
 
@@ -35,6 +40,7 @@ int g_failures = 0;
         }                                                                                       \
     } while (false)
 
+using migo::windows_host::FileLocations;
 using migo::windows_host::hostServiceBit;
 using migo::windows_host::Json;
 using migo::windows_host::SurfaceState;
@@ -137,11 +143,13 @@ struct Running {
     std::optional<bool> aids_changed;
     std::optional<Win32ManagedSession> session;
 
-    Running() {
+    explicit Running(FileLocations files = {}) {
         Win32ManagedSession::Listener listener;
         listener.closed = [this] { closed = true; };
         listener.debugAidsChanged = [this](bool on) { aids_changed = on; };
-        session.emplace(*fake_migo::engine(), frame, Win32ManagedSession::Options(), std::move(listener));
+        Win32ManagedSession::Options options;
+        options.files = std::move(files);
+        session.emplace(*fake_migo::engine(), frame, std::move(options), std::move(listener));
         // The frame's client area at 640 x 360, which its view fills.
         RECT outer{};
         GetWindowRect(frame, &outer);
@@ -548,9 +556,252 @@ void set_enable_debug_turns_the_aids() {
     CHECK(find_panel(running.frame) == nullptr);
 }
 
+// ---- images and files ---------------------------------------------------------------------------
+
+namespace fs = std::filesystem;
+
+/// A directory of this run's own, emptied first.
+fs::path scratch(const wchar_t *name) {
+    const fs::path directory = fs::temp_directory_path() / L"migo-windows-images-test" / name;
+    std::error_code ignored;
+    fs::remove_all(directory, ignored);
+    fs::create_directories(directory);
+    return directory;
+}
+
+/// A `width` x `height` 24-bit BMP, striped.
+fs::path write_bmp(const fs::path &path, int width, int height) {
+    const int row = (width * 3 + 3) & ~3;
+    const std::uint32_t pixels = static_cast<std::uint32_t>(row * height);
+    std::vector<unsigned char> file(54 + pixels, 0);
+    const auto put32 = [&file](std::size_t at, std::uint32_t value) {
+        for (int byte = 0; byte < 4; ++byte) file[at + static_cast<std::size_t>(byte)] = static_cast<unsigned char>(value >> (8 * byte));
+    };
+    file[0] = 'B';
+    file[1] = 'M';
+    put32(2, static_cast<std::uint32_t>(file.size()));
+    put32(10, 54);
+    put32(14, 40);
+    put32(18, static_cast<std::uint32_t>(width));
+    put32(22, static_cast<std::uint32_t>(height));
+    file[26] = 1;
+    file[28] = 24;
+    put32(34, pixels);
+    for (std::size_t at = 54; at < file.size(); ++at) file[at] = static_cast<unsigned char>(at % 3 == 0 ? 200 : 40);
+    std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char *>(file.data()),
+                                               static_cast<std::streamsize>(file.size()));
+    return path;
+}
+
+/// An image's size, read by WIC; 0 x 0 when it is not one.
+SIZE image_size(const fs::path &path) {
+    IWICImagingFactory *wic = nullptr;
+    IWICBitmapDecoder *decoder = nullptr;
+    IWICBitmapFrameDecode *frame = nullptr;
+    UINT width = 0;
+    UINT height = 0;
+    if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))) &&
+        SUCCEEDED(wic->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand,
+                                                 &decoder)) &&
+        SUCCEEDED(decoder->GetFrame(0, &frame))) {
+        frame->GetSize(&width, &height);
+    }
+    if (frame != nullptr) frame->Release();
+    if (decoder != nullptr) decoder->Release();
+    if (wic != nullptr) wic->Release();
+    return SIZE{static_cast<LONG>(width), static_cast<LONG>(height)};
+}
+
+/// What the files an answer names held, kept as the library takes them -- the
+/// Host Kit removes what is not taken once the call is answered.
+std::map<std::string, fs::path> g_taken;
+
+void take_into(const fs::path &directory) {
+    g_taken.clear();
+    fake_migo::set_host_service_completion([directory](const fake_migo::HostServiceAnswer &answer) {
+        const std::optional<Json> result = Json::parse(answer.payload);
+        if (!result.has_value()) return;
+        std::vector<const Json *> pending{&*result};
+        while (!pending.empty()) {
+            const Json *value = pending.back();
+            pending.pop_back();
+            if (value->isString()) {
+                const fs::path file = fs::u8path(value->string());
+                std::error_code error;
+                if (fs::is_regular_file(file, error)) {
+                    const fs::path kept = directory / file.filename();
+                    fs::copy_file(file, kept, fs::copy_options::overwrite_existing, error);
+                    g_taken[value->string()] = kept;
+                }
+            }
+            for (const Json &item : value->items()) pending.push_back(&item);
+            for (const auto &member : value->members()) pending.push_back(&member.second);
+        }
+    });
+}
+
+std::string utf8_path(const fs::path &path) { return path.u8string(); }
+
+void compress_image_scales_and_reencodes() {
+    fake_migo::reset();
+    const fs::path work = scratch(L"compress");
+    take_into(work / L"taken");
+    fs::create_directories(work / L"taken");
+    Running running(FileLocations{work / L"staging", work / L"album"});
+    const fs::path source = write_bmp(work / L"wide.bmp", 200, 100);
+    const std::uint64_t call =
+        ask(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_COMPRESS_IMAGE,
+            Json::object().set("src", utf8_path(source)).set("quality", 60).set("compressedWidth", 50));
+    CHECK(answered_ok(call));
+    const std::optional<Json> answer = answer_to(call).has_value() ? Json::parse(answer_to(call)->payload) : std::nullopt;
+    const std::string compressed = answer.has_value() ? (*answer)["tempFilePath"].string() : std::string();
+    CHECK(compressed.size() > 4 && compressed.substr(compressed.size() - 4) == ".jpg");
+    CHECK(g_taken.count(compressed) == 1);
+    if (g_taken.count(compressed) == 1) {
+        const SIZE size = image_size(g_taken[compressed]);
+        CHECK(size.cx == 50 && size.cy == 25);
+    }
+    // What was not taken is gone: the staged file was the Session's to take.
+    CHECK(!fs::exists(fs::u8path(compressed)));
+    CHECK(failure_of(ask(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_COMPRESS_IMAGE,
+                         Json::object().set("src", utf8_path(work / L"missing.png")))) == "file not found");
+    fake_migo::set_host_service_completion({});
+}
+
+void save_image_to_photos_album_copies_into_the_album() {
+    fake_migo::reset();
+    const fs::path work = scratch(L"album");
+    Running running(FileLocations{work / L"staging", work / L"album"});
+    const fs::path source = write_bmp(work / L"photo.bmp", 8, 8);
+    CHECK(answered_ok(ask(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM,
+                          Json::object().set("filePath", utf8_path(source)))));
+    std::size_t saved = 0;
+    std::error_code error;
+    for (const auto &entry : fs::directory_iterator(work / L"album", error)) {
+        const std::wstring name = entry.path().filename().wstring();
+        if (name.rfind(L"IMG_", 0) == 0 && entry.path().extension() == L".bmp" &&
+            fs::file_size(entry.path()) == fs::file_size(source)) {
+            ++saved;
+        }
+    }
+    CHECK(saved == 1);
+    std::ofstream(work / L"note.txt") << "not a picture";
+    CHECK(failure_of(ask(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM,
+                         Json::object().set("filePath", utf8_path(work / L"note.txt")))) == "not an image");
+    CHECK(failure_of(ask(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM,
+                         Json::object().set("filePath", utf8_path(work / L"missing.bmp")))) == "file not found");
+}
+
+/// The system's file dialog the App's window owns, once it shows.
+HWND file_dialog(HWND owner) {
+    HWND dialog = nullptr;
+    (void)pump_until([&] { return (dialog = find_owned(L"#32770", owner)) != nullptr && IsWindowVisible(dialog); }, 10000);
+    return dialog;
+}
+
+/// The dialog's file name box: the Edit inside its control 1148.
+HWND file_name_box(HWND dialog) {
+    HWND box = GetDlgItem(dialog, 1148);
+    if (box == nullptr) return nullptr;
+    if (HWND edit = FindWindowExW(box, nullptr, L"Edit", nullptr); edit != nullptr) return edit;
+    HWND combo = FindWindowExW(box, nullptr, L"ComboBox", nullptr);
+    return combo != nullptr ? FindWindowExW(combo, nullptr, L"Edit", nullptr) : box;
+}
+
+void choose_image_copies_what_the_player_picks() {
+    fake_migo::reset();
+    const fs::path work = scratch(L"choose");
+    fs::create_directories(work / L"taken");
+    take_into(work / L"taken");
+    Running running(FileLocations{work / L"staging", work / L"album"});
+    const fs::path picked = write_bmp(work / L"picked.bmp", 16, 9);
+    const std::uint64_t call = deliver(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_CHOOSE_IMAGE, Json::object().set("count", 1));
+    const HWND dialog = file_dialog(running.frame);
+    CHECK(dialog != nullptr);
+    if (dialog == nullptr) return;
+    // Modal to the App's window, which goes on handling its messages.
+    CHECK(!IsWindowEnabled(running.frame));
+    // One dialog at a time.
+    CHECK(failure_of(ask(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_CHOOSE_MESSAGE_FILE, Json::object())) ==
+          "another file dialog is showing");
+    const HWND name = file_name_box(dialog);
+    CHECK(name != nullptr);
+    if (name != nullptr) SetWindowTextW(name, picked.c_str());
+    PostMessageW(dialog, WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), 0);
+    CHECK(pump_until([call] { return answer_to(call).has_value(); }, 10000));
+    CHECK(answered_ok(call));
+    const std::optional<Json> answer = answer_to(call).has_value() ? Json::parse(answer_to(call)->payload) : std::nullopt;
+    if (answer.has_value()) {
+        CHECK((*answer)["tempFilePaths"].items().size() == 1);
+        const std::string copy = (*answer)["tempFiles"].items().empty() ? std::string()
+                                                                          : (*answer)["tempFiles"].items()[0]["path"].string();
+        // A copy, never the player's own file.
+        CHECK(!copy.empty() && fs::u8path(copy) != picked && g_taken.count(copy) == 1);
+        if (g_taken.count(copy) == 1) CHECK(fs::file_size(g_taken[copy]) == fs::file_size(picked));
+        CHECK((*answer)["tempFiles"].items()[0]["size"].numberOr(0) == static_cast<double>(fs::file_size(picked)));
+    }
+    CHECK(pump_until([&running] { return IsWindowEnabled(running.frame) != FALSE; }));
+    fake_migo::set_host_service_completion({});
+}
+
+void dismissing_a_file_dialog_is_cancel() {
+    fake_migo::reset();
+    const fs::path work = scratch(L"dismiss");
+    Running running(FileLocations{work / L"staging", work / L"album"});
+    const std::uint64_t call =
+        deliver(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_CHOOSE_MESSAGE_FILE, Json::object().set("type", "file"));
+    const HWND dialog = file_dialog(running.frame);
+    CHECK(dialog != nullptr);
+    if (dialog != nullptr) PostMessageW(dialog, WM_CLOSE, 0, 0);
+    CHECK(pump_until([call] { return answer_to(call).has_value(); }, 10000));
+    CHECK(failure_of(call) == "cancel");
+    // A camera alone is not offered.
+    CHECK(failure_of(ask(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_CHOOSE_IMAGE,
+                         Json::object().set("sourceType", Json(Json::Array{Json("camera")})))) == "not supported");
+}
+
+void closing_the_game_dismisses_its_file_dialog() {
+    fake_migo::reset();
+    const fs::path work = scratch(L"close");
+    Running running(FileLocations{work / L"staging", work / L"album"});
+    const std::uint64_t call = deliver(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_CHOOSE_IMAGE, Json::object());
+    CHECK(file_dialog(running.frame) != nullptr);
+    (void)running.session->close();
+    CHECK(find_owned(L"#32770", running.frame) == nullptr);
+    CHECK(IsWindowEnabled(running.frame));
+    CHECK(failure_of(call) == "cancel");
+}
+
+void a_preview_shows_the_viewer() {
+    fake_migo::reset();
+    const fs::path work = scratch(L"preview");
+    Running running(FileLocations{work / L"staging", work / L"album"});
+    const std::string first = utf8_path(write_bmp(work / L"one.bmp", 32, 16));
+    const std::string second = utf8_path(write_bmp(work / L"two.bmp", 16, 32));
+    CHECK(answered_ok(ask(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_PREVIEW_IMAGE,
+                          Json::object().set("urls", Json(Json::Array{Json(first), Json(second)})).set("current", second))));
+    const HWND viewer = find_owned(L"MigoMediaViewer", running.frame);
+    CHECK(viewer != nullptr && IsWindowVisible(viewer));
+    CHECK(!IsWindowEnabled(running.frame));
+    if (viewer != nullptr) PostMessageW(viewer, WM_KEYDOWN, VK_ESCAPE, 0);
+    CHECK(pump_until([&running] { return find_owned(L"MigoMediaViewer", running.frame) == nullptr; }));
+    CHECK(IsWindowEnabled(running.frame));
+    // A download that cannot be had fails the call; a video is not played yet.
+    const std::string refused = failure_of(ask(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_PREVIEW_IMAGE,
+                                               Json::object().set("urls", Json(Json::Array{Json("http://127.0.0.1:9/x.png")}))));
+    CHECK(refused.rfind("download failed", 0) == 0);
+    CHECK(failure_of(ask(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_PREVIEW_MEDIA,
+                         Json::object().set("sources", Json(Json::Array{Json::object().set("url", first).set("type", "video")})))) ==
+          "not supported");
+    CHECK(failure_of(ask(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_PREVIEW_IMAGE,
+                         Json::object().set("urls", Json(Json::Array{Json(utf8_path(work / L"gone.bmp"))})))) ==
+          "file not found");
+}
+
 }  // namespace
 
 int main() {
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     SetCursorPos(GetSystemMetrics(SM_CXVIRTUALSCREEN) - 1, GetSystemMetrics(SM_CYVIRTUALSCREEN) - 1);
     it_declares_what_it_answers();
@@ -570,6 +821,12 @@ int main() {
     escape_declines_a_modal();
     an_action_sheet_answers_the_item_tapped();
     closing_takes_a_dialog_down_with_the_game();
+    compress_image_scales_and_reencodes();
+    save_image_to_photos_album_copies_into_the_album();
+    choose_image_copies_what_the_player_picks();
+    dismissing_a_file_dialog_is_cancel();
+    closing_the_game_dismisses_its_file_dialog();
+    a_preview_shows_the_viewer();
     if (g_failures != 0) {
         std::fprintf(stderr, "%d Win32BuiltInHostServices assertion(s) failed\n", g_failures);
         return 1;
