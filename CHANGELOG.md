@@ -1084,6 +1084,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- On Windows the Direct3D 11 device is no longer lost as content starts. Images were uploaded on a thread of their
+  own, a second thread in ANGLE's one device, and an NVIDIA driver answered that with DXGI_ERROR_DEVICE_REMOVED
+  (DXGI_ERROR_DRIVER_INTERNAL_ERROR) as the render thread compiled its first shaders: every context lost, the content
+  failed with a render error, about one start in nine for content that loads its first images as it first draws.
+  Images are uploaded on the render thread there now, as on X11.
 - A WebGL fence signals on Direct3D 11 with an NVIDIA GPU. There, a fence made with nothing drawn after it was never
   submitted -- `flush()` did not submit it, and a poll without SYNC_FLUSH_COMMANDS_BIT does not either -- so every
   fence of a context after its first stayed unsignalled for as long as content polled it. Every poll of a fence, the

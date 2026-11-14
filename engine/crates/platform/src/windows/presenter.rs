@@ -65,8 +65,21 @@ impl EglProvider for WindowsEglProvider {
         GraphicsBackendId::of::<WindowsAngleEglBackend>()
     }
 
+    /// The render thread's alone, though ANGLE hands out shared contexts readily.
+    ///
+    /// A second thread with a context of the share group -- the upload thread, creating a texture for an image as it
+    /// arrives -- is a second thread in ANGLE's one Direct3D 11 device, and on an NVIDIA GPU the driver gave that
+    /// device up. Measured 2026-11-14 on a GeForce GTX 1060 (driver 32.0.15.6094), from ANGLE's own debug messages: as
+    /// the render thread compiled its first shaders the upload thread's texture was refused with
+    /// DXGI_ERROR_DEVICE_REMOVED, the removal's reason DXGI_ERROR_DRIVER_INTERNAL_ERROR, and every context was lost
+    /// from there -- content that loads its first images as it makes its first draws (Phaser's start) lost the device
+    /// in about one start in nine, nothing in the system's logs. WARP, which every CI runner's Direct3D is, runs the
+    /// two threads without complaint, so no run there shows it.
+    ///
+    /// Uploads go on the render thread instead, as they do wherever a second thread is not the display's to use
+    /// (X11): a large image costs the frame it arrives in, and the device stays.
     fn concurrency(&self) -> EglConcurrency {
-        EglConcurrency::SharedContexts
+        EglConcurrency::RenderThreadOnly
     }
 
     fn platform_identity(&self) -> PlatformIdentity {
