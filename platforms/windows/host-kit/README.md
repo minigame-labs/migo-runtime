@@ -81,9 +81,14 @@ It is being built in stages (migo-runtime's schedule item X1):
   recorder -- WASAPI's shared-mode capture of the default input, the system
   converting to the rate asked, written as PCM, WAV or AAC through Media
   Foundation (.m4a, or an ADTS stream cut into frames), one recording at a
-  time on a thread of its own. An App can use it in the Bound shape too.
+  time on a thread of its own; createVideo's players -- each a window of its
+  own over the game, played by Media Foundation's media engine in
+  frame-server mode on a Direct3D 11 device and drawn with Direct2D into its
+  own swap chain at the compositor's beat, its poster until it plays,
+  objectFit, its background, loop, mute and rate. An App can use it in the
+  Bound shape too.
 
-Next: videos.
+Next: the video players' controls, and videos in the preview viewer.
 
 Build it with CMake against the Migo Windows SDK package
 (`find_package(migo)`), and link the targets it exports

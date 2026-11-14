@@ -131,7 +131,8 @@ This phase does not include:
   open and save dialogs, WIC for images, Media Foundation for videos' details, a viewer for previews.
   Location comes from Windows' location service, as its privacy settings allow; gamepads from
   Windows.Gaming.Input, an Xbox-class pad on the standard layout with rumble; the recorder through
-  WASAPI and Media Foundation. Videos
+  WASAPI and Media Foundation; createVideo's players through Media Foundation's media engine, drawn
+  with Direct2D. Their on-screen controls, and videos in previews,
   are not there yet: until they are, an App answers them itself.
 - **`EglProvider` implementation**: not yet provided.
 

@@ -1,6 +1,7 @@
 #include "images.hpp"
 
 #include "gui_queue.hpp"
+#include "http_download.hpp"
 #include "image_codec.hpp"
 #include "media_viewer.hpp"
 #include "staging.hpp"
@@ -12,7 +13,6 @@
 #include <shlobj.h>
 #include <shlwapi.h>
 #include <shobjidl.h>
-#include <winhttp.h>
 
 #include <algorithm>
 #include <atomic>
@@ -35,8 +35,6 @@ using codec::ComPtr;
 constexpr char kNotSupported[] = "not supported";
 constexpr char kCancel[] = "cancel";
 constexpr char kNowhere[] = "there is nowhere to put the file";
-/// How long a preview's download may go without a byte: the network calls' own default.
-constexpr DWORD kTransferTimeoutMs = 60'000;
 // How often a dialog asked to close is looked at again.
 constexpr DWORD kDialogCloseRetryMs = 50;
 
@@ -375,110 +373,6 @@ struct OpenQuestion {
     bool video_filter = false;
     std::wstring folder;
 };
-
-/// A preview's downloads, stoppable from the GUI thread: closing the request in
-/// flight makes the call waiting on it return.
-class Downloads final {
-public:
-    void stop() {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        stopped_ = true;
-        if (request_ != nullptr) WinHttpCloseHandle(request_);
-        request_ = nullptr;
-    }
-
-    [[nodiscard]] bool stopped() {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        return stopped_;
-    }
-
-    /// `request` is the one in flight; false when the downloads were stopped.
-    bool begin(HINTERNET request) {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        if (stopped_) return false;
-        request_ = request;
-        return true;
-    }
-
-    /// Closes `request` unless stopping did.
-    void end(HINTERNET request) {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        if (request_ == request) WinHttpCloseHandle(request);
-        request_ = nullptr;
-    }
-
-private:
-    std::mutex mutex_;
-    bool stopped_ = false;
-    HINTERNET request_ = nullptr;
-};
-
-/// Downloads `url` into `file`; empty on success, else why not.
-std::string download(Downloads &downloads, const std::wstring &url, HANDLE file) {
-    URL_COMPONENTS parts{};
-    parts.dwStructSize = sizeof parts;
-    parts.dwHostNameLength = static_cast<DWORD>(-1);
-    parts.dwUrlPathLength = static_cast<DWORD>(-1);
-    parts.dwExtraInfoLength = static_cast<DWORD>(-1);
-    parts.dwSchemeLength = static_cast<DWORD>(-1);
-    if (!WinHttpCrackUrl(url.c_str(), 0, 0, &parts) || parts.dwHostNameLength == 0) return "download failed: bad URL";
-    const std::wstring host(parts.lpszHostName, parts.dwHostNameLength);
-    std::wstring path(parts.lpszUrlPath, parts.dwUrlPathLength);
-    if (parts.lpszExtraInfo != nullptr) path.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
-    if (path.empty()) path = L"/";
-
-    // The system's proxy, as the player set it.
-    HINTERNET session = WinHttpOpen(L"Migo", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
-                                    WINHTTP_NO_PROXY_BYPASS, 0);
-    if (session == nullptr) return "download failed: the network is not available";
-    const int timeout = static_cast<int>(kTransferTimeoutMs);
-    WinHttpSetTimeouts(session, timeout, timeout, timeout, timeout);
-    std::string error;
-    HINTERNET connection = WinHttpConnect(session, host.c_str(), parts.nPort, 0);
-    HINTERNET request = connection == nullptr
-                            ? nullptr
-                            : WinHttpOpenRequest(connection, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER,
-                                                 WINHTTP_DEFAULT_ACCEPT_TYPES,
-                                                 parts.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0);
-    if (request == nullptr || !downloads.begin(request)) {
-        if (request != nullptr) WinHttpCloseHandle(request);
-        error = request == nullptr ? "download failed: the server cannot be reached" : "download failed: stopped";
-    } else {
-        DWORD status = 0;
-        DWORD status_size = sizeof status;
-        if (!WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
-            !WinHttpReceiveResponse(request, nullptr)) {
-            error = downloads.stopped() ? "download failed: stopped" : "download failed: the server cannot be reached";
-        } else if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                                        WINHTTP_HEADER_NAME_BY_INDEX, &status, &status_size, WINHTTP_NO_HEADER_INDEX) ||
-                   status < 200 || status >= 300) {
-            error = "download failed: HTTP " + std::to_string(status);
-        } else {
-            std::vector<char> buffer(64 * 1024);
-            for (;;) {
-                DWORD received = 0;
-                if (!WinHttpReadData(request, buffer.data(), static_cast<DWORD>(buffer.size()), &received)) {
-                    error = downloads.stopped() ? "download failed: stopped" : "download failed: the transfer broke off";
-                    break;
-                }
-                if (received == 0) break;
-                DWORD written = 0;
-                if (!WriteFile(file, buffer.data(), received, &written, nullptr) || written != received) {
-                    error = "download failed: " + reason_of_error(GetLastError());
-                    break;
-                }
-            }
-        }
-        downloads.end(request);
-    }
-    if (connection != nullptr) WinHttpCloseHandle(connection);
-    WinHttpCloseHandle(session);
-    return error;
-}
-
-bool remote(const std::string &source) {
-    return source.rfind("http://", 0) == 0 || source.rfind("https://", 0) == 0;
-}
 
 }  // namespace
 
@@ -1016,7 +910,7 @@ private:
         std::vector<std::pair<std::size_t, std::wstring>> remotes;
         for (std::size_t index = 0; index < sources.size(); ++index) {
             const std::wstring source = wideOf(sources[index]);
-            if (remote(sources[index])) {
+            if (isRemote(sources[index])) {
                 const std::wstring path = staging()->path(L"");
                 HANDLE file = path.empty() ? INVALID_HANDLE_VALUE
                                            : CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,

@@ -16,6 +16,9 @@
 #define UNICODE
 #endif
 #include <windows.h>
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mfreadwrite.h>
 #include <wincodec.h>
 
 #include <chrono>
@@ -187,6 +190,7 @@ void it_declares_what_it_answers() {
     CHECK((declared & hostServiceBit(MIGO_HOST_SERVICE_IMAGE)) != 0);
     CHECK((declared & hostServiceBit(MIGO_HOST_SERVICE_LOCATION)) != 0);
     CHECK((declared & hostServiceBit(MIGO_HOST_SERVICE_RECORDER)) != 0);
+    CHECK((declared & hostServiceBit(MIGO_HOST_SERVICE_VIDEO)) != 0);
     CHECK(fake_migo::installed_callbacks().on_host_service_call != nullptr);
     // A method the Host Kit has no answer for is refused, not left waiting.
     CHECK(failure_of(ask(MIGO_HOST_SERVICE_SCREEN, MIGO_SCREEN_GET_RECORDING_STATE, Json::object())) ==
@@ -841,6 +845,172 @@ void location_is_windows_to_give() {
     }
 }
 
+// ---- videos -------------------------------------------------------------------------------------------
+
+/// A one-second video, every frame solid red, at `path`: H.264 in MPEG-4, or
+/// -- where this machine has no H.264 encoder -- WMV. False when it has neither.
+bool write_red_video(const fs::path &mp4, const fs::path &wmv, fs::path &written) {
+    if (FAILED(MFStartup(MF_VERSION, MFSTARTUP_LITE))) return false;
+    constexpr UINT32 kWidth = 160;
+    constexpr UINT32 kHeight = 120;
+    constexpr UINT32 kFrames = 30;
+    bool made = false;
+    for (const auto &[path, format] : {std::pair<fs::path, GUID>{mp4, MFVideoFormat_H264}, {wmv, MFVideoFormat_WMV3}}) {
+        IMFSinkWriter *writer = nullptr;
+        IMFMediaType *out = nullptr;
+        IMFMediaType *in = nullptr;
+        DWORD stream = 0;
+        HRESULT result = MFCreateSinkWriterFromURL(path.c_str(), nullptr, nullptr, &writer);
+        if (SUCCEEDED(result)) result = MFCreateMediaType(&out);
+        if (SUCCEEDED(result)) {
+            out->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+            out->SetGUID(MF_MT_SUBTYPE, format);
+            out->SetUINT32(MF_MT_AVG_BITRATE, 400000);
+            out->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+            MFSetAttributeSize(out, MF_MT_FRAME_SIZE, kWidth, kHeight);
+            MFSetAttributeRatio(out, MF_MT_FRAME_RATE, 30, 1);
+            MFSetAttributeRatio(out, MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+            result = writer->AddStream(out, &stream);
+        }
+        if (SUCCEEDED(result)) result = MFCreateMediaType(&in);
+        if (SUCCEEDED(result)) {
+            in->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+            in->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
+            in->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+            MFSetAttributeSize(in, MF_MT_FRAME_SIZE, kWidth, kHeight);
+            MFSetAttributeRatio(in, MF_MT_FRAME_RATE, 30, 1);
+            MFSetAttributeRatio(in, MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+            result = writer->SetInputMediaType(stream, in, nullptr);
+        }
+        if (SUCCEEDED(result)) result = writer->BeginWriting();
+        for (UINT32 frame = 0; SUCCEEDED(result) && frame < kFrames; ++frame) {
+            IMFMediaBuffer *buffer = nullptr;
+            IMFSample *sample = nullptr;
+            BYTE *pixels = nullptr;
+            const DWORD bytes = kWidth * kHeight * 4;
+            result = MFCreateMemoryBuffer(bytes, &buffer);
+            if (SUCCEEDED(result)) result = buffer->Lock(&pixels, nullptr, nullptr);
+            if (SUCCEEDED(result)) {
+                for (DWORD at = 0; at < bytes; at += 4) {
+                    pixels[at] = 0;          // blue
+                    pixels[at + 1] = 0;      // green
+                    pixels[at + 2] = 255;    // red
+                    pixels[at + 3] = 255;
+                }
+                buffer->Unlock();
+                buffer->SetCurrentLength(bytes);
+                result = MFCreateSample(&sample);
+            }
+            if (SUCCEEDED(result)) result = sample->AddBuffer(buffer);
+            if (SUCCEEDED(result)) result = sample->SetSampleTime(static_cast<LONGLONG>(frame) * 333333);
+            if (SUCCEEDED(result)) result = sample->SetSampleDuration(333333);
+            if (SUCCEEDED(result)) result = writer->WriteSample(stream, sample);
+            if (sample != nullptr) sample->Release();
+            if (buffer != nullptr) buffer->Release();
+        }
+        if (SUCCEEDED(result)) result = writer->Finalize();
+        if (in != nullptr) in->Release();
+        if (out != nullptr) out->Release();
+        if (writer != nullptr) writer->Release();
+        if (SUCCEEDED(result)) {
+            written = path;
+            made = true;
+            break;
+        }
+    }
+    MFShutdown();
+    return made;
+}
+
+HWND video_player(HWND owner) { return find_owned(L"MigoVideoPlayer", owner); }
+
+std::optional<Json> video_event(std::uint32_t kind) {
+    for (const auto &posted : fake_migo::host_service_events()) {
+        if (posted.service == MIGO_HOST_SERVICE_VIDEO && posted.event == kind) return Json::parse(posted.payload);
+    }
+    return std::nullopt;
+}
+
+void a_video_player_stands_where_content_put_it() {
+    fake_migo::reset();
+    const fs::path work = scratch(L"video-place");
+    Running running;
+    tell(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_CREATE,
+         Json::object().set("videoId", 1).set("x", 10).set("y", 20).set("width", 200).set("height", 100)
+             .set("src", utf8_path(work / L"missing.mp4")));
+    const HWND player = video_player(running.frame);
+    CHECK(player != nullptr && IsWindowVisible(player));
+    if (player == nullptr) return;
+    const auto placed = [&running, player](LONG x, LONG y, LONG width, LONG height) {
+        RECT window{};
+        GetWindowRect(player, &window);
+        POINT origin{x, y};
+        ClientToScreen(running.session->view()->hwnd(), &origin);
+        return window.left == origin.x && window.top == origin.y && window.right - window.left == width &&
+               window.bottom - window.top == height;
+    };
+    CHECK(placed(10, 20, 200, 100));
+    // A source it cannot play: content hears so once, and its plays fail.
+    CHECK(pump_until([] { return video_event(MIGO_VIDEO_EVENT_ERROR).has_value(); }, 10000));
+    CHECK(video_event(MIGO_VIDEO_EVENT_ERROR).has_value() &&
+          (*video_event(MIGO_VIDEO_EVENT_ERROR))["errMsg"].string().rfind("video:fail", 0) == 0);
+    CHECK(!failure_of(ask(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_PLAY, Json::object().set("videoId", 1))).empty());
+    // Moved, cut to the game, full screen, under the game.
+    tell(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_SET, Json::object().set("videoId", 1).set("x", 600));
+    CHECK(placed(600, 20, 40, 100));
+    CHECK(answered_ok(ask(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_REQUEST_FULL_SCREEN, Json::object().set("videoId", 1))));
+    CHECK(placed(0, 0, 640, 360));
+    CHECK(answered_ok(ask(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_EXIT_FULL_SCREEN, Json::object().set("videoId", 1))));
+    CHECK(placed(600, 20, 40, 100));
+    tell(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_SET, Json::object().set("videoId", 1).set("underGameView", true));
+    CHECK(!IsWindowVisible(player));
+    // A click on a video is the game's.
+    CHECK(SendMessageW(player, WM_NCHITTEST, 0, 0) == HTTRANSPARENT);
+    tell(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_DESTROY, Json::object().set("videoId", 1));
+    CHECK(video_player(running.frame) == nullptr);
+    CHECK(failure_of(ask(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_PLAY, Json::object().set("videoId", 1))) ==
+          "video destroyed");
+}
+
+void a_video_plays() {
+    fake_migo::reset();
+    const fs::path work = scratch(L"video-play");
+    fs::path video;
+    if (!write_red_video(work / L"red.mp4", work / L"red.wmv", video)) {
+        std::fprintf(stderr, "[skip] this machine has no video encoder to make a video with\n");
+        return;
+    }
+    Running running;
+    tell(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_CREATE,
+         Json::object().set("videoId", 2).set("x", 0).set("y", 0).set("width", 320).set("height", 240)
+             .set("src", utf8_path(video)).set("objectFit", "fill"));
+    const std::uint64_t play = deliver(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_PLAY, Json::object().set("videoId", 2));
+    CHECK(pump_until([play] { return answer_to(play).has_value(); }, 15000));
+    if (!answered_ok(play)) {
+        // Decoded where the machine has the decoder: say which, not fail.
+        std::fprintf(stderr, "[skip] %s cannot be played here: %s\n", video.filename().string().c_str(),
+                     failure_of(play).c_str());
+        return;
+    }
+    CHECK(video_event(MIGO_VIDEO_EVENT_PLAY).has_value());
+    CHECK(pump_until([] { return video_event(MIGO_VIDEO_EVENT_TIME_UPDATE).has_value(); }, 5000));
+    // Its frames drawn: red in the middle of where it stands.
+    const HWND player = video_player(running.frame);
+    bool red = false;
+    (void)pump_until([&] {
+        RECT window{};
+        GetWindowRect(player, &window);
+        const COLORREF seen = screen_at(POINT{(window.left + window.right) / 2, (window.top + window.bottom) / 2});
+        red = GetRValue(seen) > 180 && GetGValue(seen) < 80 && GetBValue(seen) < 80;
+        return red;
+    }, 5000);
+    CHECK(red);
+    CHECK(pump_until([] { return video_event(MIGO_VIDEO_EVENT_ENDED).has_value(); }, 10000));
+    const std::optional<Json> time = video_event(MIGO_VIDEO_EVENT_TIME_UPDATE);
+    CHECK(time.has_value() && (*time)["duration"].numberOr(0) > 0.5);
+    tell(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_DESTROY, Json::object().set("videoId", 2));
+}
+
 }  // namespace
 
 int main() {
@@ -871,6 +1041,8 @@ int main() {
     closing_the_game_dismisses_its_file_dialog();
     a_preview_shows_the_viewer();
     location_is_windows_to_give();
+    a_video_player_stands_where_content_put_it();
+    a_video_plays();
     if (g_failures != 0) {
         std::fprintf(stderr, "%d Win32BuiltInHostServices assertion(s) failed\n", g_failures);
         return 1;

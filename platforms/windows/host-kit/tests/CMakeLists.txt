@@ -60,6 +60,9 @@ target_link_libraries(migo-windows-builtin-host-services-test PRIVATE
     user32
     ole32
     windowscodecs
+    mfplat
+    mfreadwrite
+    mfuuid
 )
 
 add_executable(migo-windows-recorder-test recorder_test.cpp)

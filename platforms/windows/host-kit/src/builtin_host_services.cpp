@@ -4,6 +4,7 @@
 #include "images.hpp"
 #include "interaction.hpp"
 #include "recorder.hpp"
+#include "videos.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -101,7 +102,7 @@ public:
          const FileLocations &files)
         : view_(view), channel_(std::move(channel)), debug_aids_(std::move(debug_aids)), interaction_(view),
           images_(GetAncestor(view.hwnd(), GA_ROOT), placesOf(files)),
-          recorder_(channel_, placesOf(files).staging) {
+          recorder_(channel_, placesOf(files).staging), videos_(view, channel_) {
         root_ = GetAncestor(view_.hwnd(), GA_ROOT);
         if (root_ != nullptr) {
             reported_state_ = state_of(root_);
@@ -133,6 +134,9 @@ public:
                 return;
             case MIGO_HOST_SERVICE_LOCATION:
                 location(method, request, std::move(reply));
+                return;
+            case MIGO_HOST_SERVICE_VIDEO:
+                videos_.call(method, request, std::move(reply));
                 return;
             case MIGO_HOST_SERVICE_RECORDER:
                 // Commands, every one: heard through the recorder's events.
@@ -534,6 +538,12 @@ private:
     Interaction interaction_;
     Images images_;
     Recorder recorder_;
+    Videos videos_;
+
+public:
+    void setRunning(bool running) { videos_.setRunning(running); }
+
+private:
 
     static Images::Places placesOf(const FileLocations &files) {
         Images::Places places = Images::Places::system();
@@ -555,6 +565,7 @@ std::uint64_t Win32BuiltInHostServices::services() const noexcept {
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_IMAGE);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_LOCATION);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_RECORDER);
+    builtIn |= hostServiceBit(MIGO_HOST_SERVICE_VIDEO);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_WINDOW);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_SCREEN);
@@ -568,5 +579,7 @@ void Win32BuiltInHostServices::call(MigoHostService service, std::uint32_t metho
 }
 
 void Win32BuiltInHostServices::pointerLockChanged(bool locked) { impl_->pointerLockChanged(locked); }
+
+void Win32BuiltInHostServices::setRunning(bool running) { impl_->setRunning(running); }
 
 }  // namespace migo::windows_host
