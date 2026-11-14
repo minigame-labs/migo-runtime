@@ -203,9 +203,12 @@ void the_clipboard_is_the_systems() {
     const std::string text = "copied \xE5\xA4\x8D\xE5\x88\xB6 \xE2\x9C\x93";
     CHECK(answered_ok(ask(MIGO_HOST_SERVICE_CLIPBOARD, MIGO_CLIPBOARD_SET_CLIPBOARD_DATA,
                           Json::object().set("data", text))));
-    // On the system's clipboard, as text another App reads.
+    // On the system's clipboard, as text another App reads -- once it has its
+    // turn: what watches the clipboard (its history, a manager) opens it at each
+    // change, and it opens for one at a time.
     std::wstring held;
-    if (OpenClipboard(nullptr)) {
+    (void)pump_until([&held] {
+        if (!OpenClipboard(nullptr)) return false;
         if (HANDLE data = GetClipboardData(CF_UNICODETEXT); data != nullptr) {
             if (const auto *chars = static_cast<const wchar_t *>(GlobalLock(data)); chars != nullptr) {
                 held = chars;
@@ -213,7 +216,8 @@ void the_clipboard_is_the_systems() {
             }
         }
         CloseClipboard();
-    }
+        return true;
+    }, 2000);
     CHECK(held == L"copied 复制 ✓");
     const std::uint64_t read = ask(MIGO_HOST_SERVICE_CLIPBOARD, MIGO_CLIPBOARD_GET_CLIPBOARD_DATA, Json::object());
     CHECK(answered_ok(read));
@@ -364,7 +368,7 @@ void a_toast_is_a_card_over_the_game() {
     fake_migo::reset();
     Running running;
     tell(MIGO_HOST_SERVICE_INTERACTION, MIGO_INTERACTION_SHOW_TOAST,
-         Json::object().set("title", "Saved").set("icon", "success").set("duration", 400));
+         Json::object().set("title", "Saved").set("icon", "success").set("duration", 1200));
     const HWND card = find_owned(L"MigoIndicator", running.frame);
     CHECK(card != nullptr);
     if (card != nullptr) {
@@ -378,12 +382,15 @@ void a_toast_is_a_card_over_the_game() {
         CHECK(std::abs((placed.left + placed.right) / 2 - middle.x) <= 1);
         CHECK(std::abs((placed.top + placed.bottom) / 2 - middle.y) <= 1);
         CHECK((GetWindowLongPtrW(card, GWL_EXSTYLE) & WS_EX_TRANSPARENT) != 0);
-        // Drawn: the card's dark face, inside its padding.
-        const COLORREF face = screen_at(POINT{placed.left + 6, (placed.top + placed.bottom) / 2});
-        CHECK(GetRValue(face) < 80 && GetGValue(face) < 80 && GetBValue(face) < 80);
+        // Drawn: the card's dark face, inside its padding -- on the screen at the
+        // compositor's next frame, not at the call.
+        CHECK(pump_until([placed] {
+            const COLORREF face = screen_at(POINT{placed.left + 6, (placed.top + placed.bottom) / 2});
+            return GetRValue(face) < 80 && GetGValue(face) < 80 && GetBValue(face) < 80;
+        }, 800));
     }
     // Gone after its duration.
-    CHECK(pump_until([&running] { return find_owned(L"MigoIndicator", running.frame) == nullptr; }, 2000));
+    CHECK(pump_until([&running] { return find_owned(L"MigoIndicator", running.frame) == nullptr; }, 3000));
 }
 
 void loading_and_toasts_take_turns() {
@@ -955,9 +962,13 @@ void a_video_player_stands_where_content_put_it() {
     fake_migo::reset();
     const fs::path work = scratch(L"video-place");
     Running running;
+    // Content places it in logical pixels, which the screen's scale makes the
+    // window's: the places below are the window's, on a screen at any scale.
+    const double scale = GetDpiForWindow(running.session->view()->hwnd()) / 96.0;
+    const auto logical = [scale](int pixels) { return pixels / scale; };
     tell(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_CREATE,
-         Json::object().set("videoId", 1).set("x", 10).set("y", 20).set("width", 200).set("height", 100)
-             .set("src", utf8_path(work / L"missing.mp4")));
+         Json::object().set("videoId", 1).set("x", logical(10)).set("y", logical(20)).set("width", logical(200))
+             .set("height", logical(100)).set("src", utf8_path(work / L"missing.mp4")));
     const HWND player = video_player(running.frame);
     CHECK(player != nullptr && IsWindowVisible(player));
     if (player == nullptr) return;
@@ -976,7 +987,7 @@ void a_video_player_stands_where_content_put_it() {
           (*video_event(MIGO_VIDEO_EVENT_ERROR))["errMsg"].string().rfind("video:fail", 0) == 0);
     CHECK(!failure_of(ask(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_PLAY, Json::object().set("videoId", 1))).empty());
     // Moved, cut to the game, full screen, under the game.
-    tell(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_SET, Json::object().set("videoId", 1).set("x", 600));
+    tell(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_SET, Json::object().set("videoId", 1).set("x", logical(600)));
     CHECK(placed(600, 20, 40, 100));
     CHECK(answered_ok(ask(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_REQUEST_FULL_SCREEN, Json::object().set("videoId", 1))));
     CHECK(placed(0, 0, 640, 360));
