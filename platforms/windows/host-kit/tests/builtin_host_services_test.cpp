@@ -924,6 +924,24 @@ bool write_red_video(const fs::path &mp4, const fs::path &wmv, fs::path &written
 
 HWND video_player(HWND owner) { return find_owned(L"MigoVideoPlayer", owner); }
 
+/// The pixel in the middle of `window` as it renders itself, DirectX content included.
+COLORREF window_middle(HWND window) {
+    RECT area{};
+    GetClientRect(window, &area);
+    HDC screen = GetDC(nullptr);
+    HDC copy = CreateCompatibleDC(screen);
+    HBITMAP image = CreateCompatibleBitmap(screen, std::max(1L, area.right), std::max(1L, area.bottom));
+    HGDIOBJ previous = SelectObject(copy, image);
+    constexpr UINT kRenderFullContent = 0x00000002;  // PW_RENDERFULLCONTENT
+    PrintWindow(window, copy, PW_CLIENTONLY | kRenderFullContent);
+    const COLORREF colour = GetPixel(copy, area.right / 2, area.bottom / 2);
+    SelectObject(copy, previous);
+    DeleteObject(image);
+    DeleteDC(copy);
+    ReleaseDC(nullptr, screen);
+    return colour;
+}
+
 std::optional<Json> video_event(std::uint32_t kind) {
     for (const auto &posted : fake_migo::host_service_events()) {
         if (posted.service == MIGO_HOST_SERVICE_VIDEO && posted.event == kind) return Json::parse(posted.payload);
@@ -994,13 +1012,12 @@ void a_video_plays() {
     }
     CHECK(video_event(MIGO_VIDEO_EVENT_PLAY).has_value());
     CHECK(pump_until([] { return video_event(MIGO_VIDEO_EVENT_TIME_UPDATE).has_value(); }, 5000));
-    // Its frames drawn: red in the middle of where it stands.
+    // Its frames drawn: red in the middle of it, as the window renders its
+    // swap chain -- a flip-model swap chain is not on the screen GDI reads.
     const HWND player = video_player(running.frame);
     bool red = false;
     (void)pump_until([&] {
-        RECT window{};
-        GetWindowRect(player, &window);
-        const COLORREF seen = screen_at(POINT{(window.left + window.right) / 2, (window.top + window.bottom) / 2});
+        const COLORREF seen = window_middle(player);
         red = GetRValue(seen) > 180 && GetGValue(seen) < 80 && GetBValue(seen) < 80;
         return red;
     }, 5000);
