@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Windows Host Kit's screen brightness: getScreenBrightness and setScreenBrightness for the screen the game is on --
+  an external monitor through DDC/CI, a laptop's panel through WMI -- off the GUI thread; a screen with neither says so.
 - The Windows Host Kit's video players: createVideo's players, each a window of its own over the game, played by Media
   Foundation's media engine in frame-server mode on a Direct3D 11 device (WARP and the software decoders where there is
   no GPU) and drawn with Direct2D into a flip-model swap chain at the compositor's beat -- the poster until it plays,

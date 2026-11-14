@@ -85,8 +85,9 @@ It is being built in stages (migo-runtime's schedule item X1):
   own over the game, played by Media Foundation's media engine in
   frame-server mode on a Direct3D 11 device and drawn with Direct2D into its
   own swap chain at the compositor's beat, its poster until it plays,
-  objectFit, its background, loop, mute and rate. An App can use it in the
-  Bound shape too.
+  objectFit, its background, loop, mute and rate; the screen's brightness --
+  an external monitor's through DDC/CI, a laptop panel's through WMI. An App
+  can use it in the Bound shape too.
 
 Next: the video players' controls, and videos in the preview viewer.
 

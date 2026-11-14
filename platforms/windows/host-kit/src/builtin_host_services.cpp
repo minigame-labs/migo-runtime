@@ -1,5 +1,7 @@
 #include <migo/windows/builtin_host_services.hpp>
 
+#include "background.hpp"
+#include "brightness.hpp"
 #include "geolocation.hpp"
 #include "images.hpp"
 #include "interaction.hpp"
@@ -346,10 +348,32 @@ private:
                 (void)reply.succeed();
                 return;
             }
+            case MIGO_SCREEN_GET_BRIGHTNESS:
+                // Asked of the monitor over its cable, or of WMI: off the GUI thread.
+                runInBackground([window = view_.hwnd(), reply]() mutable {
+                    if (const std::optional<double> value = screenBrightness(window)) {
+                        (void)reply.succeed(Json::object().set("value", *value));
+                    } else {
+                        (void)reply.fail(kNoBrightness);
+                    }
+                });
+                return;
+            case MIGO_SCREEN_SET_BRIGHTNESS: {
+                const double value = request["value"].numberOr(std::nan(""));
+                if (!std::isfinite(value)) {
+                    (void)reply.fail("value is not a number");
+                    return;
+                }
+                runInBackground([window = view_.hwnd(), value, reply]() mutable {
+                    const std::string error = setScreenBrightness(window, value);
+                    (void)(error.empty() ? reply.succeed() : reply.fail(error));
+                });
+                return;
+            }
             default:
-                // The brightness, a screenshot, a recording: Windows tells an
-                // App of neither of the last two. The observers are commands,
-                // and a command's failure reaches no one.
+                // A screenshot, a recording: Windows tells an App of neither.
+                // The observers are commands, and a command's failure reaches
+                // no one.
                 (void)reply.fail("not supported");
                 return;
         }
