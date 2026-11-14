@@ -161,6 +161,8 @@ set_target_properties(migo_windows_managed_session PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 target_compile_features(migo_windows_managed_session PUBLIC cxx_std_17)
+# C++/WinRT (the gamepads) awaits through C++20's coroutines.
+target_compile_features(migo_windows_managed_session PRIVATE cxx_std_20)
 target_include_directories(migo_windows_managed_session
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
