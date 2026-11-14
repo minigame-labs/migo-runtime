@@ -62,6 +62,14 @@ target_link_libraries(migo-windows-builtin-host-services-test PRIVATE
     windowscodecs
 )
 
+add_executable(migo-windows-recorder-test recorder_test.cpp)
+target_link_libraries(migo-windows-recorder-test PRIVATE
+    migo::windows-builtin-host-services
+    migo_host_kit_fake_capi
+    user32
+    ole32
+)
+
 add_executable(migo-windows-gamepad-mapping-test gamepad_mapping_test.cpp)
 target_link_libraries(migo-windows-gamepad-mapping-test PRIVATE migo::migo)
 
@@ -76,7 +84,7 @@ foreach(target migo_host_kit_fake_capi migo-windows-surface-host-test migo_windo
                migo-windows-json-test migo_windows_host_services
                migo-windows-managed-session-test migo_windows_managed_session
                migo-windows-builtin-host-services-test migo_windows_builtin_host_services
-               migo-windows-gamepad-mapping-test migo-win32-host-builds)
+               migo-windows-gamepad-mapping-test migo-win32-host-builds migo-windows-recorder-test)
     # Every warning an error, in the compiler's own spelling.
     set_target_properties(${target} PROPERTIES COMPILE_WARNING_AS_ERROR ON)
     if(MSVC)
@@ -93,3 +101,4 @@ add_test(NAME migo-windows-json COMMAND migo-windows-json-test)
 add_test(NAME migo-windows-managed-session COMMAND migo-windows-managed-session-test)
 add_test(NAME migo-windows-builtin-host-services COMMAND migo-windows-builtin-host-services-test)
 add_test(NAME migo-windows-gamepad-mapping COMMAND migo-windows-gamepad-mapping-test)
+add_test(NAME migo-windows-recorder COMMAND migo-windows-recorder-test)

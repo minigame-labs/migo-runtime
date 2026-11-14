@@ -3,6 +3,7 @@
 #include "geolocation.hpp"
 #include "images.hpp"
 #include "interaction.hpp"
+#include "recorder.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -99,7 +100,8 @@ public:
     Impl(Win32SurfaceView &view, std::shared_ptr<HostServiceChannel> channel, std::function<void(bool)> debug_aids,
          const FileLocations &files)
         : view_(view), channel_(std::move(channel)), debug_aids_(std::move(debug_aids)), interaction_(view),
-          images_(GetAncestor(view.hwnd(), GA_ROOT), placesOf(files)) {
+          images_(GetAncestor(view.hwnd(), GA_ROOT), placesOf(files)),
+          recorder_(channel_, placesOf(files).staging) {
         root_ = GetAncestor(view_.hwnd(), GA_ROOT);
         if (root_ != nullptr) {
             reported_state_ = state_of(root_);
@@ -131,6 +133,10 @@ public:
                 return;
             case MIGO_HOST_SERVICE_LOCATION:
                 location(method, request, std::move(reply));
+                return;
+            case MIGO_HOST_SERVICE_RECORDER:
+                // Commands, every one: heard through the recorder's events.
+                recorder_.call(method, request);
                 return;
             case MIGO_HOST_SERVICE_CLIPBOARD:
                 clipboard(method, request, std::move(reply));
@@ -458,6 +464,10 @@ private:
                     }
                 });
                 return;
+            case MIGO_SCOPE_RECORD:
+                // A desktop does not gate an App's microphone by scope; the
+                // privacy settings' switch is the player's, and a recording it
+                // keeps from the App fails as it starts.
             case MIGO_SCOPE_WRITE_PHOTOS_ALBUM:
                 // Recorded before the answer, so content acting on a grant finds it.
                 (void)channel_->setScopeState(scope, MIGO_SCOPE_STATE_GRANTED);
@@ -523,6 +533,7 @@ private:
     bool excluded_from_capture_ = false;
     Interaction interaction_;
     Images images_;
+    Recorder recorder_;
 
     static Images::Places placesOf(const FileLocations &files) {
         Images::Places places = Images::Places::system();
@@ -543,6 +554,7 @@ std::uint64_t Win32BuiltInHostServices::services() const noexcept {
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_INTERACTION);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_IMAGE);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_LOCATION);
+    builtIn |= hostServiceBit(MIGO_HOST_SERVICE_RECORDER);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_WINDOW);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_SCREEN);

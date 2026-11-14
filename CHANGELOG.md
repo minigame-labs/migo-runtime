@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Windows Host Kit's recorder: getRecorderManager through WASAPI's shared-mode capture of the default input (the
+  system converting to the rate asked), written as PCM, WAV or AAC through Media Foundation -- an MPEG-4 file, or an
+  ADTS stream cut into onFrameRecorded's frames -- one recording at a time on a thread of its own, its events and frames
+  reaching content in order.
 - The Windows Host Kit's gamepads: what Windows.Gaming.Input sees, announced as the view attaches and read while the
   game runs -- an Xbox-class pad on the W3C standard layout (17 buttons, 4 axes, analog triggers) with dual and trigger
   rumble, any other game controller as its driver gives it.

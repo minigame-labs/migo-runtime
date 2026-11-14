@@ -117,6 +117,8 @@ add_library(migo_windows_builtin_host_services STATIC
     src/win32_text.cpp
     src/geolocation.hpp
     src/geolocation.cpp
+    src/recorder.hpp
+    src/recorder.cpp
 )
 add_library(migo::windows-builtin-host-services ALIAS migo_windows_builtin_host_services)
 set_target_properties(migo_windows_builtin_host_services PROPERTIES
