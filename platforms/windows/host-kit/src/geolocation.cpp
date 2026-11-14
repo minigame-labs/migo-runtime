@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <utility>
 
 namespace migo::windows_host {
@@ -67,9 +68,44 @@ void Geolocation::decide(Answer answer) {
 }
 
 void Geolocation::locate(Accuracy accuracy, std::chrono::milliseconds timeout, Answer answer) {
-    decide([accuracy, timeout, answer = std::move(answer)](const Outcome &decided) {
+    // One attempt, answered once: by the position, the decision refusing it,
+    // or the deadline -- which the Host Kit keeps over the whole of it, the
+    // decision included. The service's own timeout is not kept everywhere: a
+    // machine with no source, or a consent prompt nobody answers, can leave a
+    // request waiting.
+    struct Attempt {
+        std::atomic<bool> answered{false};
+        std::mutex mutex;
+        IAsyncOperation<geo::Geoposition> request{nullptr};
+    };
+    auto attempt = std::make_shared<Attempt>();
+    const auto settle = [attempt, answer](const Outcome &outcome) {
+        if (!attempt->answered.exchange(true)) answer(outcome);
+    };
+    const TimeSpan deadline = std::chrono::duration_cast<TimeSpan>(timeout);
+    try {
+        ThreadPoolTimer::CreateTimer(
+            [attempt, settle](ThreadPoolTimer const &) {
+                {
+                    const std::lock_guard<std::mutex> lock(attempt->mutex);
+                    if (attempt->request) {
+                        try {
+                            attempt->request.Cancel();
+                        } catch (const winrt::hresult_error &) {
+                        }
+                    }
+                }
+                settle(failed(kNoPosition));
+            },
+            deadline);
+    } catch (const winrt::hresult_error &) {
+        settle(failed(kUnavailable));
+        return;
+    }
+    decide([accuracy, deadline, attempt, settle](const Outcome &decided) {
+        if (attempt->answered.load()) return;
         if (!decided.allowed) {
-            answer(decided);
+            settle(decided);
             return;
         }
         try {
@@ -85,58 +121,41 @@ void Geolocation::locate(Accuracy accuracy, std::chrono::milliseconds timeout, A
                     locator.DesiredAccuracy(geo::PositionAccuracy::High);
                     break;
             }
-            // A fresh position, within the time content waits -- which the Host
-            // Kit keeps itself: the service's own timeout is not kept everywhere
-            // (a machine with no source can leave the request waiting), so
-            // whichever comes first, the position or the deadline, answers, and
-            // the deadline cancels what still waits.
-            const TimeSpan deadline = std::chrono::duration_cast<TimeSpan>(timeout);
-            auto answered = std::make_shared<std::atomic<bool>>(false);
+            // A fresh position.
             IAsyncOperation<geo::Geoposition> request = locator.GetGeopositionAsync(TimeSpan::zero(), deadline);
-            ThreadPoolTimer::CreateTimer(
-                [answer, answered, request](ThreadPoolTimer const &) {
-                    if (answered->exchange(true)) return;
-                    try {
-                        request.Cancel();
-                    } catch (const winrt::hresult_error &) {
-                    }
-                    Outcome outcome;
-                    outcome.allowed = true;
+            {
+                const std::lock_guard<std::mutex> lock(attempt->mutex);
+                attempt->request = request;
+            }
+            request.Completed([settle, locator](IAsyncOperation<geo::Geoposition> const &operation, AsyncStatus status) {
+                Outcome outcome;
+                outcome.allowed = true;
+                if (status != AsyncStatus::Completed) {
                     outcome.error = kNoPosition;
-                    answer(outcome);
-                },
-                deadline);
-            request.Completed(
-                [answer, answered, locator](IAsyncOperation<geo::Geoposition> const &operation, AsyncStatus status) {
-                    if (answered->exchange(true)) return;
-                    Outcome outcome;
-                    outcome.allowed = true;
-                    if (status != AsyncStatus::Completed) {
-                        outcome.error = kNoPosition;
-                        answer(outcome);
-                        return;
+                    settle(outcome);
+                    return;
+                }
+                try {
+                    const geo::Geocoordinate coordinate = operation.GetResults().Coordinate();
+                    const geo::BasicGeoposition at = coordinate.Point().Position();
+                    Position position;
+                    position.latitude = at.Latitude;
+                    position.longitude = at.Longitude;
+                    position.accuracy = coordinate.Accuracy();
+                    // An altitude is known where its accuracy is.
+                    if (const auto altitude_accuracy = coordinate.AltitudeAccuracy()) {
+                        position.altitude = at.Altitude;
+                        position.altitude_accuracy = altitude_accuracy.Value();
                     }
-                    try {
-                        const geo::Geocoordinate coordinate = operation.GetResults().Coordinate();
-                        const geo::BasicGeoposition at = coordinate.Point().Position();
-                        Position position;
-                        position.latitude = at.Latitude;
-                        position.longitude = at.Longitude;
-                        position.accuracy = coordinate.Accuracy();
-                        // An altitude is known where its accuracy is.
-                        if (const auto altitude_accuracy = coordinate.AltitudeAccuracy()) {
-                            position.altitude = at.Altitude;
-                            position.altitude_accuracy = altitude_accuracy.Value();
-                        }
-                        if (const auto speed = coordinate.Speed()) position.speed = speed.Value();
-                        outcome.position = position;
-                    } catch (const winrt::hresult_error &) {
-                        outcome.error = kNoPosition;
-                    }
-                    answer(outcome);
-                });
+                    if (const auto speed = coordinate.Speed()) position.speed = speed.Value();
+                    outcome.position = position;
+                } catch (const winrt::hresult_error &) {
+                    outcome.error = kNoPosition;
+                }
+                settle(outcome);
+            });
         } catch (const winrt::hresult_error &) {
-            answer(failed(kUnavailable));
+            settle(failed(kUnavailable));
         }
     });
 }
