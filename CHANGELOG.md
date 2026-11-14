@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Windows Host Kit's previews play videos: previewMedia's videos play in the viewer by the Host Kit's video
+  players, with their posters and controls -- a local file held open and read through a stream, so the engine taking
+  back the file it lent cannot cut it short; a remote one streamed.
 - The Windows Host Kit's video players' controls, as content's options ask: a centre play button, a bar (play or
   pause, the time, a progress bar, the length, full screen) that a click shows and hides and that hides again while
   playing, a progress line, a double click that plays or pauses, a sideways drag that seeks. The buttons are the

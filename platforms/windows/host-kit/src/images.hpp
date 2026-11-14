@@ -5,6 +5,8 @@
 
 #include <migo/windows/host_services.hpp>
 
+#include "media_viewer.hpp"
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -34,8 +36,10 @@ namespace migo::windows_host {
 ///   a camera names a photo. saveFileToDisk: the system's save dialog, the
 ///   copy replacing what is there only once whole.
 /// - previewImage, previewMedia: the viewer (`MediaViewer`), once every file is
-///   open and every http(s) image downloaded -- the call answered as it shows.
-///   A video in previewMedia is refused until the Host Kit plays videos.
+///   open and every http(s) image downloaded -- the call answered as it shows;
+///   a video played there by the Host Kit's video players (`videos`) -- its
+///   file held open, or streamed from its http(s) URL -- and refused where
+///   none are given.
 ///
 /// One file dialog at a time. A dismissed dialog is the failure "cancel". The
 /// work on files runs off the GUI thread; what it hands over is staged
@@ -55,8 +59,8 @@ public:
     static constexpr std::int64_t kMaxPixels = 50'000'000;
 
     /// `owner` is the App's top-level window, which the dialogs and the viewer
-    /// are modal to.
-    Images(HWND__ *owner, Places places = Places::system());
+    /// are modal to; `videos` plays a previewed video.
+    Images(HWND__ *owner, Places places = Places::system(), MediaViewer::VideoMaker videos = {});
     ~Images();
 
     Images(const Images &) = delete;

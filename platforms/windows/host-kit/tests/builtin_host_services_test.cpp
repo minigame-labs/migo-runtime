@@ -798,9 +798,11 @@ void a_preview_shows_the_viewer() {
     const std::string refused = failure_of(ask(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_PREVIEW_IMAGE,
                                                Json::object().set("urls", Json(Json::Array{Json("http://127.0.0.1:9/x.png")}))));
     CHECK(refused.rfind("download failed", 0) == 0);
+    // A video is a file to open, as an image is.
     CHECK(failure_of(ask(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_PREVIEW_MEDIA,
-                         Json::object().set("sources", Json(Json::Array{Json::object().set("url", first).set("type", "video")})))) ==
-          "not supported");
+                         Json::object().set("sources", Json(Json::Array{Json::object()
+                                                                            .set("url", utf8_path(work / L"gone.mp4"))
+                                                                            .set("type", "video")})))) == "file not found");
     CHECK(failure_of(ask(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_PREVIEW_IMAGE,
                          Json::object().set("urls", Json(Json::Array{Json(utf8_path(work / L"gone.bmp"))})))) ==
           "file not found");
@@ -1059,6 +1061,22 @@ void a_video_plays() {
     const std::optional<Json> time = video_event(MIGO_VIDEO_EVENT_TIME_UPDATE);
     CHECK(time.has_value() && (*time)["duration"].numberOr(0) > 0.5);
     tell(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_DESTROY, Json::object().set("videoId", 2));
+
+    // Previewed, it plays in the viewer: a player of the viewer's own, its controls with it.
+    CHECK(answered_ok(ask(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_PREVIEW_MEDIA,
+                          Json::object().set("sources", Json(Json::Array{Json::object()
+                                                                             .set("url", utf8_path(video))
+                                                                             .set("type", "video")})))));
+    const HWND viewer = find_owned(L"MigoMediaViewer", running.frame);
+    CHECK(viewer != nullptr);
+    if (viewer != nullptr) {
+        const HWND previewed = find_owned(L"MigoVideoPlayer", viewer);
+        CHECK(previewed != nullptr && IsWindowVisible(previewed));
+        CHECK(find_owned(L"MigoVideoControls", viewer) != nullptr);
+        PostMessageW(viewer, WM_KEYDOWN, VK_ESCAPE, 0);
+        CHECK(pump_until([&running] { return find_owned(L"MigoMediaViewer", running.frame) == nullptr; }));
+        CHECK(find_owned(L"MigoVideoPlayer", viewer) == nullptr);
+    }
 }
 
 void brightness_is_the_screens() {

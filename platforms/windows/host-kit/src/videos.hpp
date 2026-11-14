@@ -8,8 +8,22 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
+
+struct HWND__;
 
 namespace migo::windows_host {
+
+/// A video the Host Kit shows in a window of its own -- the preview viewer's --
+/// with its poster and its controls; nobody hears what it does. It goes with
+/// this object.
+class EmbeddedVideo {
+public:
+    virtual ~EmbeddedVideo() = default;
+    /// At `left`, `top`, `width` x `height` pixels of its window's client area;
+    /// hidden when empty.
+    virtual void place(int left, int top, int width, int height) = 0;
+};
 
 /// createVideo's players over one game's view -- the Linux Host Kit's
 /// `VideoPlayers`, for Win32.
@@ -47,6 +61,12 @@ public:
     void call(std::uint32_t method, const Json &request, HostServiceReply reply);
     /// Whether the game runs: the players hold still while it does not.
     void setRunning(bool running);
+
+    /// A video shown in `window`, a window of the Host Kit's own: played from
+    /// `file` -- an open file HANDLE it takes, `url` naming only its kind -- or,
+    /// with none, from `url`. None where videos cannot be played here.
+    [[nodiscard]] std::unique_ptr<EmbeddedVideo> embed(HWND__ *window, void *file, const std::string &url,
+                                                       const std::string &poster);
 
 private:
     class Impl;

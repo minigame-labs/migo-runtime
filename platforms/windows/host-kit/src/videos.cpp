@@ -12,6 +12,7 @@
 #include <dwmapi.h>
 #include <dxgi1_2.h>
 #include <mfapi.h>
+#include <mfidl.h>
 #include <mfmediaengine.h>
 #include <shlwapi.h>
 
@@ -222,11 +223,120 @@ struct Graphics {
     }
 };
 
+/// A file held open, read as a stream: what a player plays from when the file's
+/// name may go -- the file the engine lent a preview, which it takes back once
+/// the call is answered. Reads at its own position, one at a time, whichever
+/// thread Media Foundation reads on.
+class HandleStream final : public IStream {
+public:
+    explicit HandleStream(HANDLE file) : file_(file) {}
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override {
+        if (out == nullptr) return E_POINTER;
+        if (IsEqualIID(id, __uuidof(IUnknown)) || IsEqualIID(id, __uuidof(IStream)) ||
+            IsEqualIID(id, __uuidof(ISequentialStream))) {
+            *out = static_cast<IStream *>(this);
+            AddRef();
+            return S_OK;
+        }
+        *out = nullptr;
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return references_.fetch_add(1) + 1; }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const ULONG left = references_.fetch_sub(1) - 1;
+        if (left == 0) delete this;
+        return left;
+    }
+
+    HRESULT STDMETHODCALLTYPE Read(void *into, ULONG wanted, ULONG *read) override {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        OVERLAPPED at{};
+        at.Offset = static_cast<DWORD>(position_ & 0xFFFFFFFFULL);
+        at.OffsetHigh = static_cast<DWORD>(position_ >> 32);
+        DWORD got = 0;
+        if (!ReadFile(file_, into, wanted, &got, &at) && GetLastError() != ERROR_HANDLE_EOF) {
+            if (read != nullptr) *read = 0;
+            return HRESULT_FROM_WIN32(GetLastError());
+        }
+        position_ += got;
+        if (read != nullptr) *read = got;
+        return got < wanted ? S_FALSE : S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE Write(const void *, ULONG, ULONG *) override { return STG_E_ACCESSDENIED; }
+    HRESULT STDMETHODCALLTYPE Seek(LARGE_INTEGER move, DWORD origin, ULARGE_INTEGER *now) override {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        LARGE_INTEGER size{};
+        if (!GetFileSizeEx(file_, &size)) return HRESULT_FROM_WIN32(GetLastError());
+        long long base = 0;
+        if (origin == STREAM_SEEK_CUR) base = static_cast<long long>(position_);
+        if (origin == STREAM_SEEK_END) base = size.QuadPart;
+        const long long target = base + move.QuadPart;
+        if (target < 0) return STG_E_INVALIDFUNCTION;
+        position_ = static_cast<unsigned long long>(target);
+        if (now != nullptr) now->QuadPart = position_;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE SetSize(ULARGE_INTEGER) override { return STG_E_ACCESSDENIED; }
+    HRESULT STDMETHODCALLTYPE CopyTo(IStream *, ULARGE_INTEGER, ULARGE_INTEGER *, ULARGE_INTEGER *) override {
+        return E_NOTIMPL;
+    }
+    HRESULT STDMETHODCALLTYPE Commit(DWORD) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE Revert() override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE LockRegion(ULARGE_INTEGER, ULARGE_INTEGER, DWORD) override {
+        return STG_E_INVALIDFUNCTION;
+    }
+    HRESULT STDMETHODCALLTYPE UnlockRegion(ULARGE_INTEGER, ULARGE_INTEGER, DWORD) override {
+        return STG_E_INVALIDFUNCTION;
+    }
+    HRESULT STDMETHODCALLTYPE Stat(STATSTG *stat, DWORD) override {
+        if (stat == nullptr) return STG_E_INVALIDPOINTER;
+        *stat = STATSTG{};
+        stat->type = STGTY_STREAM;
+        LARGE_INTEGER size{};
+        if (!GetFileSizeEx(file_, &size)) return HRESULT_FROM_WIN32(GetLastError());
+        stat->cbSize.QuadPart = static_cast<ULONGLONG>(size.QuadPart);
+        stat->grfMode = STGM_READ;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE Clone(IStream **) override { return E_NOTIMPL; }
+
+private:
+    ~HandleStream() = default;
+    std::atomic<ULONG> references_{1};
+    std::mutex mutex_;
+    const HANDLE file_;
+    unsigned long long position_ = 0;
+};
+
+/// `file` as Media Foundation reads a source; the player keeps the handle.
+HRESULT byte_stream_on(HANDLE file, ComPtr<IMFByteStream> &bytes) {
+    auto *stream = new HandleStream(file);
+    const HRESULT result = MFCreateMFByteStreamOnStream(stream, bytes.GetAddressOf());
+    stream->Release();
+    return result;
+}
+
 }  // namespace
+
+/// Where a player stands: the window that owns its windows, the window whose
+/// client area its place is in -- the game's view, or a viewer -- that
+/// window's pixels to a logical one, and who hears what it does (nobody, for a
+/// player that is not content's).
+struct VideoStage {
+    HWND owner = nullptr;
+    HWND reference = nullptr;
+    std::function<float()> scale;
+    std::function<void(std::uint32_t event, Json payload)> tell;
+    /// A file held open that it plays, its URL `src` naming only its kind; or
+    /// none, when `src` is what it plays.
+    HANDLE file = INVALID_HANDLE_VALUE;
+};
 
 class Videos::Impl final {
 public:
     class Player;
+    class Embedded;
 
     Impl(Win32SurfaceView &view, std::shared_ptr<HostServiceChannel> channel)
         : view_(view), root_(GetAncestor(view.hwnd(), GA_ROOT)), channel_(std::move(channel)),
@@ -252,6 +362,8 @@ public:
 
     void call(std::uint32_t method, const Json &request, HostServiceReply reply);
     void setRunning(bool running);
+    std::unique_ptr<EmbeddedVideo> embed(HWND window, HANDLE file, const std::string &url, const std::string &poster);
+    void unembed(Player *player);
 
     // ---- what the players share ---------------------------------------------------------------------
 
@@ -300,6 +412,8 @@ private:
     std::unique_ptr<Graphics> graphics_;
     bool graphics_failed_ = false;
     std::map<std::int64_t, std::unique_ptr<Player>> players_;
+    /// The players shown in the Host Kit's own windows: no content's.
+    std::map<Player *, std::unique_ptr<Player>> embedded_;
 
     std::thread clock_;
     std::atomic<bool> clocking_{false};
@@ -310,12 +424,13 @@ private:
 
 class Videos::Impl::Player final : public VideoControlled {
 public:
-    Player(Impl &owner, std::int64_t id, Json options) : owner_(owner), id_(id), options_(std::move(options)) {
+    Player(Impl &owner, VideoStage stage, Json options)
+        : owner_(owner), stage_(std::move(stage)), options_(std::move(options)) {
         window_ = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, kPlayerClass, L"", WS_POPUP, 0, 0, 1, 1,
-                                  owner_.root(), nullptr, GetModuleHandleW(nullptr), this);
+                                  stage_.owner, nullptr, GetModuleHandleW(nullptr), this);
         if (window_ == nullptr) fatal("CreateWindowExW failed for a video player");
         // Made after the player's window, so above it.
-        controls_ = std::make_unique<VideoControls>(owner_.root(), *this);
+        controls_ = std::make_unique<VideoControls>(stage_.owner, *this);
         controls_->configure(options_);
         startAt_ = number("initialTime", 0);
         playWanted_ = flag("autoplay", false);
@@ -328,6 +443,7 @@ public:
         release(kDestroyed);
         SetWindowLongPtrW(window_, GWLP_USERDATA, 0);
         DestroyWindow(window_);
+        if (stage_.file != INVALID_HANDLE_VALUE) CloseHandle(stage_.file);
     }
 
     Player(const Player &) = delete;
@@ -451,12 +567,12 @@ public:
     /// screen -- cut to the view; hidden while the view is, and under the game.
     void place() {
         if (released_) return;
-        HWND view = owner_.view().hwnd();
+        HWND view = stage_.reference;
         RECT client{};
         GetClientRect(view, &client);
         RECT wanted = client;
         if (!fullScreen_) {
-            const double scale = owner_.view().scale();
+            const double scale = stage_.scale();
             const double x = number("x", 0);
             const double y = number("y", 0);
             wanted = RECT{static_cast<LONG>(std::lround(x * scale)), static_cast<LONG>(std::lround(y * scale)),
@@ -477,9 +593,16 @@ public:
         const SIZE size{shown.right - shown.left, shown.bottom - shown.top};
         SetWindowPos(window_, nullptr, origin.x, origin.y, size.cx, size.cy,
                      SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
-        controls_->place(window_, origin.x, origin.y, size.cx, size.cy, owner_.view().scale(), true);
+        controls_->place(window_, origin.x, origin.y, size.cx, size.cy, stage_.scale(), true);
         resize(size);
         render();
+    }
+
+    /// At `left`, `top`, `width` x `height` pixels of its window's client area.
+    void placeAt(int left, int top, int width, int height) {
+        const double scale = stage_.scale();
+        options_.set("x", left / scale).set("y", top / scale).set("width", width / scale).set("height", height / scale);
+        place();
     }
 
     // ---- what the controls drive ------------------------------------------------------------------
@@ -529,7 +652,7 @@ public:
     void tick() {
         if (released_ || !playing_) return;
         controls_->refresh();
-        owner_.tell(id_, MIGO_VIDEO_EVENT_TIME_UPDATE,
+        tell(MIGO_VIDEO_EVENT_TIME_UPDATE,
                     Json::object().set("position", position()).set("duration", duration()));
         reportBuffered();
     }
@@ -558,7 +681,7 @@ public:
             case MF_MEDIA_ENGINE_EVENT_WAITING:
                 if (playing_ && !waiting_) {
                     waiting_ = true;
-                    owner_.tell(id_, MIGO_VIDEO_EVENT_WAITING, Json::object());
+                    tell(MIGO_VIDEO_EVENT_WAITING, Json::object());
                 }
                 break;
             case MF_MEDIA_ENGINE_EVENT_PROGRESS:
@@ -619,7 +742,16 @@ private:
         engine_->SetDefaultPlaybackRate(rate());
         const std::wstring url = source_url(src);
         BSTR source = SysAllocString(url.c_str());
-        result = engine_->SetSource(source);
+        if (stage_.file != INVALID_HANDLE_VALUE) {
+            // The file held open, not its name: what was lent may be taken back.
+            ComPtr<IMFMediaEngineEx> extended;
+            ComPtr<IMFByteStream> bytes;
+            result = engine_.As(&extended);
+            if (SUCCEEDED(result)) result = byte_stream_on(stage_.file, bytes);
+            if (SUCCEEDED(result)) result = extended->SetSourceFromByteStream(bytes.Get(), source);
+        } else {
+            result = engine_->SetSource(source);
+        }
         SysFreeString(source);
         if (FAILED(result)) report(kCannotPlay);
     }
@@ -731,7 +863,7 @@ private:
         played_ = true;
         waiting_ = false;
         answer(pendingPlays_, std::nullopt);
-        owner_.tell(id_, MIGO_VIDEO_EVENT_PLAY, Json::object());
+        tell(MIGO_VIDEO_EVENT_PLAY, Json::object());
         SetTimer(window_, kTimeTimer, kTimeUpdateMs, nullptr);
         owner_.clock();
         render();
@@ -742,7 +874,7 @@ private:
     void pauseNow() {
         if (playing_) {
             halt();
-            owner_.tell(id_, MIGO_VIDEO_EVENT_PAUSE, Json::object());
+            tell(MIGO_VIDEO_EVENT_PAUSE, Json::object());
         }
         resumeAfterSuspend_ = false;
         controls_->refresh();
@@ -766,7 +898,7 @@ private:
         halt();
         playWanted_ = false;
         ended_ = true;
-        owner_.tell(id_, MIGO_VIDEO_EVENT_ENDED, Json::object());
+        tell(MIGO_VIDEO_EVENT_ENDED, Json::object());
         controls_->refresh();
     }
 
@@ -777,7 +909,7 @@ private:
         failPending(reason);
         halt();
         playWanted_ = false;
-        owner_.tell(id_, MIGO_VIDEO_EVENT_ERROR, Json::object().set("errMsg", "video:fail " + reason));
+        tell(MIGO_VIDEO_EVENT_ERROR, Json::object().set("errMsg", "video:fail " + reason));
         controls_->refresh();
     }
 
@@ -805,7 +937,7 @@ private:
         const int buffered = static_cast<int>(std::clamp(std::lround(end / total * 100), 0L, 100L));
         if (buffered == lastBuffered_) return;
         lastBuffered_ = buffered;
-        owner_.tell(id_, MIGO_VIDEO_EVENT_PROGRESS, Json::object().set("buffered", buffered).set("duration", total));
+        tell(MIGO_VIDEO_EVENT_PROGRESS, Json::object().set("buffered", buffered).set("duration", total));
     }
 
     // ---- drawing --------------------------------------------------------------------------------------
@@ -994,8 +1126,13 @@ private:
     }
     [[nodiscard]] bool flag(const char *key, bool fallback) const { return options_[key].boolOr(fallback); }
 
+    /// What it did, to whoever hears it.
+    void tell(std::uint32_t event, Json payload) {
+        if (stage_.tell) stage_.tell(event, std::move(payload));
+    }
+
     Impl &owner_;
-    const std::int64_t id_;
+    VideoStage stage_;
     Json options_;
     const std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
     HWND window_ = nullptr;
@@ -1049,6 +1186,8 @@ Videos::Impl::~Impl() {
     // The game ended: every player goes, and its calls still unanswered fail.
     for (auto &[id, player] : players_) player->forget();
     players_.clear();
+    for (auto &[raw, player] : embedded_) player->forget();
+    embedded_.clear();
     if (watching_view_ && view_.hwnd() != nullptr) RemoveWindowSubclass(view_.hwnd(), &Impl::watch, kWatchId);
     if (watching_root_) RemoveWindowSubclass(root_, &Impl::watch, kWatchId);
 }
@@ -1060,7 +1199,12 @@ void Videos::Impl::call(std::uint32_t method, const Json &request, HostServiceRe
     switch (method) {
         case MIGO_VIDEO_CREATE: {
             if (player != nullptr) return;
-            auto made = std::make_unique<Player>(*this, id, request);
+            VideoStage stage;
+            stage.owner = root_;
+            stage.reference = view_.hwnd();
+            stage.scale = [this] { return view_.scale(); };
+            stage.tell = [this, id](std::uint32_t event, Json payload) { tell(id, event, std::move(payload)); };
+            auto made = std::make_unique<Player>(*this, std::move(stage), request);
             if (!running_) made->suspend();
             players_.emplace(id, std::move(made));
             startClock();
@@ -1071,7 +1215,7 @@ void Videos::Impl::call(std::uint32_t method, const Json &request, HostServiceRe
                 player->forget();
                 players_.erase(found);
             }
-            if (players_.empty()) stopClock();
+            if (players_.empty() && embedded_.empty()) stopClock();
             return;
         case MIGO_VIDEO_SET:
             if (player != nullptr) player->set(request);
@@ -1146,7 +1290,55 @@ void Videos::Impl::stopClock() {
 
 void Videos::Impl::beat() {
     for (auto &[id, player] : players_) player->beat();
+    for (auto &[raw, player] : embedded_) player->beat();
 }
+
+/// A video the Host Kit shows in a window of its own: a player there, its
+/// place what the window says.
+class Videos::Impl::Embedded final : public EmbeddedVideo {
+public:
+    Embedded(Impl &videos, Player &player) : videos_(videos), player_(player) {}
+    ~Embedded() override { videos_.unembed(&player_); }
+    void place(int left, int top, int width, int height) override {
+        player_.placeAt(left, top, width, height);
+    }
+
+private:
+    Impl &videos_;
+    Player &player_;
+};
+
+std::unique_ptr<EmbeddedVideo> Videos::Impl::embed(HWND window, HANDLE file, const std::string &url,
+                                                   const std::string &poster) {
+    if (graphics() == nullptr) {
+        if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+        return nullptr;
+    }
+    VideoStage stage;
+    stage.owner = window;
+    stage.reference = window;
+    stage.scale = [window] {
+        return static_cast<float>(std::max<UINT>(GetDpiForWindow(window), USER_DEFAULT_SCREEN_DPI / 4)) /
+               static_cast<float>(USER_DEFAULT_SCREEN_DPI);
+    };
+    stage.file = file;
+    // Placed by its window as it lays out; not until then.
+    Json options = Json::object().set("src", url).set("poster", poster).set("width", 0).set("height", 0);
+    auto made = std::make_unique<Player>(*this, std::move(stage), std::move(options));
+    Player *raw = made.get();
+    embedded_.emplace(raw, std::move(made));
+    startClock();
+    return std::make_unique<Embedded>(*this, *raw);
+}
+
+void Videos::Impl::unembed(Player *player) {
+    const auto found = embedded_.find(player);
+    if (found == embedded_.end()) return;
+    found->second->forget();
+    embedded_.erase(found);
+    if (players_.empty() && embedded_.empty()) stopClock();
+}
+
 
 void Videos::Impl::placeAll() {
     for (auto &[id, player] : players_) player->place();
@@ -1214,5 +1406,9 @@ void Videos::call(std::uint32_t method, const Json &request, HostServiceReply re
     impl_->call(method, request, std::move(reply));
 }
 void Videos::setRunning(bool running) { impl_->setRunning(running); }
+std::unique_ptr<EmbeddedVideo> Videos::embed(HWND__ *window, void *file, const std::string &url,
+                                             const std::string &poster) {
+    return impl_->embed(window, static_cast<HANDLE>(file), url, poster);
+}
 
 }  // namespace migo::windows_host

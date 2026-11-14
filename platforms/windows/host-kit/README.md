@@ -95,7 +95,9 @@ shows and hides, a progress line, a double click to play or pause, a sideways
 drag to seek -- the system's buttons in a colour-keyed window above the player,
 named "play", "play or pause" and "full screen".
 
-Next: videos in the preview viewer.
+previewMedia's videos play in the preview viewer, by the same players, between
+its arrows -- a local file held open and read through a stream, so the engine
+taking back the file it lent cannot cut it short; a remote one streamed.
 
 Build it with CMake against the Migo Windows SDK package
 (`find_package(migo)`), and link the targets it exports
