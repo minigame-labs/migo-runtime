@@ -1,4 +1,5 @@
 #include "interaction.hpp"
+#include "win32_text.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -72,25 +73,6 @@ const wchar_t kCancel[] = L"取消";
     std::fprintf(stderr, "migo windows host kit: %s\n", why);
     std::fflush(stderr);
     std::terminate();
-}
-
-std::wstring wide_of(std::string_view utf8) {
-    if (utf8.empty()) return {};
-    const int units = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
-    if (units <= 0) return {};
-    std::wstring out(static_cast<std::size_t>(units), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), out.data(), units);
-    return out;
-}
-
-std::string utf8_of(std::wstring_view wide) {
-    if (wide.empty()) return {};
-    const int bytes = WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), nullptr, 0, nullptr,
-                                          nullptr);
-    if (bytes <= 0) return {};
-    std::string out(static_cast<std::size_t>(bytes), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), out.data(), bytes, nullptr, nullptr);
-    return out;
 }
 
 std::wstring text_of(HWND window) {
@@ -193,14 +175,14 @@ public:
     void call(std::uint32_t method, const Json &request, HostServiceReply reply) {
         switch (method) {
             case MIGO_INTERACTION_SHOW_TOAST:
-                showIndicator(Shown::Toast, wide_of(request["title"].string()), iconOf(request["icon"].stringOr("success")),
+                showIndicator(Shown::Toast, wideOf(request["title"].string()), iconOf(request["icon"].stringOr("success")),
                               request["mask"].boolOr(false), request["duration"].numberOr(kToastMs));
                 return;
             case MIGO_INTERACTION_HIDE_TOAST:
                 if (shown_ == Shown::Toast) hideIndicator();
                 return;
             case MIGO_INTERACTION_SHOW_LOADING:
-                showIndicator(Shown::Loading, wide_of(request["title"].string()), Icon::Loading,
+                showIndicator(Shown::Loading, wideOf(request["title"].string()), Icon::Loading,
                               request["mask"].boolOr(false), std::nullopt);
                 return;
             case MIGO_INTERACTION_HIDE_LOADING:
@@ -518,13 +500,13 @@ private:
     void showModal(const Json &request, HostServiceReply reply) {
         auto dialog = std::make_unique<Dialog>(std::move(reply));
         dialog->kind = Dialog::Kind::Modal;
-        dialog->title = wide_of(request["title"].string());
-        dialog->content = wide_of(request["content"].string());
+        dialog->title = wideOf(request["title"].string());
+        dialog->content = wideOf(request["content"].string());
         dialog->editable = request["editable"].boolOr(false);
-        dialog->placeholder = wide_of(request["placeholderText"].string());
+        dialog->placeholder = wideOf(request["placeholderText"].string());
         dialog->show_cancel = request["showCancel"].boolOr(true);
-        dialog->confirm_text = request.contains("confirmText") ? wide_of(request["confirmText"].string()) : kConfirm;
-        dialog->cancel_text = request.contains("cancelText") ? wide_of(request["cancelText"].string()) : kCancel;
+        dialog->confirm_text = request.contains("confirmText") ? wideOf(request["confirmText"].string()) : kConfirm;
+        dialog->cancel_text = request.contains("cancelText") ? wideOf(request["cancelText"].string()) : kCancel;
         if (dialog->confirm_text.empty()) dialog->confirm_text = kConfirm;
         if (dialog->cancel_text.empty()) dialog->cancel_text = kCancel;
         open(std::move(dialog));
@@ -538,8 +520,8 @@ private:
         }
         auto dialog = std::make_unique<Dialog>(std::move(reply));
         dialog->kind = Dialog::Kind::Sheet;
-        dialog->content = wide_of(request["alertText"].string());
-        for (const Json &item : items) dialog->items.push_back(wide_of(item.string()));
+        dialog->content = wideOf(request["alertText"].string());
+        for (const Json &item : items) dialog->items.push_back(wideOf(item.string()));
         dialog->cancel_text = kCancel;
         open(std::move(dialog));
     }
@@ -775,7 +757,7 @@ private:
             answer = Json::object().set("confirm", chosen).set("cancel", !chosen);
             if (dialog.editable) {
                 HWND field = GetDlgItem(dialog.window, kFieldId);
-                answer.set("content", field != nullptr ? utf8_of(text_of(field)) : std::string());
+                answer.set("content", field != nullptr ? utf8Of(text_of(field)) : std::string());
             }
         } else if (chosen) {
             answer = Json::object().set("tapIndex", item);
