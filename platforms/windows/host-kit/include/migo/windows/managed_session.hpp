@@ -25,12 +25,13 @@ namespace migo::windows_host {
 /// Engine callbacks arrive on engine threads; each is run on the GUI thread,
 /// posted to a message-only window of the session's own, before any of it
 /// touches the App. The game runs while the App's top-level window is shown
-/// and not minimized, and is visible while it also is not cloaked (on another
-/// virtual desktop): both are reported to the Session as they change.
-/// Content's frame requests are paced by the view; its setKeepScreenOn holds
-/// the display awake (SetThreadExecutionState) while it asks and the game
-/// runs. Host services the App names are the App's (`Options::appServices`);
-/// the others are refused until the Host Kit answers them.
+/// and not minimized -- Windows tells a window of no other way it stops being
+/// seen -- and is visible while it runs: both are reported to the Session as
+/// they change. Content's frame requests are paced by the view; its
+/// setKeepScreenOn holds the display awake (SetThreadExecutionState) while it
+/// asks and the game runs. Host services the App names are the App's
+/// (`Options::appServices`); the Host Kit answers the others it can
+/// (`Win32BuiltInHostServices`), and the rest are refused.
 ///
 /// Teardown is the C ABI's three steps and cannot be shortened: `close()`
 /// begins the detach, the release is observed, then the Session is destroyed
@@ -66,6 +67,8 @@ public:
         std::function<void()> closed;
         /// A Surface or input call was refused.
         std::function<void(MigoResult code)> migoError;
+        /// The debugging aids were turned on or off.
+        std::function<void(bool on)> debugAidsChanged;
     };
 
     /// Creates the Session and its view -- a child of `parent` the App places
@@ -98,6 +101,19 @@ public:
     /// Safe to call more than once.
     [[nodiscard]] MigoResult close();
     [[nodiscard]] bool isClosed() const noexcept;
+
+    /// Whether the debugging aids are on: content's setEnableDebug turns them,
+    /// and getAppBaseInfo().enableDebug says so. While they are on, a panel
+    /// over the top of the game shows the frames a second the view delivers
+    /// and what content writes to its console from then, and takes no input:
+    /// the game stays playable under it.
+    [[nodiscard]] bool debugAids() const noexcept;
+
+    /// Turn the debugging aids on or off, and tell the Session, which tells
+    /// content. An App that answers the screen service itself turns them here.
+    /// Returns the Session's answer to the report; MIGO_ERROR_INVALID_STATE
+    /// once the Session is closing.
+    [[nodiscard]] MigoResult setDebugAids(bool on);
 
 private:
     class Impl;

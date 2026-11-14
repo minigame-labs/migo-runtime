@@ -112,7 +112,10 @@ migo_query_capabilities(&caps);
   Esc 释放）；帧由桌面合成器节拍驱动（`requestFrame`）。`migo::windows-managed-session`
   拥有 Session、回调表、视图与收尾——引擎回调在 GUI 线程执行，视图挂接后加载内容，App 窗口显示且未最小化即游戏运行，
   `setKeepScreenOn` 保持屏幕常亮——并把 App 声明的宿主服务交给它自己的提供者（`migo::windows-host-services`：通道、
-  提供者接口及其使用的 JSON）。内置宿主服务（提示、窗口、剪贴板、文件、定位、视频、录音）尚未提供：在此之前由 App 自己答复。
+  提供者接口及其使用的 JSON）。其余能答复的由 Host Kit 内置（`migo::windows-builtin-host-services`）：系统剪贴板；
+  窗口（`setWindowSize`、窗口状态、`setCursor`、指针锁定）；屏幕（方向即游戏画面的形状，`setDeviceOrientation`
+  旋转窗口；`setVisualEffectOnCapture`；`setEnableDebug` 显示帧率与控制台的调试面板）；桌面自行决定的授权范围。
+  提示与对话框、电量与网络上报、文件、定位、手柄、视频、录音尚未提供：在此之前由 App 自己答复。
 - **`EglProvider` 实现**：尚未提供。
 
 ## 从源码构建

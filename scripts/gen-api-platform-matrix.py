@@ -85,6 +85,7 @@ APPLE_CAPABILITIES = (
     "platforms/apple/Sources/MigoAppleMicrophone",
 )
 LINUX_LAYER = "platforms/linux/host-kit/src"
+WINDOWS_LAYER = "platforms/windows/host-kit/src"
 OHOS_LAYER = "platforms/openharmony/entry/src/main"
 
 # A host-service event the Android SDK reports through its own native rather
@@ -422,9 +423,11 @@ def lane_facts(root: pathlib.Path) -> dict[str, dict[str, set[str]]]:
         scan(["ios", "macos"], found(f"{capability} sources", sorted((root / capability).glob("*.swift"))))
     linux = found("Linux host kit sources", sorted(p for p in (root / LINUX_LAYER).rglob("*") if p.suffix in (".cpp", ".hpp", ".h")))
     scan(["linux"], linux)
+    windows = found("Windows host kit sources", sorted(p for p in (root / WINDOWS_LAYER).rglob("*") if p.suffix in (".cpp", ".hpp", ".h")))
+    scan(["windows"], windows)
     ohos = found("OpenHarmony host sources", sorted(p for p in (root / OHOS_LAYER).rglob("*") if p.suffix in (".cpp", ".h", ".ets")))
     scan(["ohos"], ohos)
-    for platform in ("ios", "macos", "linux", "ohos"):
+    for platform in ("ios", "macos", "linux", "windows", "ohos"):
         found(f"{platform} callbacks", facts[platform]["callbacks"])
 
     # The Swift session wraps every input entry point (MigoEngineSession.sendKey,

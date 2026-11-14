@@ -1,5 +1,9 @@
 #include <migo/windows/managed_session.hpp>
 
+#include <migo/windows/builtin_host_services.hpp>
+
+#include "debug_panel.hpp"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -103,8 +107,14 @@ public:
         heard.released = [this](std::uint64_t) { finishClose(); };
         heard.surfaceError = [this](MigoResult error) { reportError(error); };
         heard.inputRejected = [this](MigoResult error) { reportError(error); };
+        heard.pointerLockChanged = [this](bool locked) {
+            if (built_in_ != nullptr) built_in_->pointerLockChanged(locked);
+        };
         view_ = std::make_unique<Win32SurfaceView>(*surface_host_, parent, std::move(heard));
         channel_ = HostServiceChannel::open(session_);
+        built_in_ = std::make_unique<Win32BuiltInHostServices>(*view_, channel_, [this](bool on) {
+            (void)setDebugAids(on);
+        });
         app_mask_ = options_.appServices != nullptr ? options_.appServices->services() : 0;
 
         MigoHostCallbacks callbacks{};
@@ -118,14 +128,14 @@ public:
         callbacks.on_exit_requested = &Impl::onExitRequested;
         callbacks.on_request_frame = &Impl::onRequestFrame;
         callbacks.on_keep_screen_on = &Impl::onKeepScreenOn;
-        if (app_mask_ != 0) {
-            callbacks.on_host_service_call = &Impl::onHostServiceCall;
-            callbacks.host_services = app_mask_;
-        }
+        // The App's services, and the Host Kit's for the rest.
+        callbacks.on_host_service_call = &Impl::onHostServiceCall;
+        callbacks.host_services = app_mask_ | built_in_->services();
         accepting_.store(true, std::memory_order_release);
         if (const MigoResult installed = migo_session_set_host_callbacks(session_, &callbacks); installed != MIGO_OK) {
             last_error_ = installed;
             stopAccepting();
+            built_in_.reset();
             view_.reset();
             surface_host_.reset();
             channel_->close();
@@ -134,13 +144,7 @@ public:
             return;
         }
         app_id_ = options_.appId.empty() ? default_app_id() : options_.appId;
-        MigoHostAppInfo app_info{};
-        app_info.struct_size = static_cast<std::uint32_t>(sizeof app_info);
-        app_info.abi_version = MIGO_ABI_VERSION_1;
-        app_info.app_id_utf8 = app_id_.empty() ? nullptr : app_id_.c_str();
-        // The rest is the engine's: the system's language, no benchmark score.
-        app_info.benchmark_level = -1;
-        (void)migo_session_set_host_app_info(session_, &app_info);
+        (void)reportAppInfo();
 
         // Whether the game runs and shows is its window's: the App's top-level.
         root_ = GetAncestor(parent, GA_ROOT);
@@ -179,6 +183,25 @@ public:
         return loadNow(content_id, entry);
     }
 
+    bool debugAids() const noexcept { return debug_aids_; }
+
+    MigoResult setDebugAids(bool on) {
+        if (std::this_thread::get_id() != owner_) return MIGO_ERROR_WRONG_THREAD;
+        if (session_ == nullptr || closing_ || closed_) return MIGO_ERROR_INVALID_STATE;
+        if (on == debug_aids_) return MIGO_OK;
+        debug_aids_ = on;
+        const MigoResult reported = reportAppInfo();
+        if (reported != MIGO_OK) last_error_ = reported;
+        // From the moment they are on: what content writes from then is shown.
+        if (on) {
+            debug_panel_ = std::make_unique<DebugPanel>(session_, *view_);
+        } else {
+            debug_panel_.reset();
+        }
+        if (listener_.debugAidsChanged) listener_.debugAidsChanged(on);
+        return reported;
+    }
+
     MigoResult close() {
         if (std::this_thread::get_id() != owner_) return MIGO_ERROR_WRONG_THREAD;
         if (closed_ || closing_) return MIGO_OK;
@@ -188,6 +211,10 @@ public:
         stopAccepting();
         keepAwake(false);
         unwatch();
+        // What the game showed, and held, goes with it: the panel reads the
+        // Session, the services hold the pointer and the window's capture.
+        debug_panel_.reset();
+        built_in_.reset();
         if (view_ != nullptr && view_->surfaceState() != SurfaceState::Detached) {
             view_->close();
             return MIGO_OK;
@@ -263,8 +290,11 @@ private:
             Json::parse(std::string_view(call->payload_json_utf8, call->payload_length));
         const Json request = parsed.has_value() ? *parsed : Json::object();
         HostServiceReply reply = impl->channel_->reply(call->call_id);
-        if (impl->options_.appServices != nullptr && (impl->app_mask_ & hostServiceBit(call->service)) != 0) {
+        const std::uint64_t bit = hostServiceBit(call->service);
+        if (impl->options_.appServices != nullptr && (impl->app_mask_ & bit) != 0) {
             impl->options_.appServices->call(call->service, call->method, request, std::move(reply));
+        } else if (impl->built_in_ != nullptr && (impl->built_in_->services() & bit) != 0) {
+            impl->built_in_->call(call->service, call->method, request, std::move(reply));
         } else {
             (void)reply.fail("not supported");
         }
@@ -375,6 +405,18 @@ private:
         SetThreadExecutionState(on ? (ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED) : ES_CONTINUOUS);
     }
 
+    /// What the App says about itself: who it is, and whether its debugging aids are on.
+    MigoResult reportAppInfo() {
+        MigoHostAppInfo app_info{};
+        app_info.struct_size = static_cast<std::uint32_t>(sizeof app_info);
+        app_info.abi_version = MIGO_ABI_VERSION_1;
+        app_info.app_id_utf8 = app_id_.empty() ? nullptr : app_id_.c_str();
+        // The rest is the engine's: the system's language, no benchmark score.
+        app_info.benchmark_level = -1;
+        app_info.flags = debug_aids_ ? MIGO_HOST_APP_INFO_FLAG_DEBUG : 0U;
+        return migo_session_set_host_app_info(session_, &app_info);
+    }
+
     void reportError(MigoResult error) {
         last_error_ = error;
         if (listener_.migoError) listener_.migoError(error);
@@ -416,6 +458,10 @@ private:
     std::unique_ptr<SurfaceHost> surface_host_;
     std::unique_ptr<Win32SurfaceView> view_;
     std::shared_ptr<HostServiceChannel> channel_;
+    // After the view, so they go before it: both hold it.
+    std::unique_ptr<Win32BuiltInHostServices> built_in_;
+    std::unique_ptr<DebugPanel> debug_panel_;
+    bool debug_aids_ = false;
     std::uint64_t app_mask_ = 0;
     std::string app_id_;
 
@@ -449,6 +495,8 @@ MigoResult Win32ManagedSession::loadContent(const std::string &content_id, const
     return impl_->loadContent(content_id, entry);
 }
 MigoResult Win32ManagedSession::close() { return impl_->close(); }
+bool Win32ManagedSession::debugAids() const noexcept { return impl_->debugAids(); }
+MigoResult Win32ManagedSession::setDebugAids(bool on) { return impl_->setDebugAids(on); }
 bool Win32ManagedSession::isClosed() const noexcept { return impl_->isClosed(); }
 
 }  // namespace migo::windows_host

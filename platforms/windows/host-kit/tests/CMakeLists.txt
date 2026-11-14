@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.24)
 project(migo_windows_host_kit_tests LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -53,14 +53,24 @@ target_link_libraries(migo-windows-managed-session-test PRIVATE
     user32
 )
 
+add_executable(migo-windows-builtin-host-services-test builtin_host_services_test.cpp)
+target_link_libraries(migo-windows-builtin-host-services-test PRIVATE
+    migo::windows-managed-session
+    migo_host_kit_fake_capi
+    user32
+)
+
 foreach(target migo_host_kit_fake_capi migo-windows-surface-host-test migo_windows_surface_host
                migo-win32-surface-view-test migo_win32_surface_view
                migo-windows-json-test migo_windows_host_services
-               migo-windows-managed-session-test migo_windows_managed_session)
+               migo-windows-managed-session-test migo_windows_managed_session
+               migo-windows-builtin-host-services-test migo_windows_builtin_host_services)
+    # Every warning an error, in the compiler's own spelling.
+    set_target_properties(${target} PROPERTIES COMPILE_WARNING_AS_ERROR ON)
     if(MSVC)
-        target_compile_options(${target} PRIVATE /W4 /WX /utf-8 /permissive-)
+        target_compile_options(${target} PRIVATE /W4 /utf-8 /permissive-)
     else()
-        target_compile_options(${target} PRIVATE -Wall -Wextra -Werror)
+        target_compile_options(${target} PRIVATE -Wall -Wextra)
     endif()
 endforeach()
 
@@ -69,3 +79,4 @@ add_test(NAME migo-windows-surface-host COMMAND migo-windows-surface-host-test)
 add_test(NAME migo-win32-surface-view COMMAND migo-win32-surface-view-test)
 add_test(NAME migo-windows-json COMMAND migo-windows-json-test)
 add_test(NAME migo-windows-managed-session COMMAND migo-windows-managed-session-test)
+add_test(NAME migo-windows-builtin-host-services COMMAND migo-windows-builtin-host-services-test)

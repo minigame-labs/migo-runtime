@@ -55,7 +55,7 @@ while IFS= read -r path; do inputs+=("$path"); done < <(
         platforms/apple/Sources/MigoMacV8 platforms/apple/Sources/MigoApplePerformancePlus \
         platforms/apple/Sources/MigoAppleLocation platforms/apple/Sources/MigoAppleBluetooth \
         platforms/apple/Sources/MigoAppleCamera platforms/apple/Sources/MigoAppleMicrophone \
-        platforms/linux/host-kit/src platforms/openharmony/entry/src/main \
+        platforms/linux/host-kit/src platforms/windows/host-kit/src platforms/openharmony/entry/src/main \
         platforms/android/library/src/main/java
 )
 
@@ -162,6 +162,10 @@ red "a listener decided by an event no service has" contracts/runtime/api-platfo
     'text.replace("\"screen.device_orientation_change\"", "\"screen.turned\"", 1)'
 red "the Linux Host Kit that stops answering a service itself" platforms/linux/host-kit/src/qt6/host_services.cpp \
     'text.replace("builtIn |= hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD);", "// clipboard", 1)'
+red "the Windows Host Kit that stops answering a service itself" platforms/windows/host-kit/src/builtin_host_services.cpp \
+    'text.replace("builtIn |= hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD);", "// clipboard", 1)'
+red "the Windows Host Kit that stops reporting the screen's turn" platforms/windows/host-kit/src/builtin_host_services.cpp \
+    'text.replace("MIGO_SCREEN_EVENT_DEVICE_ORIENTATION_CHANGE", "MIGO_SCREEN_EVENT_RECORDING_STATE_CHANGE", 1)'
 red "a host layer that stops feeding touch" platforms/linux/host-kit/src/qt6/x11_surface_view.cpp \
     'text.replace("migo_session_send_touch(", "migo_session_send_touch_removed(")'
 # openSetting reaches the Android SDK through system_info, which the SDK answers, and goes on to the host's
