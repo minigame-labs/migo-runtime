@@ -556,7 +556,10 @@ impl Recording {
             } else {
                 0
             };
-            let waited = unsafe { gl.client_wait_sync(read, 0, within) };
+            // With the bit that submits what the fence waits on, as every poll of a fence
+            // (`canvas::poll_fence`): without it a read back can stay unfinished for ever.
+            let waited =
+                unsafe { gl.client_wait_sync(read, glow::SYNC_FLUSH_COMMANDS_BIT, within) };
             if waited == glow::TIMEOUT_EXPIRED && !last {
                 return Ok(());
             }

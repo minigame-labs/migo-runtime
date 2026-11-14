@@ -1084,6 +1084,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- A WebGL fence signals on Direct3D 11 with an NVIDIA GPU. There, a fence made with nothing drawn after it was never
+  submitted -- `flush()` did not submit it, and a poll without SYNC_FLUSH_COMMANDS_BIT does not either -- so every
+  fence of a context after its first stayed unsignalled for as long as content polled it. Every poll of a fence, the
+  engine's own for image uploads, pixel buffers and the game recorder's read back among them, now carries the bit, and
+  a context's flush asks after its fences. WARP and an AMD GPU signalled either way.
 - The Windows Host Kit's view attaches when its top-level window is shown after it -- the order an App most often
   shows them in: a child is not told its window was shown, so the view watches it.
 - On Android `closeBLEConnection` tells content the connection is gone: `onBLEConnectionStateChange` hears

@@ -1726,6 +1726,8 @@ pub(crate) struct SyncMeta {
     pub gl_handle: Option<NativeFence>,
     pub owner_canvas: Option<CanvasId>,
     pub deleted: bool,
+    /// A poll has found it signalled, which a fence stays: a flush has nothing of its to submit.
+    pub signalled: bool,
 }
 
 /// WebGL 2 query object.  A container object: owned by one canvas context

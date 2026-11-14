@@ -326,8 +326,32 @@ const _: () = {
 /// A free function so it can be tested without a GL context, like
 /// [`stage_upload_drain`] below.
 #[inline]
-pub(super) fn fence_signalled(status: u32) -> bool {
+pub(crate) fn fence_signalled(status: u32) -> bool {
     status == glow::ALREADY_SIGNALED || status == glow::CONDITION_SATISFIED
+}
+
+/// Asks, without waiting, whether the GPU has passed `fence`: a `glClientWaitSync` status for [`fence_signalled`].
+///
+/// Asked with `SYNC_FLUSH_COMMANDS_BIT`, at every poll: the bit has a poll of an unsignalled fence submit what the
+/// fence waits on (ES 3.0 5.2.1), and does nothing once the fence has signalled. A `glFlush` beforehand is not that on
+/// every driver, so a poll without the bit can be a poll of something that was never submitted, and answers
+/// `TIMEOUT_EXPIRED` for as long as it is asked.
+///
+/// Measured 2026-11-14 on a GeForce GTX 1060 -- through ANGLE's Direct3D 11 backend, and on Direct3D 11 itself with
+/// nothing of ANGLE's in the process: an event query ended and followed by `ID3D11DeviceContext::Flush` stayed
+/// unfinished however long it was polled with `D3D11_ASYNC_GETDATA_DONOTFLUSH`, which is what ANGLE makes of a poll
+/// without the bit, and was finished within a frame of one `GetData` without that flag, which is what it makes of a
+/// poll with it. An AMD integrated GPU and WARP in the same machine finished the query after the `Flush` alone,
+/// which is why no CI runner -- WARP, every one -- has shown this. Seen from content, it was a WebGL fence that never
+/// signalled unless something was drawn after it.
+///
+/// # Safety
+/// A context of the fence's share group is current on this thread.
+#[inline]
+pub(crate) unsafe fn poll_fence(gl: &glow::Context, fence: glow::NativeFence) -> u32 {
+    use glow::HasContext as _;
+    // SAFETY: the caller's -- a context of the fence's share group is current.
+    unsafe { gl.client_wait_sync(fence, glow::SYNC_FLUSH_COMMANDS_BIT, 0) }
 }
 
 #[inline]
@@ -3770,8 +3794,8 @@ impl CanvasManager {
         // Deferred first, newly completed after — the order `stage_upload_drain`
         // preserves and the order this loop has always seen.
         for c in deferred.drain(..) {
-            // Non-blocking fence check (timeout = 0).
-            let status = unsafe { self.gl.client_wait_sync(c.fence, 0, 0) };
+            // Non-blocking fence check.
+            let status = unsafe { poll_fence(&self.gl, c.fence) };
 
             if fence_signalled(status) {
                 unsafe { self.gl.delete_sync(c.fence) };
@@ -6879,6 +6903,19 @@ impl CanvasManager {
         }
     }
 
+    /// Submits what `canvas`'s unsignalled fences wait on, its context current: a poll of each, which is what submits
+    /// on every driver ([`poll_fence`]). A fence found signalled is not asked again.
+    pub(crate) fn submit_fences_of(&mut self, canvas: CanvasId) {
+        for meta in self.syncs.values_mut() {
+            if meta.signalled || meta.owner_canvas != Some(canvas) {
+                continue;
+            }
+            if let Some(fence) = meta.gl_handle {
+                meta.signalled = fence_signalled(unsafe { poll_fence(&self.gl, fence) });
+            }
+        }
+    }
+
     /// `glClientWaitSync` with a full 64-bit timeout.
     ///
     /// glow 0.17's `HasContext::client_wait_sync` signature takes an
@@ -7411,6 +7448,69 @@ mod recovery_source_guards {
         assert!(
             failed.contains("self.gl.delete_texture(dest_tex)") && failed.contains("return Err("),
             "a failed post-blit wait must drop the copy instead of publishing it"
+        );
+    }
+
+    /// A fence is asked after with the bit that submits what it waits on, wherever it is asked: on Direct3D 11 with an
+    /// NVIDIA GPU a poll without it is of something never submitted, and a `glFlush` before it changes nothing
+    /// ([`poll_fence`]). WARP -- every CI runner's Direct3D -- finishes a fence either way, so no run of the suite there
+    /// tells the two polls apart, and the spelling is pinned here: the three polls of the engine's own fences go
+    /// through `poll_fence`, content's poll adds the bit to its flags, and a context's flush asks after its fences.
+    #[test]
+    fn a_fence_is_polled_with_the_bit_that_submits_it() {
+        const GL_HANDLER: &str = include_str!("../../renderergl/handler.rs");
+        const PBO: &str = include_str!("pbo_upload.rs");
+        const RECORDER: &str = include_str!("../../game_recorder/mod.rs");
+        let poll = function_body(MGR, "pub(crate) unsafe fn poll_fence(");
+        assert!(
+            poll.contains("glow::SYNC_FLUSH_COMMANDS_BIT, 0)"),
+            "poll_fence asks without SYNC_FLUSH_COMMANDS_BIT, or waits"
+        );
+        for (what, body) in [
+            (
+                "an upload's fence",
+                function_body(MGR, "pub(crate) fn drain_upload_completed("),
+            ),
+            (
+                "a pixel buffer's fence",
+                function_body(PBO, "pub fn acquire("),
+            ),
+            (
+                "a context's fences at its flush",
+                function_body(MGR, "pub(crate) fn submit_fences_of("),
+            ),
+        ] {
+            assert!(
+                body.contains("poll_fence(") && !body.contains("client_wait_sync("),
+                "{what} is polled some other way than poll_fence"
+            );
+        }
+        let read_back = function_body(RECORDER, "fn collect(");
+        assert!(
+            read_back.contains("client_wait_sync(read, glow::SYNC_FLUSH_COMMANDS_BIT, within)"),
+            "the game recorder's read back is waited for without SYNC_FLUSH_COMMANDS_BIT"
+        );
+        let handle = function_body(GL_HANDLER, "pub(crate) fn handle_command(");
+        let asked = handle
+            .find("GLCmd::ClientWaitSync {")
+            .expect("content's poll of a fence is a command");
+        assert!(
+            handle[asked..]
+                .split("resp.ok(status)")
+                .next()
+                .is_some_and(|arm| arm.contains("flags | glow::SYNC_FLUSH_COMMANDS_BIT")),
+            "content's poll reaches the driver without SYNC_FLUSH_COMMANDS_BIT"
+        );
+        let flush = handle
+            .find("GLCmd::Flush { canvas_id } =>")
+            .expect("a context's flush is a command");
+        assert!(
+            handle[flush..]
+                .split("Ok(DamageEffect::NoDamage)")
+                .next()
+                .is_some_and(|arm| arm.contains("gl.flush()")
+                    && arm.contains("cm.submit_fences_of(canvas_id)")),
+            "a context's flush does not ask after its fences: one made with nothing drawn after it is never submitted"
         );
     }
 

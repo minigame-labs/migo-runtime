@@ -542,7 +542,7 @@ impl PboPool {
             .map(|(_, entry_size, fence)| {
                 let ready = match fence {
                     None => true,
-                    Some(f) => dma_complete(unsafe { gl.client_wait_sync(*f, 0, 0) }),
+                    Some(f) => dma_complete(unsafe { super::poll_fence(gl, *f) }),
                 };
                 (*entry_size, ready)
             })
