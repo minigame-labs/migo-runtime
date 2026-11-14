@@ -186,6 +186,7 @@ void it_declares_what_it_answers() {
     CHECK((declared & hostServiceBit(MIGO_HOST_SERVICE_INTERACTION)) != 0);
     CHECK((declared & hostServiceBit(MIGO_HOST_SERVICE_IMAGE)) != 0);
     CHECK((declared & hostServiceBit(MIGO_HOST_SERVICE_LOCATION)) != 0);
+    CHECK((declared & hostServiceBit(MIGO_HOST_SERVICE_RECORDER)) != 0);
     CHECK(fake_migo::installed_callbacks().on_host_service_call != nullptr);
     // A method the Host Kit has no answer for is refused, not left waiting.
     CHECK(failure_of(ask(MIGO_HOST_SERVICE_SCREEN, MIGO_SCREEN_GET_RECORDING_STATE, Json::object())) ==

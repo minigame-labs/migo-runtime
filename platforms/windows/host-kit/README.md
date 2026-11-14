@@ -77,10 +77,13 @@ It is being built in stages (migo-runtime's schedule item X1):
   previews in a Direct2D viewer, http(s) images downloaded first
   (`FileLocations` moves the staging directory and the album); location --
   Windows' location service (Windows.Devices.Geolocation), as its privacy
-  settings let desktop Apps use it, which also decide scope.userLocation. An
-  App can use it in the Bound shape too.
+  settings let desktop Apps use it, which also decide scope.userLocation; the
+  recorder -- WASAPI's shared-mode capture of the default input, the system
+  converting to the rate asked, written as PCM, WAV or AAC through Media
+  Foundation (.m4a, or an ADTS stream cut into frames), one recording at a
+  time on a thread of its own. An App can use it in the Bound shape too.
 
-Next: videos; the recorder.
+Next: videos.
 
 Build it with CMake against the Migo Windows SDK package
 (`find_package(migo)`), and link the targets it exports
