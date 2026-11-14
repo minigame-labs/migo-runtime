@@ -1,5 +1,6 @@
 #include "images.hpp"
 
+#include "background.hpp"
 #include "gui_queue.hpp"
 #include "http_download.hpp"
 #include "image_codec.hpp"
@@ -51,22 +52,6 @@ public:
 private:
     const bool joined_;
 };
-
-/// Runs `work` on the system's thread pool, in the multithreaded apartment.
-void off_the_gui_thread(std::function<void()> work) {
-    struct Job {
-        static void NTAPI run(PTP_CALLBACK_INSTANCE, void *context) {
-            const std::unique_ptr<std::function<void()>> job(static_cast<std::function<void()> *>(context));
-            const Apartment apartment(COINIT_MULTITHREADED);
-            (*job)();
-        }
-    };
-    auto *job = new std::function<void()>(std::move(work));
-    if (!TrySubmitThreadpoolCallback(&Job::run, job, nullptr)) {
-        // The pool is out of room: a thread of the job's own.
-        std::thread([job] { Job::run(nullptr, job); }).detach();
-    }
-}
 
 /// Waits for `event`, letting through the messages other threads send this
 /// one -- a dialog owned by the App's window sends it some -- for up to `ms`.
@@ -603,7 +588,7 @@ private:
         const int quality = static_cast<int>(std::lround(std::clamp(request["quality"].numberOr(80), 0.0, 100.0)));
         const std::uint32_t width = dimension_of(request["compressedWidth"]);
         const std::uint32_t height = dimension_of(request["compressedHeight"]);
-        off_the_gui_thread([staging = staging(), reply = std::move(reply), source, quality, width, height]() mutable {
+        runInBackground([staging = staging(), reply = std::move(reply), source, quality, width, height]() mutable {
             ComPtr<IWICImagingFactory> wic = codec::factory();
             std::string error;
             if (wic == nullptr) {
@@ -859,7 +844,7 @@ private:
             (void)reply.fail("there is no photo album");
             return;
         }
-        off_the_gui_thread([album = places_.album, source, reply = std::move(reply)]() mutable {
+        runInBackground([album = places_.album, source, reply = std::move(reply)]() mutable {
             ComPtr<IWICImagingFactory> wic = codec::factory();
             std::string error;
             const std::optional<codec::Opened> image =

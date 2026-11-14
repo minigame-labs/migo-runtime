@@ -40,8 +40,10 @@ namespace migo::windows_host {
 /// out of screenshots and recordings ("hidden": WDA_EXCLUDEFROMCAPTURE, from
 /// Windows 10 2004; refused where the system cannot). setEnableDebug is
 /// handed to `debug_aids`, for whoever owns the Session to turn its aids.
-/// Windows tells an App of neither a screenshot nor a recording, so those
-/// observers and getScreenRecordingState are refused, as on Linux.
+/// The brightness is the screen the game is on's: an external monitor's
+/// through DDC/CI, a laptop panel's through WMI -- a screen with neither fails
+/// both calls. Windows tells an App of neither a screenshot nor a recording,
+/// so those observers and getScreenRecordingState are refused, as on Linux.
 ///
 /// Images and files: the player's pictures and files through the system's
 /// open dialog -- modal to the App's window, run on a thread of its own so the

@@ -123,6 +123,10 @@ add_library(migo_windows_builtin_host_services STATIC
     src/videos.cpp
     src/http_download.hpp
     src/http_download.cpp
+    src/background.hpp
+    src/background.cpp
+    src/brightness.hpp
+    src/brightness.cpp
 )
 add_library(migo::windows-builtin-host-services ALIAS migo_windows_builtin_host_services)
 set_target_properties(migo_windows_builtin_host_services PROPERTIES
@@ -141,7 +145,7 @@ target_include_directories(migo_windows_builtin_host_services
 target_link_libraries(migo_windows_builtin_host_services
     PUBLIC migo::win32-surface-view migo::windows-host-services
     PRIVATE user32 gdi32 comctl32 ole32 shell32 shlwapi uuid d2d1 dwrite windowscodecs
-            mfplat mfreadwrite mfuuid winhttp windowsapp d3d11 dxgi dwmapi
+            mfplat mfreadwrite mfuuid winhttp windowsapp d3d11 dxgi dwmapi dxva2 wbemuuid oleaut32
 )
 list(APPEND _migo_windows_host_kit_targets migo_windows_builtin_host_services)
 

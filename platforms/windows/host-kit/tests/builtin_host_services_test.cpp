@@ -1028,6 +1028,23 @@ void a_video_plays() {
     tell(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_DESTROY, Json::object().set("videoId", 2));
 }
 
+void brightness_is_the_screens() {
+    fake_migo::reset();
+    Running running;
+    // The screen this machine shows the game on: one whose brightness the
+    // system controls answers it, one with none says so.
+    const std::uint64_t read = deliver(MIGO_HOST_SERVICE_SCREEN, MIGO_SCREEN_GET_BRIGHTNESS, Json::object());
+    CHECK(pump_until([read] { return answer_to(read).has_value(); }, 15000));
+    if (answered_ok(read)) {
+        const double value = Json::parse(answer_to(read)->payload).value_or(Json())["value"].numberOr(-1);
+        CHECK(value >= 0 && value <= 1);
+    } else {
+        CHECK(failure_of(read) == "the screen has no brightness the system controls");
+    }
+    CHECK(failure_of(ask(MIGO_HOST_SERVICE_SCREEN, MIGO_SCREEN_SET_BRIGHTNESS, Json::object().set("value", "high"))) ==
+          "value is not a number");
+}
+
 }  // namespace
 
 int main() {
@@ -1060,6 +1077,7 @@ int main() {
     location_is_windows_to_give();
     a_video_player_stands_where_content_put_it();
     a_video_plays();
+    brightness_is_the_screens();
     if (g_failures != 0) {
         std::fprintf(stderr, "%d Win32BuiltInHostServices assertion(s) failed\n", g_failures);
         return 1;
