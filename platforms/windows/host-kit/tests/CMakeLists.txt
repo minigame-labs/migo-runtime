@@ -65,12 +65,18 @@ target_link_libraries(migo-windows-builtin-host-services-test PRIVATE
 add_executable(migo-windows-gamepad-mapping-test gamepad_mapping_test.cpp)
 target_link_libraries(migo-windows-gamepad-mapping-test PRIVATE migo::migo)
 
+# The Host Kit lane's App (tests/win32_host), built here against the fake so a
+# change to the Host Kit that breaks it fails here, not in the lane. Not run:
+# it needs the engine.
+add_executable(migo-win32-host-builds "${MIGO_REPOSITORY_ROOT}/tests/win32_host/main.cpp")
+target_link_libraries(migo-win32-host-builds PRIVATE migo::windows-managed-session migo_host_kit_fake_capi user32 shell32 shlwapi)
+
 foreach(target migo_host_kit_fake_capi migo-windows-surface-host-test migo_windows_surface_host
                migo-win32-surface-view-test migo_win32_surface_view
                migo-windows-json-test migo_windows_host_services
                migo-windows-managed-session-test migo_windows_managed_session
                migo-windows-builtin-host-services-test migo_windows_builtin_host_services
-               migo-windows-gamepad-mapping-test)
+               migo-windows-gamepad-mapping-test migo-win32-host-builds)
     # Every warning an error, in the compiler's own spelling.
     set_target_properties(${target} PROPERTIES COMPILE_WARNING_AS_ERROR ON)
     if(MSVC)

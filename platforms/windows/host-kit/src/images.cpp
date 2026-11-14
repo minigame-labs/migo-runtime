@@ -873,7 +873,8 @@ private:
         if (!extensions.empty()) {
             std::wstring patterns;
             for (const std::wstring &extension : extensions) patterns += (patterns.empty() ? L"*." : L";*.") + extension;
-            question.filters.emplace_back(L"Files", patterns);
+            // Named with its patterns, as a Windows file type is.
+            question.filters.emplace_back(L"Files (" + patterns + L")", patterns);
         }
         pick(std::move(question), std::move(reply),
              [staging = staging(), type, extensions](std::vector<std::wstring> files, HostServiceReply &reply) {

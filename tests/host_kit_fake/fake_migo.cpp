@@ -588,6 +588,22 @@ extern "C" MigoResult MIGO_CALL migo_session_notify_vsync(MigoSession *session,
     return g_input_result;
 }
 
+// The engine an App creates before its Sessions: the fake's one token. A host
+// built against the fake -- the Host Kits' own Apps, compiled in their tests --
+// links these, and a test that runs one gets the same engine its Sessions take.
+extern "C" MigoResult MIGO_CALL migo_engine_create(const MigoEngineConfig *config, MigoEngine **out_engine) {
+    if (out_engine != nullptr) *out_engine = nullptr;
+    if (config == nullptr || out_engine == nullptr || config->struct_size < sizeof(MigoEngineConfig)) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    *out_engine = fake_migo::engine();
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_engine_destroy(MigoEngine *engine) {
+    return engine == fake_migo::engine() ? MIGO_OK : MIGO_ERROR_INVALID_ARGUMENT;
+}
+
 extern "C" MigoResult MIGO_CALL migo_session_create(MigoEngine *engine,
                                                     const MigoSessionConfig *config,
                                                     MigoSession **out_session) {
