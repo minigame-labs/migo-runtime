@@ -223,13 +223,34 @@ HWND file_dialog(HWND frame) {
     return nullptr;
 }
 
-/// The dialog's file name box: the Edit inside its control 1148.
+/// The dialog's file name box: the Edit inside its control 1148 where it has
+/// one -- an open dialog does -- else the field that holds the dialog's
+/// keyboard as it opens, which a save dialog gives its name, else the first
+/// field it shows.
 HWND file_name_box(HWND dialog) {
-    HWND box = GetDlgItem(dialog, kFileNameControl);
-    if (box == nullptr) return nullptr;
-    if (HWND edit = FindWindowExW(box, nullptr, L"Edit", nullptr); edit != nullptr) return edit;
-    HWND combo = FindWindowExW(box, nullptr, L"ComboBox", nullptr);
-    return combo != nullptr ? FindWindowExW(combo, nullptr, L"Edit", nullptr) : box;
+    if (HWND box = GetDlgItem(dialog, kFileNameControl); box != nullptr) {
+        if (HWND edit = FindWindowExW(box, nullptr, L"Edit", nullptr); edit != nullptr) return edit;
+        HWND combo = FindWindowExW(box, nullptr, L"ComboBox", nullptr);
+        return combo != nullptr ? FindWindowExW(combo, nullptr, L"Edit", nullptr) : box;
+    }
+    GUITHREADINFO focus{};
+    focus.cbSize = sizeof focus;
+    if (GetGUIThreadInfo(GetWindowThreadProcessId(dialog, nullptr), &focus) && focus.hwndFocus != nullptr &&
+        IsChild(dialog, focus.hwndFocus) && _wcsicmp(class_of(focus.hwndFocus).c_str(), L"Edit") == 0) {
+        return focus.hwndFocus;
+    }
+    HWND found = nullptr;
+    EnumChildWindows(
+        dialog,
+        [](HWND child, LPARAM out) -> BOOL {
+            if (_wcsicmp(class_of(child).c_str(), L"Edit") == 0 && IsWindowVisible(child)) {
+                *reinterpret_cast<HWND *>(out) = child;
+                return FALSE;
+            }
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&found));
+    return found;
 }
 
 std::wstring perceived_kind(const fs::path &file) {
