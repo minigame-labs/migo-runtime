@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Windows Host Kit's location service: getLocation and getFuzzyLocation from Windows' location service
+  (Windows.Devices.Geolocation), as its privacy settings let desktop Apps use it, and `scope.userLocation` decided by
+  the same settings.
 - The Windows Host Kit's image service: chooseImage, chooseMedia and chooseMessageFile through the system's open dialog
   (on a thread of its own, modal to the App's window), what is picked copied -- images the engine draws as they are,
   others written upright, videos described by Media Foundation with the shell's thumbnail as cover; compressImage

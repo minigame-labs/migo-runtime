@@ -115,6 +115,8 @@ add_library(migo_windows_builtin_host_services STATIC
     src/gui_queue.cpp
     src/win32_text.hpp
     src/win32_text.cpp
+    src/geolocation.hpp
+    src/geolocation.cpp
 )
 add_library(migo::windows-builtin-host-services ALIAS migo_windows_builtin_host_services)
 set_target_properties(migo_windows_builtin_host_services PROPERTIES
@@ -122,6 +124,9 @@ set_target_properties(migo_windows_builtin_host_services PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 target_compile_features(migo_windows_builtin_host_services PUBLIC cxx_std_17)
+# C++/WinRT (the location service) awaits through C++20's coroutines; the
+# experimental ones it falls back to before C++20 are gone from current MSVC.
+target_compile_features(migo_windows_builtin_host_services PRIVATE cxx_std_20)
 target_include_directories(migo_windows_builtin_host_services
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -130,7 +135,7 @@ target_include_directories(migo_windows_builtin_host_services
 target_link_libraries(migo_windows_builtin_host_services
     PUBLIC migo::win32-surface-view migo::windows-host-services
     PRIVATE user32 gdi32 comctl32 ole32 shell32 shlwapi uuid d2d1 dwrite windowscodecs
-            mfplat mfreadwrite mfuuid winhttp
+            mfplat mfreadwrite mfuuid winhttp windowsapp
 )
 list(APPEND _migo_windows_host_kit_targets migo_windows_builtin_host_services)
 
