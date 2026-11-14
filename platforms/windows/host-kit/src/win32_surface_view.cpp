@@ -13,6 +13,7 @@
 #define UNICODE
 #endif
 #include <windows.h>
+#include <commctrl.h>
 #include <dwmapi.h>
 #include <imm.h>
 #include <windowsx.h>
@@ -45,6 +46,8 @@ constexpr std::int64_t kFastReleaseWindowMs = 100;
 constexpr std::int64_t kReleaseStallThresholdMs = 2000;
 
 constexpr UINT_PTR kReleaseTimer = 1;
+// The id the view's watch on its top-level window goes by.
+constexpr UINT_PTR kRootWatchId = 0x4D69676F + 11;
 // The view's own messages: work done once the message that asked for it is.
 constexpr UINT kAttachMessage = WM_APP + 1;
 constexpr UINT kMetricsMessage = WM_APP + 2;
@@ -194,11 +197,20 @@ public:
             fatal("CreateWindowExW failed for the game's view");
         }
         cursor_ = LoadCursorW(nullptr, IDC_ARROW);
+        // A child is not told when its top-level window is shown, and an App
+        // shows its window after the view more often than not: the view
+        // watches it, so it attaches once it is in fact on screen.
+        root_ = GetAncestor(hwnd_, GA_ROOT);
+        if (root_ != nullptr && root_ != hwnd_) {
+            watching_root_ =
+                SetWindowSubclass(root_, &Impl::rootWatch, kRootWatchId, reinterpret_cast<DWORD_PTR>(this)) != FALSE;
+        }
     }
 
     ~Impl() {
         unlockPointer();
         if (owns_surface_) fatal("Win32SurfaceView destroyed before its Surface reached RELEASED");
+        unwatchRoot();
         frame_clock_.reset();
         if (hwnd_ != nullptr) {
             KillTimer(hwnd_, kReleaseTimer);
@@ -208,6 +220,39 @@ public:
     }
 
     HWND hwnd() const noexcept { return hwnd_; }
+
+    /// An attach, once the message that may have shown the view is done: the
+    /// attach itself looks again at whether it is on screen, at a size.
+    void requestAttach() {
+        if (hwnd_ == nullptr || owns_surface_ || host_.state() != SurfaceState::Detached || close_pending_ ||
+            attach_pending_) {
+            return;
+        }
+        attach_pending_ = true;
+        PostMessageW(hwnd_, kAttachMessage, 0, 0);
+    }
+
+    /// The top-level window: shown, which shows the view where it was shown already.
+    static LRESULT CALLBACK rootWatch(HWND window, UINT message, WPARAM wparam, LPARAM lparam, UINT_PTR,
+                                      DWORD_PTR reference) {
+        const LRESULT result = DefSubclassProc(window, message, wparam, lparam);
+        auto *view = reinterpret_cast<Impl *>(reference);
+        if ((message == WM_SHOWWINDOW && wparam != FALSE) ||
+            (message == WM_WINDOWPOSCHANGED &&
+             (reinterpret_cast<const WINDOWPOS *>(lparam)->flags & SWP_SHOWWINDOW) != 0)) {
+            view->requestAttach();
+        } else if (message == WM_NCDESTROY) {
+            view->watching_root_ = false;
+            RemoveWindowSubclass(window, &Impl::rootWatch, kRootWatchId);
+        }
+        return result;
+    }
+
+    void unwatchRoot() {
+        if (!watching_root_) return;
+        RemoveWindowSubclass(root_, &Impl::rootWatch, kRootWatchId);
+        watching_root_ = false;
+    }
 
     // ---- the Surface ------------------------------------------------------------------------------
 
@@ -404,11 +449,7 @@ private:
                 // Shown at a size: attached once the show is done, so the
                 // engine binds the window as the system has placed it.
                 if ((position->flags & SWP_SHOWWINDOW) != 0 || (position->flags & SWP_NOSIZE) == 0) {
-                    if (IsWindowVisible(hwnd_) && !owns_surface_ && host_.state() == SurfaceState::Detached &&
-                        !close_pending_ && !attach_pending_) {
-                        attach_pending_ = true;
-                        PostMessageW(hwnd_, kAttachMessage, 0, 0);
-                    }
+                    if (IsWindowVisible(hwnd_)) requestAttach();
                     if ((position->flags & SWP_NOSIZE) == 0) scheduleMetrics();
                 }
                 return DefWindowProcW(window, message, wparam, lparam);
@@ -523,6 +564,7 @@ private:
             case WM_DESTROY:
                 // Destroyed by someone else -- its parent going with it.
                 if (owns_surface_) fatal("the game's view was destroyed before Migo reported RELEASED");
+                unwatchRoot();
                 frame_clock_.reset();
                 SetWindowLongPtrW(window, GWLP_USERDATA, 0);
                 hwnd_ = nullptr;
@@ -956,6 +998,8 @@ private:
     std::uint64_t owned_generation_ = 0;
     bool close_pending_ = false;
     bool attach_pending_ = false;
+    HWND root_ = nullptr;
+    bool watching_root_ = false;
     bool metrics_pending_ = false;
     MigoResult last_error_ = MIGO_OK;
 
