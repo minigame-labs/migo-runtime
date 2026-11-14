@@ -184,6 +184,8 @@ void it_declares_what_it_answers() {
         CHECK((declared & hostServiceBit(service)) != 0);
     }
     CHECK((declared & hostServiceBit(MIGO_HOST_SERVICE_INTERACTION)) != 0);
+    CHECK((declared & hostServiceBit(MIGO_HOST_SERVICE_IMAGE)) != 0);
+    CHECK((declared & hostServiceBit(MIGO_HOST_SERVICE_LOCATION)) != 0);
     CHECK(fake_migo::installed_callbacks().on_host_service_call != nullptr);
     // A method the Host Kit has no answer for is refused, not left waiting.
     CHECK(failure_of(ask(MIGO_HOST_SERVICE_SCREEN, MIGO_SCREEN_GET_RECORDING_STATE, Json::object())) ==
@@ -799,6 +801,45 @@ void a_preview_shows_the_viewer() {
           "file not found");
 }
 
+// ---- location ---------------------------------------------------------------------------------------
+
+bool a_location_reason(const std::string &reason) {
+    return reason == "auth deny" || reason == "location services are not available" ||
+           reason == "unable to get location";
+}
+
+void location_is_windows_to_give() {
+    fake_migo::reset();
+    Running running;
+    // Whatever this machine's privacy settings and hardware say: a position, or
+    // why there is none -- within the time asked, never left waiting.
+    const std::uint64_t exact = deliver(MIGO_HOST_SERVICE_LOCATION, MIGO_LOCATION_GET_LOCATION,
+                                        Json::object().set("isHighAccuracy", true).set("highAccuracyExpireTime", 3000));
+    CHECK(pump_until([exact] { return answer_to(exact).has_value(); }, 20000));
+    if (answered_ok(exact)) {
+        const std::optional<Json> at = Json::parse(answer_to(exact)->payload);
+        CHECK(at.has_value() && std::abs((*at)["latitude"].numberOr(999)) <= 90 &&
+              std::abs((*at)["longitude"].numberOr(999)) <= 180 && (*at)["accuracy"].numberOr(-1) >= 0);
+    } else {
+        CHECK(a_location_reason(failure_of(exact)));
+    }
+    const std::uint64_t fuzzy = deliver(MIGO_HOST_SERVICE_LOCATION, MIGO_LOCATION_GET_FUZZY_LOCATION, Json::object());
+    CHECK(pump_until([fuzzy] { return answer_to(fuzzy).has_value(); }, 20000));
+    CHECK(answered_ok(fuzzy) || a_location_reason(failure_of(fuzzy)));
+    // The scope is the privacy setting's: granted, denied, or nobody to ask.
+    const std::uint64_t scope =
+        deliver(MIGO_HOST_SERVICE_PERMISSION, MIGO_PERMISSION_REQUEST_SCOPE,
+                Json::object().set("scope", "scope.userLocation").set("scopeId", MIGO_SCOPE_USER_LOCATION));
+    CHECK(pump_until([scope] { return answer_to(scope).has_value(); }, 20000));
+    if (answered_ok(scope)) {
+        CHECK(fake_migo::scope_state(MIGO_SCOPE_USER_LOCATION) == MIGO_SCOPE_STATE_GRANTED);
+    } else if (failure_of(scope) == "auth deny") {
+        CHECK(fake_migo::scope_state(MIGO_SCOPE_USER_LOCATION) == MIGO_SCOPE_STATE_DENIED);
+    } else {
+        CHECK(failure_of(scope) == "location services are not available");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -828,6 +869,7 @@ int main() {
     dismissing_a_file_dialog_is_cancel();
     closing_the_game_dismisses_its_file_dialog();
     a_preview_shows_the_viewer();
+    location_is_windows_to_give();
     if (g_failures != 0) {
         std::fprintf(stderr, "%d Win32BuiltInHostServices assertion(s) failed\n", g_failures);
         return 1;

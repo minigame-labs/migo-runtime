@@ -52,11 +52,16 @@ namespace migo::windows_host {
 /// first. The camera is not offered; a video in previewMedia is refused until
 /// the Host Kit plays videos.
 ///
-/// Permission: the scopes the desktop decides. `scope.writePhotosAlbum` is
-/// granted -- the player's Pictures folder is theirs and the App's, which a
-/// desktop does not gate. Any other scope is the App's to decide, and refused
-/// ("auth deny") without an answer of its own: an App that decides scopes
-/// answers the permission service itself.
+/// Location: Windows' location service (Windows.Devices.Geolocation), as its
+/// privacy settings let desktop Apps use it; getFuzzyLocation at a city's
+/// accuracy, getLocation at a street's or, isHighAccuracy, the finest.
+///
+/// Permission: the scopes the desktop decides. `scope.userLocation` (and its
+/// background form) is Windows' location privacy setting's to decide.
+/// `scope.writePhotosAlbum` is granted -- the player's Pictures folder is
+/// theirs and the App's, which a desktop does not gate. Any other scope is the
+/// App's to decide, and refused ("auth deny") without an answer of its own: an
+/// App that decides scopes answers the permission service itself.
 ///
 /// What an App answers itself it names in its own provider, which the Managed
 /// session asks first. `scripts/gen-api-platform-matrix.py` reads the

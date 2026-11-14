@@ -71,10 +71,12 @@ It is being built in stages (migo-runtime's schedule item X1):
   with the shell's thumbnail as cover, compressImage, saveImageToPhotosAlbum
   into the Pictures folder, saveFileToDisk through the save dialog, and the
   previews in a Direct2D viewer, http(s) images downloaded first
-  (`FileLocations` moves the staging directory and the album). An App can use
-  it in the Bound shape too.
+  (`FileLocations` moves the staging directory and the album); location --
+  Windows' location service (Windows.Devices.Geolocation), as its privacy
+  settings let desktop Apps use it, which also decide scope.userLocation. An
+  App can use it in the Bound shape too.
 
-Next: location; gamepads; videos; the recorder.
+Next: gamepads; videos; the recorder.
 
 Build it with CMake against the Migo Windows SDK package
 (`find_package(migo)`), and link the targets it exports

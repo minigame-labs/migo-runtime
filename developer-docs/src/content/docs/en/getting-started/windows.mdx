@@ -129,7 +129,8 @@ This phase does not include:
   The session also opens a text field for content's `showKeyboard`, and reports the battery, the
   network and memory pressure as Windows reports them, and answers images and files -- the system's
   open and save dialogs, WIC for images, Media Foundation for videos' details, a viewer for previews.
-  Location, gamepads, videos and the recorder
+  Location comes from Windows' location service, as its privacy settings allow. Gamepads, videos and
+  the recorder
   are not there yet: until they are, an App answers them itself.
 - **`EglProvider` implementation**: not yet provided.
 

@@ -1,5 +1,6 @@
 #include <migo/windows/builtin_host_services.hpp>
 
+#include "geolocation.hpp"
 #include "images.hpp"
 #include "interaction.hpp"
 
@@ -15,6 +16,7 @@
 #include <windows.h>
 #include <commctrl.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -126,6 +128,9 @@ public:
                 return;
             case MIGO_HOST_SERVICE_IMAGE:
                 images_.call(method, request, std::move(reply));
+                return;
+            case MIGO_HOST_SERVICE_LOCATION:
+                location(method, request, std::move(reply));
                 return;
             case MIGO_HOST_SERVICE_CLIPBOARD:
                 clipboard(method, request, std::move(reply));
@@ -379,6 +384,57 @@ private:
 
     // ---- permission -------------------------------------------------------------------------------
 
+    // ---- location ---------------------------------------------------------------------------------
+
+    void location(std::uint32_t method, const Json &request, HostServiceReply reply) {
+        // As long as the Android SDK waits for a position.
+        constexpr std::chrono::milliseconds kWait{10'000};
+        switch (method) {
+            case MIGO_LOCATION_GET_LOCATION: {
+                const bool high = request["isHighAccuracy"].boolOr(false);
+                const double expiry = request["highAccuracyExpireTime"].numberOr(0);
+                const bool altitude = request["altitude"].boolOr(false);
+                const std::chrono::milliseconds wait =
+                    high && std::isfinite(expiry) && expiry >= 1
+                        ? std::chrono::milliseconds(static_cast<std::int64_t>(std::min(expiry, 3.6e6)))
+                        : kWait;
+                Geolocation::locate(high ? Geolocation::Accuracy::Exact : Geolocation::Accuracy::Street, wait,
+                                    [reply, altitude](const Geolocation::Outcome &outcome) mutable {
+                                        if (!outcome.position.has_value()) {
+                                            (void)reply.fail(outcome.error);
+                                            return;
+                                        }
+                                        const Geolocation::Position &at = *outcome.position;
+                                        (void)reply.succeed(
+                                            Json::object()
+                                                .set("latitude", at.latitude)
+                                                .set("longitude", at.longitude)
+                                                .set("speed", at.speed.value_or(0))
+                                                .set("accuracy", at.accuracy)
+                                                .set("altitude", altitude ? at.altitude.value_or(0) : 0.0)
+                                                .set("verticalAccuracy", at.altitude_accuracy.value_or(0))
+                                                .set("horizontalAccuracy", at.accuracy));
+                                    });
+                return;
+            }
+            case MIGO_LOCATION_GET_FUZZY_LOCATION:
+                Geolocation::locate(Geolocation::Accuracy::City, kWait,
+                                    [reply](const Geolocation::Outcome &outcome) mutable {
+                                        if (!outcome.position.has_value()) {
+                                            (void)reply.fail(outcome.error);
+                                            return;
+                                        }
+                                        (void)reply.succeed(Json::object()
+                                                                .set("latitude", outcome.position->latitude)
+                                                                .set("longitude", outcome.position->longitude));
+                                    });
+                return;
+            default:
+                (void)reply.fail("not supported");
+                return;
+        }
+    }
+
     void permission(std::uint32_t method, const Json &request, HostServiceReply reply) {
         if (method != MIGO_PERMISSION_REQUEST_SCOPE) {
             (void)reply.fail("not supported");
@@ -386,6 +442,22 @@ private:
         }
         const auto scope = static_cast<MigoScope>(request["scopeId"].numberOr(-1));
         switch (scope) {
+            case MIGO_SCOPE_USER_LOCATION:
+            case MIGO_SCOPE_USER_LOCATION_BACKGROUND:
+                // Windows' privacy settings decide, as the player keeps them.
+                Geolocation::decide([channel = channel_, scope, reply](const Geolocation::Outcome &outcome) mutable {
+                    if (outcome.allowed) {
+                        (void)channel->setScopeState(scope, MIGO_SCOPE_STATE_GRANTED);
+                        (void)reply.succeed();
+                    } else if (outcome.denied) {
+                        (void)channel->setScopeState(scope, MIGO_SCOPE_STATE_DENIED);
+                        (void)reply.fail("auth deny");
+                    } else {
+                        // Nobody decided: there is no location service to ask.
+                        (void)reply.fail(outcome.error);
+                    }
+                });
+                return;
             case MIGO_SCOPE_WRITE_PHOTOS_ALBUM:
                 // Recorded before the answer, so content acting on a grant finds it.
                 (void)channel_->setScopeState(scope, MIGO_SCOPE_STATE_GRANTED);
@@ -470,6 +542,7 @@ std::uint64_t Win32BuiltInHostServices::services() const noexcept {
     std::uint64_t builtIn = 0;
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_INTERACTION);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_IMAGE);
+    builtIn |= hostServiceBit(MIGO_HOST_SERVICE_LOCATION);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_WINDOW);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_SCREEN);
