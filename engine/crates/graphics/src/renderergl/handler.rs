@@ -432,10 +432,13 @@ impl RendererGL {
 
             // `gl.flush()` / `gl.finish()`, and the end of a task that made a fence: the context's commands go to the
             // GPU. Nothing else submits a context the content only draws into offscreen, so on a driver that batches
-            // (ANGLE on Metal) a fence was never submitted and never signalled.
+            // (ANGLE on Metal) a fence was never submitted and never signalled. Its fences are then asked after, which
+            // is what submits one where `glFlush` does not (`poll_fence`: Direct3D 11 on an NVIDIA GPU): the task
+            // after the one that made a fence sees it as the GPU does, whatever was or was not drawn since.
             GLCmd::Flush { canvas_id } => {
                 cm.make_current_needed(canvas_id)?;
                 unsafe { gl.flush() };
+                cm.submit_fences_of(canvas_id);
                 Ok(DamageEffect::NoDamage)
             }
 
@@ -4165,6 +4168,7 @@ impl RendererGL {
                         gl_handle: handle,
                         owner_canvas: Some(canvas_id),
                         deleted: false,
+                        signalled: false,
                     },
                 );
                 Ok(DamageEffect::NoDamage)
@@ -4217,7 +4221,22 @@ impl RendererGL {
                         // the whole of the contract, and `client_wait_sync_u64` is kept
                         // because it is the path that takes the value without narrowing
                         // it, which is still what a zero should travel through.
-                        cm.client_wait_sync_u64(h.0 as *const std::ffi::c_void, flags, 0)
+                        //
+                        // With SYNC_FLUSH_COMMANDS_BIT whatever the producer's flags, as every
+                        // poll of a fence is (`poll_fence`): a flag that submits what the fence
+                        // waits on is the only one there is, and a poll without it can be asked
+                        // for ever.
+                        let status = cm.client_wait_sync_u64(
+                            h.0 as *const std::ffi::c_void,
+                            flags | glow::SYNC_FLUSH_COMMANDS_BIT,
+                            0,
+                        );
+                        if crate::canvas::fence_signalled(status) {
+                            if let Some(meta) = cm.syncs.get_mut(&sync) {
+                                meta.signalled = true;
+                            }
+                        }
+                        status
                     } else {
                         glow::WAIT_FAILED
                     }
