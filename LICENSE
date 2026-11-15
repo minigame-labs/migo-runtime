@@ -1,0 +1,161 @@
+Business Source License 1.1
+
+License text copyright © 2017 MariaDB Corporation Ab, All Rights Reserved.
+"Business Source License" is a trademark of MariaDB Corporation Ab.
+
+-------------------------------------------------------------------------------
+Parameters
+-------------------------------------------------------------------------------
+
+Licensor: Migo Authors
+
+Licensed Work: Migo (a mini-game runtime engine SDK)
+
+The Licensed Work is (c) 2026 Migo Authors
+
+Use Limitation:
+  You may not use the Licensed Work for a Competitive Offering.
+
+  "Competitive Offering" means any product or service (including hosted or
+  managed services) that:
+    (a) is a mini-game runtime, mini-game engine, or mini-game hosting/runtime
+        SDK substantially similar to the Licensed Work; AND
+    (b) is provided, licensed, distributed, sold, made available, or otherwise
+        offered to any third party as a standalone product/service, or as a
+        component whose primary purpose is to enable third parties to run
+        mini-games.
+
+  Without limiting the foregoing, a Competitive Offering includes:
+    1) Distributing the Licensed Work (or a Derivative Work) as a standalone
+       SDK/engine, including as a separately packaged library/framework/toolkit,
+       whether in source or binary form.
+
+    2) Offering a hosted, cloud, or managed mini-game runtime/engine service to
+       third parties where the Licensed Work (or a Derivative Work) is used to
+       provide the core runtime/engine functionality.
+
+    3) Forking, rebranding, repackaging, or otherwise creating a new mini-game
+       engine product based on the Licensed Work for provision to third parties.
+
+Additional Use Grant:
+  Subject to the terms of this License, and notwithstanding the Use Limitation,
+  Licensor grants you a limited right to make production use of the Licensed Work
+  only as part of Your App, and only for so long as you are a Small Entity.
+
+  "Your App" means an application that you (or your affiliates) own and control
+  and that is distributed to end users primarily to provide your own application
+  functionality (not primarily to provide a mini-game runtime/engine SDK).
+
+  "Small Entity" means an entity that, together with its affiliates, satisfies
+  both of the following as of its most recently completed fiscal year:
+    (a) total annual gross revenue, from all sources and not only from Your App,
+        of no more than USD 1,000,000 (or the equivalent in another currency);
+        AND
+    (b) no more than 3,000,000 monthly active users across all instances of
+        Your App in any single month of that year.
+
+  If you cease to be a Small Entity, this Additional Use Grant continues to
+  cover your production use for 90 days, so that you have time to obtain a
+  commercial license from Licensor without interrupting your service.
+
+  Non-production use is not affected by the Small Entity thresholds. The Terms
+  below grant everyone, at any scale, the right to copy, modify, create
+  derivative works from, redistribute, and make non-production use of the
+  Licensed Work -- including reading, auditing, building, testing, evaluating,
+  benchmarking, and porting it.
+
+  Permitted production uses:
+    1) Integrate the Licensed Work into Your App to run and deliver mini-games
+       within Your App for Your App’s end users.
+
+    2) Internal development, testing, evaluation, learning, and research.
+
+    3) Modify the Licensed Work as necessary solely for your integration into
+       Your App and for operating mini-games within Your App.
+
+    4) Develop, publish, and distribute mini-games that run on top of the
+       Licensed Work, provided that you do not distribute the Licensed Work
+       (or a Derivative Work) as a standalone SDK/engine or as a Competitive
+       Offering.
+
+  Clarifications:
+    - You may distribute the Licensed Work only when it is embedded in Your App
+      and not intended to be extracted, reused, or consumed independently as an
+      SDK by third parties.
+    - You may not provide the Licensed Work (or a Derivative Work) to third
+      parties as a developer-facing SDK, framework, or runtime component, even
+      if bundled with additional code, unless you have a separate commercial
+      license from Licensor.
+
+Change Date: 2030-09-29
+
+Change License: Apache License 2.0
+
+-------------------------------------------------------------------------------
+Terms
+-------------------------------------------------------------------------------
+
+The Licensor hereby grants you the right to copy, modify, create derivative
+works, redistribute, and make non-production use of the Licensed Work. The
+Licensor may make an Additional Use Grant, above, permitting limited production
+use.
+
+Effective on the Change Date, or the fourth anniversary of the first publicly
+available distribution of a specific version of the Licensed Work under this
+License, whichever comes first, the Licensor hereby grants you rights under the
+terms of the Change License, and the rights granted in the paragraph above
+terminate.
+
+If your use of the Licensed Work does not comply with the requirements currently
+in effect as described in this License, you must purchase a commercial license
+from the Licensor, its affiliated entities, or authorized resellers, or you must
+refrain from using the Licensed Work.
+
+All copies of the original and modified Licensed Work, and derivative works of
+the Licensed Work, are subject to this License. This License applies separately
+for each version of the Licensed Work and the Change Date may vary for each
+version of the Licensed Work released by Licensor.
+
+You must conspicuously display this License on each original or modified copy of
+the Licensed Work. If you receive the Licensed Work in original or modified form
+from a third party, the terms and conditions set forth in this License apply to
+your use of that work.
+
+Any use of the Licensed Work in violation of this License will automatically
+terminate your rights under this License for the current and all other versions
+of the Licensed Work.
+
+This License does not grant you any right in any trademark or logo of Licensor
+or its affiliates (provided that you may use a trademark or logo of Licensor as
+expressly required by this License).
+
+TO THE EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSED WORK IS PROVIDED ON AN
+"AS IS" BASIS. LICENSOR HEREBY DISCLAIMS ALL WARRANTIES AND CONDITIONS, EXPRESS
+OR IMPLIED, INCLUDING (WITHOUT LIMITATION) WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, AND TITLE.
+
+MariaDB hereby grants you permission to use this License's text to license your
+works, and to refer to it using the trademark "Business Source License", as long
+as you comply with the Covenants of Licensor below.
+
+-------------------------------------------------------------------------------
+Covenants of Licensor
+-------------------------------------------------------------------------------
+
+In consideration of the right to use this License's text and the "Business Source
+License" name and trademark, Licensor covenants to MariaDB, and to all other
+recipients of the licensed work to be provided by Licensor:
+
+1. To specify as the Change License the GPL Version 2.0 or any later version, or
+   a license that is compatible with GPL Version 2.0 or a later version, where
+   "compatible" means that software provided under the Change License can be
+   included in a program with software provided under GPL Version 2.0 or a later
+   version. Licensor may specify additional Change Licenses without limitation.
+
+2. To either: (a) specify an additional grant of rights to use that does not
+   impose any additional restriction on the right granted in this License, as
+   the Additional Use Grant; or (b) insert the text "None".
+
+3. To specify a Change Date.
+
+4. Not to modify this License in any other way.

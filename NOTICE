@@ -1,0 +1,155 @@
+Migo
+Copyright 2026 Migo Authors
+
+This product includes software developed by the Migo Authors.
+
+================================================================================
+THIRD-PARTY DEPENDENCIES
+================================================================================
+
+This project incorporates components from the following third-party projects.
+Their licenses are listed below, grouped by license type.
+
+--------------------------------------------------------------------------------
+MIT License
+--------------------------------------------------------------------------------
+
+The following components are licensed under the MIT License:
+
+- deno_core (https://github.com/denoland/deno_core) - MIT
+- v8 (https://v8.dev/) - MIT
+- tokio (https://tokio.rs/) - MIT
+- hyper (https://hyper.rs/) - MIT
+- serde (https://serde.rs/) - MIT OR Apache-2.0
+- image (https://github.com/image-rs/image) - MIT OR Apache-2.0
+- skia-safe, skia-bindings (https://github.com/rust-skia/rust-skia) - MIT
+- tracing (https://github.com/tokio-rs/tracing) - MIT
+- crossbeam (https://github.com/crossbeam-rs/crossbeam) - MIT OR Apache-2.0
+- reqwest (https://github.com/seanmonstar/reqwest) - MIT OR Apache-2.0
+- futures (https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
+- bytes (https://github.com/tokio-rs/bytes) - MIT
+- parking_lot (https://github.com/Amanieu/parking_lot) - MIT OR Apache-2.0
+- hashbrown (https://github.com/rust-lang/hashbrown) - MIT OR Apache-2.0
+- indexmap (https://github.com/indexmap-rs/indexmap) - Apache-2.0 OR MIT
+- ttf-parser (https://github.com/AlessioNetti/ttf-parser) - MIT OR Apache-2.0
+- rustybuzz (https://github.com/AlessioNetti/rustybuzz) - MIT
+- glow (https://github.com/grovesNL/glow) - MIT OR Apache-2.0 OR Zlib
+- png (https://github.com/image-rs/image-png) - MIT OR Apache-2.0
+- gif (https://github.com/image-rs/image-gif) - MIT OR Apache-2.0
+- lru (https://github.com/jeromefroe/lru-rs) - MIT
+- slotmap (https://github.com/orlp/slotmap) - Zlib
+- anyhow (https://github.com/dtolnay/anyhow) - MIT OR Apache-2.0
+- thiserror (https://github.com/dtolnay/thiserror) - MIT OR Apache-2.0
+- rand (https://github.com/rust-random/rand) - MIT OR Apache-2.0
+
+And many other Rust crates under MIT or MIT/Apache-2.0 dual license.
+
+--------------------------------------------------------------------------------
+Apache License 2.0
+--------------------------------------------------------------------------------
+
+The following components are licensed under the Apache License 2.0:
+
+- clang-sys (https://github.com/AlessioNetti/clang-sys) - Apache-2.0
+- debugid (https://github.com/mitsuhiko/debugid) - Apache-2.0
+- ring (https://github.com/briansmith/ring) - Apache-2.0 AND ISC
+
+--------------------------------------------------------------------------------
+MPL-2.0 (Mozilla Public License 2.0)
+--------------------------------------------------------------------------------
+
+The following components are licensed under MPL-2.0:
+
+- cooked-waker (https://github.com/AlessioNetti/cooked-waker) - MPL-2.0
+
+Note: MPL-2.0 is a file-level copyleft license. This project uses cooked-waker
+as an unmodified dependency, which is permitted under MPL-2.0 without requiring
+this project to be licensed under MPL-2.0.
+
+--------------------------------------------------------------------------------
+BSD Licenses
+--------------------------------------------------------------------------------
+
+The following components are licensed under BSD licenses:
+
+BSD-2-Clause:
+- av1-grain - BSD-2-Clause
+- rav1e - BSD-2-Clause
+- v_frame - BSD-2-Clause
+- zerocopy - BSD-2-Clause OR Apache-2.0 OR MIT
+
+BSD-3-Clause:
+- avif-serialize - BSD-3-Clause
+- bindgen - BSD-3-Clause
+- exr - BSD-3-Clause
+- lebe - BSD-3-Clause
+- ravif - BSD-3-Clause
+- sourcemap - BSD-3-Clause
+- subtle - BSD-3-Clause
+- encoding_rs - (Apache-2.0 OR MIT) AND BSD-3-Clause
+- moxcms - BSD-3-Clause OR Apache-2.0
+- pxfm - BSD-3-Clause OR Apache-2.0
+- Skia (https://skia.org/) - BSD-3-Clause
+
+Note: Migo's 2D graphics are rendered by Skia (Ganesh GL backend). The bundled
+Skia binary embeds FreeType (FreeType License "FTL", or GPLv2) and ICU data
+(Unicode-3.0) via the embed-freetype / embed-icudtl build features. See Skia's
+own third-party license notices for the complete list of components it bundles.
+
+--------------------------------------------------------------------------------
+ISC License
+--------------------------------------------------------------------------------
+
+The following components are licensed under the ISC License:
+
+- libloading - ISC
+- rustls - Apache-2.0 OR ISC OR MIT
+- rustls-webpki - ISC
+- untrusted - ISC
+- ring - Apache-2.0 AND ISC
+
+--------------------------------------------------------------------------------
+Zlib License
+--------------------------------------------------------------------------------
+
+The following components are licensed under the Zlib License:
+
+- bytemuck - Zlib OR Apache-2.0 OR MIT
+- slotmap - Zlib
+- miniz_oxide - MIT OR Zlib OR Apache-2.0
+- zune-core - MIT OR Apache-2.0 OR Zlib
+- zune-inflate - MIT OR Apache-2.0 OR Zlib
+- zune-jpeg - MIT OR Apache-2.0 OR Zlib
+- glow - MIT OR Apache-2.0 OR Zlib
+
+--------------------------------------------------------------------------------
+Unicode License
+--------------------------------------------------------------------------------
+
+The following components are licensed under the Unicode License:
+
+- icu_collections - Unicode-3.0
+- icu_locale_core - Unicode-3.0
+- icu_normalizer - Unicode-3.0
+- icu_normalizer_data - Unicode-3.0
+- icu_properties - Unicode-3.0
+- icu_properties_data - Unicode-3.0
+- icu_provider - Unicode-3.0
+- litemap - Unicode-3.0
+- potential_utf - Unicode-3.0
+- tinystr - Unicode-3.0
+- writeable - Unicode-3.0
+- yoke - Unicode-3.0
+- zerofrom - Unicode-3.0
+- zerotrie - Unicode-3.0
+- zerovec - Unicode-3.0
+
+--------------------------------------------------------------------------------
+Other Licenses
+--------------------------------------------------------------------------------
+
+- 0BSD: adler, adler2
+- Unlicense: memchr, walkdir, winapi-util, byteorder-lite
+- CC0-1.0: imgref
+- BSL-1.0 (Boost): ryu
+- CDLA-Permissive-2.0: webpki-roots
