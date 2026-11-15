@@ -1,161 +1,234 @@
-Business Source License 1.1
+Migo Binary License 1.0
 
-License text copyright © 2017 MariaDB Corporation Ab, All Rights Reserved.
-"Business Source License" is a trademark of MariaDB Corporation Ab.
+SPDX-License-Identifier: LicenseRef-Migo-Binary-1.0
+
+Copyright (c) 2026 Migo Authors. All rights reserved.
+
+This License is a legal agreement between you and Migo Authors ("Licensor").
+By downloading, installing, copying or using the Software you accept it. If you
+do not accept it, do not download, install, copy or use the Software.
 
 -------------------------------------------------------------------------------
-Parameters
+1. Definitions
 -------------------------------------------------------------------------------
 
-Licensor: Migo Authors
+"Software" means the Migo mini-game runtime as Licensor makes it available in
+object-code form -- including libraries, frameworks, Android archives (AAR) and
+Swift packages -- together with the C ABI headers, interface definitions, host
+integration source code (such as the Linux Qt 6 host kit and the OpenHarmony
+host project), sample code and documentation that accompany it, and any update
+Licensor makes available under this License. The Software does not include the
+source code of the runtime engine, and nothing in this License grants any right
+to it.
 
-Licensed Work: Migo (a mini-game runtime engine SDK)
+"You" means the individual or legal entity exercising rights under this
+License, together with its Affiliates.
 
-The Licensed Work is (c) 2026 Migo Authors
+"Affiliate" means any entity that controls, is controlled by, or is under common
+control with an entity, where "control" means ownership of more than fifty
+percent of the voting interests or the power to direct its management.
 
-Use Limitation:
-  You may not use the Licensed Work for a Competitive Offering.
+"Your App" means an application that You own and control and that is
+distributed to End Users primarily to provide Your own application
+functionality, and not primarily to provide a mini-game runtime, engine or SDK.
 
-  "Competitive Offering" means any product or service (including hosted or
-  managed services) that:
-    (a) is a mini-game runtime, mini-game engine, or mini-game hosting/runtime
-        SDK substantially similar to the Licensed Work; AND
-    (b) is provided, licensed, distributed, sold, made available, or otherwise
-        offered to any third party as a standalone product/service, or as a
-        component whose primary purpose is to enable third parties to run
-        mini-games.
+"End User" means a person who obtains Your App to use it, and not to build
+products from the Software.
 
+"Production Use" means making the Software available to End Users, or using it
+to serve End Users, in any form other than for internal development, testing or
+evaluation.
+
+"Small Entity" means an entity that, together with its Affiliates, satisfies
+both of the following as of its most recently completed fiscal year:
+  (a) total annual gross revenue, from all sources and not only from Your App,
+      of no more than USD 1,000,000 (or the equivalent in another currency);
+      AND
+  (b) no more than 3,000,000 monthly active users across all instances of Your
+      App in any single month of that year.
+
+"Competitive Offering" means any product or service (including a hosted or
+managed service) that:
+  (a) is a mini-game runtime, mini-game engine, or mini-game hosting/runtime
+      SDK substantially similar to the Software; AND
+  (b) is provided, licensed, distributed, sold, made available, or otherwise
+      offered to any third party as a standalone product/service, or as a
+      component whose primary purpose is to enable third parties to run
+      mini-games.
   Without limiting the foregoing, a Competitive Offering includes:
-    1) Distributing the Licensed Work (or a Derivative Work) as a standalone
-       SDK/engine, including as a separately packaged library/framework/toolkit,
-       whether in source or binary form.
-
-    2) Offering a hosted, cloud, or managed mini-game runtime/engine service to
-       third parties where the Licensed Work (or a Derivative Work) is used to
-       provide the core runtime/engine functionality.
-
-    3) Forking, rebranding, repackaging, or otherwise creating a new mini-game
-       engine product based on the Licensed Work for provision to third parties.
-
-Additional Use Grant:
-  Subject to the terms of this License, and notwithstanding the Use Limitation,
-  Licensor grants you a limited right to make production use of the Licensed Work
-  only as part of Your App, and only for so long as you are a Small Entity.
-
-  "Your App" means an application that you (or your affiliates) own and control
-  and that is distributed to end users primarily to provide your own application
-  functionality (not primarily to provide a mini-game runtime/engine SDK).
-
-  "Small Entity" means an entity that, together with its affiliates, satisfies
-  both of the following as of its most recently completed fiscal year:
-    (a) total annual gross revenue, from all sources and not only from Your App,
-        of no more than USD 1,000,000 (or the equivalent in another currency);
-        AND
-    (b) no more than 3,000,000 monthly active users across all instances of
-        Your App in any single month of that year.
-
-  If you cease to be a Small Entity, this Additional Use Grant continues to
-  cover your production use for 90 days, so that you have time to obtain a
-  commercial license from Licensor without interrupting your service.
-
-  Non-production use is not affected by the Small Entity thresholds. The Terms
-  below grant everyone, at any scale, the right to copy, modify, create
-  derivative works from, redistribute, and make non-production use of the
-  Licensed Work -- including reading, auditing, building, testing, evaluating,
-  benchmarking, and porting it.
-
-  Permitted production uses:
-    1) Integrate the Licensed Work into Your App to run and deliver mini-games
-       within Your App for Your App’s end users.
-
-    2) Internal development, testing, evaluation, learning, and research.
-
-    3) Modify the Licensed Work as necessary solely for your integration into
-       Your App and for operating mini-games within Your App.
-
-    4) Develop, publish, and distribute mini-games that run on top of the
-       Licensed Work, provided that you do not distribute the Licensed Work
-       (or a Derivative Work) as a standalone SDK/engine or as a Competitive
-       Offering.
-
-  Clarifications:
-    - You may distribute the Licensed Work only when it is embedded in Your App
-      and not intended to be extracted, reused, or consumed independently as an
-      SDK by third parties.
-    - You may not provide the Licensed Work (or a Derivative Work) to third
-      parties as a developer-facing SDK, framework, or runtime component, even
-      if bundled with additional code, unless you have a separate commercial
-      license from Licensor.
-
-Change Date: 2030-09-29
-
-Change License: Apache License 2.0
+    1) distributing the Software, or any part of it, as a standalone SDK,
+       engine, library, framework or toolkit, whether or not bundled with
+       other code;
+    2) offering to third parties a hosted, cloud or managed mini-game
+       runtime/engine service whose core runtime functionality is provided by
+       the Software; and
+    3) rebranding or repackaging the Software as a new mini-game engine
+       product for provision to third parties.
 
 -------------------------------------------------------------------------------
-Terms
+2. License Grants
 -------------------------------------------------------------------------------
 
-The Licensor hereby grants you the right to copy, modify, create derivative
-works, redistribute, and make non-production use of the Licensed Work. The
-Licensor may make an Additional Use Grant, above, permitting limited production
-use.
+Subject to Your compliance with this License, Licensor grants You a worldwide,
+non-exclusive, non-transferable, non-sublicensable, royalty-free license to:
 
-Effective on the Change Date, or the fourth anniversary of the first publicly
-available distribution of a specific version of the Licensed Work under this
-License, whichever comes first, the Licensor hereby grants you rights under the
-terms of the Change License, and the rights granted in the paragraph above
-terminate.
+2.1 Development and evaluation. Install, copy and use the Software internally,
+    at any scale, to develop, build, test, evaluate and benchmark Your App and
+    mini-games, and to evaluate the Software itself. The Small Entity
+    thresholds do not apply to this Section 2.1.
 
-If your use of the Licensed Work does not comply with the requirements currently
-in effect as described in this License, you must purchase a commercial license
-from the Licensor, its affiliated entities, or authorized resellers, or you must
-refrain from using the Licensed Work.
+2.2 Production Use by Small Entities. While You are a Small Entity, embed the
+    Software in Your App and distribute it to End Users solely as part of Your
+    App, for the purpose of running mini-games within Your App. If You cease to
+    be a Small Entity, this Section 2.2 continues to cover Your existing
+    Production Use for ninety (90) days, so that You can obtain a commercial
+    license without interrupting Your service.
 
-All copies of the original and modified Licensed Work, and derivative works of
-the Licensed Work, are subject to this License. This License applies separately
-for each version of the Licensed Work and the Change Date may vary for each
-version of the Licensed Work released by Licensor.
+2.3 Headers, host integration code and samples. Copy, modify and compile the
+    header files, interface definitions, host integration source code and
+    sample code included in the Software, solely as needed to integrate the
+    Software into Your App, and distribute the result as part of Your App under
+    Section 2.2 or a commercial license.
 
-You must conspicuously display this License on each original or modified copy of
-the Licensed Work. If you receive the Licensed Work in original or modified form
-from a third party, the terms and conditions set forth in this License apply to
-your use of that work.
+2.4 Packaging. Strip, sign, compress and split the Software's binaries, and
+    place them in delivery modules or in storage You control, solely as needed
+    to deliver the Software into Your App. Delivering the Software into Your App
+    on demand -- for example through a Play Feature Delivery module, or from
+    storage You control on stores that offer no such mechanism -- is
+    distribution as part of Your App, provided that the endpoint serves only
+    the delivery of Your App and that You do not present the hosted file as an
+    SDK, a library or a general-purpose runtime download.
 
-Any use of the Licensed Work in violation of this License will automatically
-terminate your rights under this License for the current and all other versions
-of the Licensed Work.
+2.5 Mini-games. Develop, publish, distribute and sell mini-games that run on
+    the Software, whether authored by You or by third parties. Running
+    third-party mini-games inside Your App -- including operating a mini-game
+    platform within Your App and giving game developers tools and documentation
+    to target it -- is use within Your App, provided that the Software itself
+    stays embedded in Your App and is not provided to those developers.
 
-This License does not grant you any right in any trademark or logo of Licensor
-or its affiliates (provided that you may use a trademark or logo of Licensor as
-expressly required by this License).
+2.6 Benchmarks. Publish the results of benchmarks of the Software, provided
+    that You disclose the versions, devices and methodology used.
 
-TO THE EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSED WORK IS PROVIDED ON AN
-"AS IS" BASIS. LICENSOR HEREBY DISCLAIMS ALL WARRANTIES AND CONDITIONS, EXPRESS
-OR IMPLIED, INCLUDING (WITHOUT LIMITATION) WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, AND TITLE.
-
-MariaDB hereby grants you permission to use this License's text to license your
-works, and to refer to it using the trademark "Business Source License", as long
-as you comply with the Covenants of Licensor below.
+Any Production Use not covered by Section 2.2 requires a separate written
+commercial license from Licensor. Contact: licensing@minigame-labs.com.
 
 -------------------------------------------------------------------------------
-Covenants of Licensor
+3. Restrictions
 -------------------------------------------------------------------------------
 
-In consideration of the right to use this License's text and the "Business Source
-License" name and trademark, Licensor covenants to MariaDB, and to all other
-recipients of the licensed work to be provided by Licensor:
+Except as expressly permitted in Section 2, You may not, and may not permit
+anyone else to:
 
-1. To specify as the Change License the GPL Version 2.0 or any later version, or
-   a license that is compatible with GPL Version 2.0 or a later version, where
-   "compatible" means that software provided under the Change License can be
-   included in a program with software provided under GPL Version 2.0 or a later
-   version. Licensor may specify additional Change Licenses without limitation.
+  (a) use the Software for, or as part of, a Competitive Offering, regardless
+      of Your size;
+  (b) distribute, sell, lease, lend or sublicense the Software other than
+      embedded in Your App, or make it available so that it can be extracted,
+      reused or consumed by third parties as an SDK;
+  (c) reverse engineer, decompile or disassemble the Software, or attempt to
+      derive its source code, except to the extent that applicable law
+      expressly permits it notwithstanding this limitation;
+  (d) modify, translate or create derivative works of the Software's binaries,
+      other than as permitted in Section 2.4;
+  (e) remove, alter or obscure any copyright, license, trademark or
+      third-party notice in the Software; or
+  (f) circumvent any technical measure in the Software that controls its use.
 
-2. To either: (a) specify an additional grant of rights to use that does not
-   impose any additional restriction on the right granted in this License, as
-   the Additional Use Grant; or (b) insert the text "None".
+-------------------------------------------------------------------------------
+4. Third-Party Components
+-------------------------------------------------------------------------------
 
-3. To specify a Change Date.
+The Software includes third-party open-source components, listed with their
+licenses in the NOTICE file that accompanies it. Each such component is
+licensed to You under its own license. Nothing in this License restricts any
+right that the license of such a component grants You, and Section 3 does not
+apply to such a component to the extent it conflicts with that license.
 
-4. Not to modify this License in any other way.
+-------------------------------------------------------------------------------
+5. Versions Previously Published Under BSL 1.1
+-------------------------------------------------------------------------------
+
+Versions of the runtime up to and including v0.9.19 were published, in source
+and binary form, under the Business Source License 1.1, and the license file
+inside their release assets says so. Those versions remain under the Business
+Source License 1.1, and this License does not change the rights it grants in
+them. This License governs each later version that Licensor publishes with it.
+
+-------------------------------------------------------------------------------
+6. Ownership and Feedback
+-------------------------------------------------------------------------------
+
+The Software is licensed, not sold. Licensor and its licensors retain all
+right, title and interest in the Software, including all intellectual property
+rights. No rights are granted by implication or estoppel. If You give Licensor
+feedback or suggestions about the Software, Licensor may use them without
+obligation to You.
+
+-------------------------------------------------------------------------------
+7. Trademarks
+-------------------------------------------------------------------------------
+
+This License grants no right to use the name "Migo", the Migo logo or any other
+trademark of Licensor, except to state truthfully that Your App uses or is
+compatible with the Software. Trademark use is described further in LEGAL.md.
+
+-------------------------------------------------------------------------------
+8. Term and Termination
+-------------------------------------------------------------------------------
+
+This License is effective until terminated. It terminates automatically if You
+breach it. If the breach is curable and You cure it within thirty (30) days of
+Licensor's written notice, and it is the first time Licensor has sent You such
+a notice, Your rights are reinstated. On termination You must stop distributing
+the Software and Your App containing it. Licensor will not assert termination
+against End Users who obtained Your App before termination took effect.
+Sections 3, 4, 6, 9, 10 and 11 survive termination.
+
+-------------------------------------------------------------------------------
+9. Disclaimer of Warranty
+-------------------------------------------------------------------------------
+
+TO THE EXTENT PERMITTED BY APPLICABLE LAW, THE SOFTWARE IS PROVIDED "AS IS",
+WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING WITHOUT LIMITATION
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE,
+NON-INFRINGEMENT AND TITLE. YOU BEAR THE ENTIRE RISK AS TO THE QUALITY AND
+PERFORMANCE OF THE SOFTWARE.
+
+-------------------------------------------------------------------------------
+10. Limitation of Liability
+-------------------------------------------------------------------------------
+
+TO THE EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT WILL LICENSOR BE LIABLE
+FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL OR PUNITIVE DAMAGES, OR
+FOR LOSS OF PROFITS, REVENUE, DATA OR GOODWILL, ARISING OUT OF OR RELATING TO
+THIS LICENSE OR THE SOFTWARE, EVEN IF ADVISED OF THEIR POSSIBILITY. LICENSOR'S
+TOTAL LIABILITY UNDER THIS LICENSE WILL NOT EXCEED THE GREATER OF THE AMOUNT
+YOU PAID LICENSOR FOR THE SOFTWARE IN THE TWELVE (12) MONTHS BEFORE THE CLAIM
+AND USD 100.
+
+-------------------------------------------------------------------------------
+11. General
+-------------------------------------------------------------------------------
+
+11.1 Export. You must comply with all export control and sanctions laws that
+     apply to Your use and distribution of the Software.
+
+11.2 Governing law. This License is governed by the laws of the People's
+     Republic of China, excluding its conflict-of-laws rules. Disputes arising
+     out of or relating to this License are submitted to the competent
+     people's court at Licensor's domicile.
+
+11.3 Commercial licenses. Where You and Licensor have signed a commercial
+     license for the Software, that agreement governs wherever it differs from
+     this License.
+
+11.4 Versions of this License. Licensor may publish new versions of this
+     License. Each version of the Software is governed by the version of this
+     License that accompanies it.
+
+11.5 Severability. If any provision of this License is held unenforceable, it
+     will be enforced to the maximum extent permissible and the remaining
+     provisions remain in effect.
+
+11.6 Entire agreement. This License is the entire agreement between You and
+     Licensor regarding the Software, unless a commercial license applies under
+     Section 11.3.

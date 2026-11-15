@@ -1,0 +1,3590 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+- The Windows Host Kit reports the system's switches, so `getSystemSetting` says how they stand on Windows as it
+  does on the other platforms: Wi-Fi and Bluetooth as the machine's radios are (Windows.Devices.Radios -- on where a
+  radio of the kind is on, radios that come and go looked for again), the location service as the system's own
+  switch (the capability's access status: off where Windows denies location to every App). Told once the radios
+  are found and again when a switch changes; no consent prompt is raised for any of it. Before, a Windows App built
+  on the Host Kit read every switch as off.
+- The Windows Host Kit's previews play videos: previewMedia's videos play in the viewer by the Host Kit's video
+  players, with their posters and controls -- a local file held open and read through a stream, so the engine taking
+  back the file it lent cannot cut it short; a remote one streamed.
+- The Windows Host Kit's video players' controls, as content's options ask: a centre play button, a bar (play or
+  pause, the time, a progress bar, the length, full screen) that a click shows and hides and that hides again while
+  playing, a progress line, a double click that plays or pauses, a sideways drag that seeks. The buttons are the
+  system's, named as assistive technology reads them; with none asked for, a click on the video is the game's.
+- The Windows Host Kit's screen brightness: getScreenBrightness and setScreenBrightness for the screen the game is on --
+  an external monitor through DDC/CI, a laptop's panel through WMI -- off the GUI thread; a screen with neither says so.
+- The Windows Host Kit's video players: createVideo's players, each a window of its own over the game, played by Media
+  Foundation's media engine in frame-server mode on a Direct3D 11 device (WARP and the software decoders where there is
+  no GPU) and drawn with Direct2D into a flip-model swap chain at the compositor's beat -- the poster until it plays,
+  objectFit, the background, loop, mute, rate, full screen over the game's view, events and answers as content's
+  calls expect, holding still while the game does.
+- The Windows Host Kit's recorder: getRecorderManager through WASAPI's shared-mode capture of the default input (the
+  system converting to the rate asked), written as PCM, WAV or AAC through Media Foundation -- an MPEG-4 file, or an
+  ADTS stream cut into onFrameRecorded's frames -- one recording at a time on a thread of its own, its events and frames
+  reaching content in order.
+- The Windows Host Kit's gamepads: what Windows.Gaming.Input sees, announced as the view attaches and read while the
+  game runs -- an Xbox-class pad on the W3C standard layout (17 buttons, 4 axes, analog triggers) with dual and trigger
+  rumble, any other game controller as its driver gives it.
+- The Windows Host Kit's location service: getLocation and getFuzzyLocation from Windows' location service
+  (Windows.Devices.Geolocation), as its privacy settings let desktop Apps use it, and `scope.userLocation` decided by
+  the same settings.
+- The Windows Host Kit's image service: chooseImage, chooseMedia and chooseMessageFile through the system's open dialog
+  (on a thread of its own, modal to the App's window), what is picked copied -- images the engine draws as they are,
+  others written upright, videos described by Media Foundation with the shell's thumbnail as cover; compressImage
+  through WIC; saveImageToPhotosAlbum into the Pictures folder; saveFileToDisk through the save dialog; previews in a
+  Direct2D viewer, http(s) images downloaded first. `FileLocations` places the staging directory and the album.
+- The Windows Host Kit's Managed session opens a real text field for content's `showKeyboard` (the system's edit
+  control along the bottom of the game: one line or several, digits only for a number keyboard, the limit in UTF-16
+  code units), and reports the battery (power-setting notifications), the network (the Network List Manager's events
+  and the adapter's kind) and memory pressure (the system's low-memory notification) as Windows does, and what a
+  desktop App is not gated on as authorized.
+- The Windows Host Kit's interaction service: toasts and loading indicators as a card over the middle of the game,
+  drawn with Direct2D and DirectWrite on a layered window that takes no input (`mask` keeps the game's from it too);
+  modals and action sheets as dialogs of the system's controls, modal to the App's window without holding its message
+  loop -- the keyboard's dialog navigation comes through a thread message hook -- the buttons in Windows' order.
+- The Windows Host Kit's built-in host services (`migo::windows-builtin-host-services`), which the Managed session
+  answers what the App does not with: the system clipboard; the window (`setWindowSize`, its state reported,
+  `setCursor` from a CSS keyword or a cursor file, the pointer lock reported and a refusal said); the screen
+  (orientation is the game's shape, reported as it crosses and turned by `setDeviceOrientation`;
+  `setVisualEffectOnCapture` keeps the window out of captures; `setEnableDebug` shows a debugging panel with the frame
+  rate and content's console, taking no input); the scopes a desktop decides. The API platform matrix now reads the
+  Windows Host Kit as Windows' host layer.
+- The Windows Host Kit's Managed session (`migo::windows-managed-session`) and host-service channel
+  (`migo::windows-host-services`): one Session owned with its callback table, its view and its teardown -- engine
+  callbacks run on the GUI thread through a message-only window, content loads once the view attaches, the App's window
+  shown and not minimized is the game running, frame requests go to the view, `setKeepScreenOn` holds the display
+  awake -- and the App's own host services answered through a provider interface, with the JSON (strict RFC 8259)
+  their requests and answers are made of.
+- The Windows Host Kit begins (`platforms/windows/host-kit`), the Win32 counterpart of the Linux Host Kit:
+  `migo::windows-surface-host`, the Surface lifecycle controller for a child `HWND` with the Linux Host Kit's
+  contract, and `migo::win32-surface-view`, the game's view -- a child window attached once shown at a size, its
+  metrics in physical pixels at the window's DPI, the mouse as touch and pointer streams, the wheel, touch screens
+  and pens, keys named as the DOM names them, the IME's composition, focus, a pointer lock through raw input, and
+  frames paced by the desktop compositor. Built and run against a strict fake of the C ABI on Windows in PR CI
+  (`windows-host-kit`); the fake is shared with the Linux Host Kit's tests (`tests/host_kit_fake`).
+- `getRecorderManager` on Linux: the Host Kit's `migo::qt6-media` component records the desktop's default input
+  through GStreamer (PipeWire, PulseAudio or ALSA, as GStreamer finds it), at the rate and channels content asks for,
+  written as the Android and Apple SDKs write a recording -- PCM, wav, and AAC (`mp3` too) as an `.m4a` file or,
+  with frames, an ADTS stream whose bytes the frames are. A recording ends on the sample its duration ends on, a
+  paused one leaves no gap, and `onStart` waits until the input records. `MigoQtMicrophone` is the role a support
+  plays (`MigoQtMedia` plays it), `MigoManagedSession::Options::microphone` gives it to the Session and
+  `MigoQtBuiltInHostServices` takes it beside the videos; with it the built-in permission service grants
+  `scope.record`. `MigoQtHostServiceChannel::postRecorderFrame` delivers a recording's frames.
+- `createVideo` on Linux: the Host Kit's `migo::qt6-media` component plays content's videos over the game through
+  GStreamer, as the Android and Apple SDKs do. Each player is an X window inside the game's view -- kept above the
+  game's frames by the X server, cut to the view, moving, hiding and going with it, with no window manager involved
+  -- where content put it; it shows its poster until it plays, fits its picture as `objectFit` says, answers a play
+  once it plays and a seek once there, reports what it does as the other SDKs do, holds still while the game is
+  paused, and has the controls content asks for (the play button in the middle, the bar, the progress line, the
+  double click and the sideways drag), passing a click to the game where it has none. `MigoQtVideoSupport::players`
+  is how a video support makes them (`MigoQtVideoPlayers`); `MigoQtBuiltInHostServices` answers the video service
+  with them and `setRunning` holds them still, which `MigoManagedSession` calls as the window is minimized and
+  restored. An App without `migo::qt6-media` answers `createVideo` itself, as before.
+- On iOS a `chooseImage` or `chooseMedia` that allows the camera only (`sourceType: ["camera"]`) takes a photo or a
+  video with the system's camera screen, when the app links MigoAppleCamera: one photo as a JPEG, or -- when
+  content asked for videos only -- one video of at most `maxDuration` seconds (3 to 60, 10 unless said), on the
+  camera `camera` names, answered as a chosen file is. It failed "not supported"; it still does without the
+  product, and a call that allows the album is shown the album, as on Android. A video is recorded with its sound,
+  so the app must also declare `NSMicrophoneUsageDescription`; a photo needs only the camera's purpose string.
+  `MigoCameraCapturing` is the role a capability takes it through.
+- `createCamera` in the Apple SDK, on iOS: MigoAppleCamera opens the phone's cameras. A camera's preview is a
+  view of its own over the game where content put it (`x`, `y`, `width`, `height`, changed as content changes
+  them), covering that rectangle and taking no touches; `takePhoto` writes a JPEG and answers its size as shown;
+  `startRecord`/`stopRecord` answer the video and its cover, the video exported again at a size to send when
+  content asks for it compressed, with the app's sound only when the app may already use the microphone; `setZoom`
+  answers the zoom the camera took, from 1 to its largest, to a tenth; `onCameraFrame` is handed the newest frame,
+  upright as the preview shows it, read where it is handed over and copied nowhere on the way; `onStop` when the
+  system interrupts the camera. It decides `scope.camera` with the system's prompt, and a player's refusal reaches
+  content as `onAuthCancel` beside the failed `createCamera`. `MigoCapabilityReports.stage` is the view the game is
+  shown in, for a capability that shows something of its own over it (`MigoEngineSession` takes it as `stage:`).
+- `postCameraFrame` in the Apple SDK -- on `MigoEngineSession`, both game views and `MigoCapabilityReports`: one
+  frame of a camera content listens to, for a host's own camera service or a capability's, read into content's
+  RGBA in the call (`migo_session_post_camera_frame`).
+- `createCamera` reaches the host on iOS: the Performance+ producer sends the camera's nine requests to the
+  host's camera service, as commands answered through each method's result hook -- a refusal (`scope.camera` not
+  granted, no camera service) reaches that hook in the embedded op's words. A frame crosses when content takes it:
+  the host announces that a camera has one, and the engine takes the newest with `op_camera_take_frame`, answered
+  at once with the frame's size and its pixels, which cross once. The embedded runtime takes frames the same way
+  now -- the announcement carries no pixels, and the frame's allocation still becomes the `ArrayBuffer` content is
+  handed -- so both executions run one piece of engine JavaScript for it. While an announcement is in flight a
+  frame that arrives replaces the waiting one and announces nothing, so however fast a camera runs, frames queue
+  nowhere: not on the host's command queue, and not on the service stream.
+- The BLE peripheral in the Apple SDK: MigoAppleBluetooth answers `createBLEPeripheralServer` too, on iOS and
+  macOS. Services as content describes them (properties, permissions, the two descriptors the system serves and
+  an app's own), one advertisement of a device name and service UUIDs that replaces the one before -- the
+  reference says the same of iOS, and that manufacturer data cannot be set there; an advertisement as a beacon is
+  refused, the system making those in its location framework -- reads and writes reported to content with a
+  `callbackId` and answered when it writes the value (one it does not answer gets no response; the rest of a long
+  read is answered from the value it gave; a long write is reported whole, and a write to several characteristics
+  answered once all are), notifications queued while the system has no room, `onCharacteristicSubscribed` and
+  `Unsubscribed`. `onBLEPeripheralConnectionStateChanged` is inferred, the system reporting no connections to a
+  peripheral: connected at a central's first read, write or subscription, disconnected when its last subscription
+  ends. `openBluetoothAdapter({mode: "peripheral"})` opens the adapter as the reference has iOS do, instead of
+  being refused.
+- `MigoAppleMicrophone`, the Apple SDK's microphone capability, and with it `getRecorderManager` on iOS and macOS
+  without a recorder of the app's own: one recording at a time from the system's input, resampled to the rate and
+  channels content asked for and ended on the sample its `duration` ends on; `PCM` and `wav` as 16-bit samples,
+  `aac` -- and `mp3`, which the system cannot encode, as on Android -- as AAC in an MPEG-4 file, or as an ADTS
+  stream when content asked for frames, which are then the stream's bytes (`frameSize`, the last frame flagged);
+  `pause`/`resume`, `onInterruptionBegin`/`End` when the system takes the microphone, a microphone that changes
+  under a recording, the reference's `audioSource` on iOS. It decides `scope.record` with the system's prompt and
+  reports the microphone's grant to `getAppAuthorizeSetting`. Like MigoAppleLocation it is a product of its own:
+  an app links it, passes `MigoMicrophone()` among its game view's capabilities and declares
+  `NSMicrophoneUsageDescription`, which App Store review requires of any binary that uses the microphone.
+  `MigoCapabilityReports.postRecorderFrame` hands a capability's frames to content.
+- On iOS the process's audio session is lent to the host's recorder for each recording: from the recorder
+  service's START until the host reports that recording's STOP or ERROR (or the session ends) the engine applies
+  no category of its own -- a `setInnerAudioOption` meanwhile is kept and applied afterwards -- and then puts its
+  own back. The recorder sets the category it records with; the engine's binary still references none that
+  records, so an app that links no recorder owes no microphone purpose string.
+- `MigoAppleCamera`, the Apple SDK's camera capability, and with it `scanCode` on iOS: the SDK's own scanner, the
+  back camera's picture under a frame read by the camera's own code reading (`AVCaptureMetadataOutput`, limited to
+  the frame) and -- unless content asked for `onlyFromCamera` -- a picture from the photo library read by Vision. It
+  is answered as on Android (`result`, `scanType` by the reference's names, `charSet`, `path`, `rawData` in base64),
+  fails with `cancel` when the player closes it, and reports the camera's grant to `getAppAuthorizeSetting`. Like
+  MigoAppleLocation it is a product of its own: an app links it, passes `MigoCamera()` among its game view's
+  capabilities and declares `NSCameraUsageDescription`, which App Store review requires of any binary that uses the
+  camera. The scanner speaks English and Chinese; the SDK's package now declares a default localization for it.
+  `MigoSystemPresentation.present` is public, for a capability's own screen.
+- `createVideoDecoder` on iOS: the video decodes on the host, with AVFoundation's asset reader -- the decoder the
+  macOS V8 lane uses, now built for every Apple platform -- and the decoding the embedded ops run: one thread per
+  decoder, by presentation time or as fast as content takes frames, a bounded buffer, and the `start`, `seek`,
+  `stop`, `ended`, `bufferchange` and `error` events through the hook the embedded runtime calls. `getFrameData`,
+  `seek` and `stop` are answered at once and `start` once the source is a file the platform can open (a package file
+  is exported through the game's sandbox and held for the session, as embedded); a frame's pixels cross from the host
+  once, as its answer. Until now `start` failed as not supported there.
+- `GameSession.getPermissionSink()` (Android): the session's `PermissionSink`, the one `requestScope` is handed. The
+  `PermissionHandler` contract has always said to seed the session's standing scope decisions before the game starts
+  and to report a revocation made in system settings, but a host could reach a sink only inside `requestScope`: it
+  could seed nothing, and report a revocation only by keeping a sink from an earlier request. Decisions set before `startGame` are held until the session's permissions open and are the
+  ones the game starts with; a session closed before its game started keeps none of them.
+- `createVideo` on iOS and macOS without the app supplying players: the game views answer the video service themselves
+  (`MigoVideoPlayers`), each player an `AVPlayer` over the game where content put it, with its poster until it plays,
+  `objectFit`, `backgroundColor`, `autoplay`, `loop`, `muted`, `playbackRate` and `initialTime`, and the Android SDK's
+  controls as its options ask -- the bar, the progress line, the centre play button, the double-tap and drag gestures --
+  with the buttons labelled for VoiceOver. Calls settle once done and the events follow the C ABI's video service, as
+  the Android SDK's players do; full screen fills the screen, turned a quarter for a direction of 90 or -90 on iOS, and
+  fills the window on a Mac. Players hold still while the game is paused and play on after. A network poster is read
+  only up to 8 MiB. An app that answers the video service itself still does.
+- `MigoHostCallbacks.on_console` (C ABI): each line content writes to its console, at its level, in order with
+  everything else content does -- a line written before `exitMiniProgram` reaches the host before
+  `on_exit_requested` -- whether content runs in the engine or in an external-frame session. Until now a C ABI host
+  heard content's console only through the engine's own log or, with the debugging aids on,
+  `migo_session_copy_console_logs`. The Apple SDK delivers it as `MigoEngineSession.Event.console`, writes it to the
+  platform log (`dev.migo`, `content`), and the macOS `MigoGameView` gains the `.console` event the iOS one had.
+  A `switch` over the macOS view's events that names every case needs a `.console` case too.
+- `createVideo` on iOS (Performance+): the players are the host app's, as on every other platform (the video service,
+  `migo/host_services.h`). The producer makes a player, or changes what it plays, through the host's synchronous
+  endpoint -- answered at once, its `src` and `poster` exported through the game's sandbox as the embedded ops export
+  them, and refused in their words -- and plays, pauses, stops, seeks and goes full screen as commands the host
+  answers through each method's result hook. It was not offered on this lane at all.
+- `createBLEPeripheralServer` on iOS (Performance+): the device as a Bluetooth LE peripheral is the host app's, as on
+  every other platform (the ble_peripheral service). Each of the server's requests is a command the host makes the
+  embedded op's scope check and service call for, answered through the method's result hook; what centrals do
+  reaches content as the service's events.
+- `getRecorderManager` on iOS (Performance+): the microphone is the host app's, as on every other platform (the
+  recorder service). Starting, pausing, resuming and stopping are answered at once, as the embedded ops answer:
+  scope.record checked where they check it and a refusal thrown in their words, which is what has the player asked.
+  The frames the host records reach `onFrameRecorded` through the same host-bridge call the embedded runtime makes,
+  decided for both executions in one place (`input_route`). The Apple SDK hands an app's frames on with
+  `MigoGameView.postRecorderFrame`.
+- `getBatteryInfo` and `getBatteryInfoSync` on a Mac laptop: the Apple SDK reports the internal battery among IOKit's
+  power sources (its charge, and whether it is charging or full on the charger) and Low Power Mode from macOS 12, at
+  each change. A Mac without a battery still answers "not supported".
+- The Linux Host Kit's `MigoManagedSession` supplies the soft keyboard: content's `showKeyboard` opens a text field
+  along the bottom of the game, which holds the keyboard's focus while it shows and whose height content is told. Each
+  edit reports the whole text, Enter confirms a one-line field (closing it unless content asked to hold it), Esc or
+  turning away closes it with the text it was left with, a number keyboard takes digits, and an on-screen keyboard
+  that follows the focused field opens for it with the confirm key content named. It used to decline the capability,
+  so a game could not be typed into on Linux.
+- Videos in the Linux Host Kit's image service, through the optional `migo::qt6-media` component (GStreamer):
+  `chooseMedia` picks videos -- described by their length, their size as shown and their first frame as the cover --
+  and `previewMedia` plays them in the viewer, with their poster, sound and controls. An App opts in by building the
+  component and giving the Session a `MigoQtMedia`; without it, videos are refused as before.
+- `createVideoDecoder` on Linux, through GStreamer: loaded when the system has it, not linked, so a system without it
+  runs every game and only this API answers not supported. Frames come as RGBA converted as the stream's colorimetry
+  says, timed in the video's own time, and a seek lands on the frame shown at the position.
+- The Linux Host Kit reads the gamepads the kernel shows: `MigoManagedSession` finds the evdev joysticks through udev
+  as they come and go, maps a pad following the kernel's gamepad layout onto the W3C standard layout (17 buttons,
+  4 axes, analog triggers, the D-pad's hat) and passes others on as they are, plays `FF_RUMBLE` for
+  `vibrationActuator`, and stamps samples on the clock the view's input uses.
+- The Linux Host Kit hears iBeacons in the BLE advertisements BlueZ reports, on a scan of its own, for the proximity
+  UUIDs asked for, reporting those in range every second (dropped after ten seconds unheard) with the Android SDK's
+  distance estimate. A device scan for some services now reports only devices offering one, whoever else scans.
+- The Linux Host Kit answers Bluetooth as a BLE central through BlueZ: the adapter, scans filtered by service (devices
+  reported as heard, batched by `interval`, once each unless `allowDuplicatesKey`), the connected devices offering a
+  service, connections answered once their services are resolved, services, characteristics, reads, writes,
+  notifications and the MTU, with the common platform's codes; `scope.bluetooth` is granted. A connected device's RSSI,
+  pairing, setting the MTU, the peripheral mode and iBeacons are refused. `MigoQtHostServiceChannel` gains
+  `postBleCharacteristicValue`.
+- The Linux Host Kit reads the device's motion sensors: the accelerometer (in g), gyroscope (rad/s) and magnetometer the
+  kernel shows through IIO, found with libudev and turned into the screen's frame by udev's `ACCEL_MOUNT_MATRIX` or the
+  kernel's `mount_matrix` (a convertible's display accelerometer over its base's), read at the interval content asks
+  for on a thread of their own; the compass heading and the W3C device orientation are worked out from gravity and the
+  field as Android's `SensorManager` does. A sensor the device lacks is refused with what it lacks.
+  `MigoQtHostServiceChannel` gains `postSensorSample`; the Host Kit links libudev (`libudev-dev`).
+- The Linux Host Kit says where the device is and decides the scopes the desktop gates: `getLocation` and
+  `getFuzzyLocation` ask GeoClue on the system bus, or inside Flatpak or Snap the desktop portal's Location (street
+  level, exact with `isHighAccuracy`, city level for the fuzzy position; ten seconds, or `highAccuracyExpireTime`);
+  requests made meanwhile share one client, which stops once they are answered. `scope.userLocation` is GeoClue's to
+  decide -- its agent or the portal asking the player -- and is recorded with `migo_session_set_scope_state`;
+  `scope.writePhotosAlbum` is granted; any other scope is refused for the App to decide. `MigoQtHostServiceChannel`
+  gains `setScopeState`.
+- The Linux Host Kit previews images: `previewImage` and `previewMedia` show a viewer over the game, its window's size --
+  the images one at a time, fitted, from the one content asked for, Left and Right between them, Esc closing it. Each
+  image is held open before the call is answered, so nothing is copied; an http(s) one is downloaded over Qt's network
+  into a file removed as it is made. Videos in `previewMedia` are refused. `migo::qt6-host-services` now links
+  `Qt6::Network`.
+- The Linux Host Kit answers the image service: `compressImage` with Qt's image readers and writers (upright, its EXIF
+  orientation applied, decoded no larger than asked where the format can; a PNG stays a PNG, anything else becomes a
+  JPEG at the quality asked; at most 50 million pixels); `chooseImage`, `chooseMedia` (images) and `chooseMessageFile`
+  through the file dialog -- the desktop's, through its portal, wherever Qt finds one -- giving the game copies, with
+  what content cannot draw written as a PNG or a JPEG; `saveFileToDisk` through the dialog to save; and
+  `saveImageToPhotosAlbum` into the player's Pictures folder as `IMG_<milliseconds>.<suffix>`. A file the game is given
+  is staged in the App's cache until the engine takes it, and removed if it does not. The camera, videos in
+  `chooseMedia` and the previews are refused.
+- The Linux Host Kit passes on the desktop's memory warnings: `MigoManagedSession` hears low-memory-monitor's
+  `LowMemoryWarning` on the system bus, or inside a sandbox the desktop portal's `MemoryMonitor`, and posts each at
+  its level (50 moderate, 100 low, 255 critical) with `migo_session_post_memory_warning`. `tools/qt-host-example`
+  runs moc over the Host Kit's internal QObject headers too.
+- The Linux Host Kit reports the host's inputs a desktop already knows: `MigoManagedSession` tells the Session that
+  content runs while its window is shown and not minimized and shows while that window is also exposed
+  (`migo_session_set_lifecycle`, `migo_session_set_visibility`; only changes, as the game starts shown and running,
+  and a window not yet exposed is coming up, not covered), the Wi-Fi switch from NetworkManager
+  (`migo_session_set_system_settings`), and the App's authorisations -- outside a sandbox, all the system could gate;
+  inside Flatpak or Snap, not determined; location not determined (`migo_session_set_app_authorize_setting`).
+- The Linux Host Kit reports the battery and the network: `MigoManagedSession` reports UPower's display device (level,
+  charging) with power-profiles-daemon's saver as the low-power mode (`migo_session_set_battery_status`), and
+  NetworkManager's primary connection -- Wi-Fi and wired as Wi-Fi, a modem as unknown, none while disconnected --
+  with whether it reaches the internet by NetworkManager's connectivity check, or its state where the check is off
+  (`migo_session_set_network_status`), each time what it reports changes. A machine with no battery, or without
+  NetworkManager, reports none.
+- The Linux Host Kit keeps the display awake for content's `setKeepScreenOn`: `MigoManagedSession` installs
+  `on_keep_screen_on` and holds the desktop's idle off through the XDG desktop portal's `Inhibit` for the game's
+  window, or the freedesktop screen saver's where no portal answers, letting go when content stops asking or the
+  Session ends. `migo::qt6-managed-session` links `Qt6::DBus`; its test answers for both on a session bus of its own.
+- The Linux Host Kit answers the screen's brightness from the backlight: read where the kernel shows it
+  (`/sys/class/backlight`, the firmware's over the platform's over a raw one, as systemd and GNOME pick) and set
+  through logind's `Session.SetBrightness` over Qt's D-Bus, 0 its darkest and still lit; a screen with no backlight is
+  refused. `migo::qt6-host-services` now links `Qt6::DBus`; its test answers for logind on a session bus of its own
+  (`dbus-run-session`, package `dbus`). The Linux brightness gaps in `api-platform-decisions.json` are gone.
+- The Linux Host Kit answers the screen service: the screen's orientation is the game's shape, reported each time its
+  view crosses from one to the other, and `setDeviceOrientation` turns the window to it (refused while full screen, or
+  when the screen cannot hold the window turned); `setEnableDebug` is `MigoQtBuiltInHostServices::debugAidsRequested`,
+  which `MigoManagedSession` answers (`debugAids()`, `setDebugAids()`, `debugAidsChanged`) by reporting
+  `MIGO_HOST_APP_INFO_FLAG_DEBUG` and showing a panel over the game of the frames a second the view delivers
+  (`MigoQtX11SurfaceView::framesDelivered()`) and content's console. Screenshot and recording notices and
+  `setVisualEffectOnCapture` are recorded as not offered on Linux, which offers apps none of them; the backlight is a
+  recorded gap.
+- The Linux Host Kit holds a pointer lock: `MigoQtX11SurfaceView::lockPointer()` / `unlockPointer()` /
+  `isPointerLocked()` and `pointerLockChanged`, which the window service's `requestPointerLock` / `exitPointerLock`
+  now answer with. It is taken only with the player at the game -- the view holding the keyboard, the cursor over the
+  part of it that shows -- and refused, and said to be, otherwise. While it holds, the mouse is grabbed and the cursor
+  hidden, and XInput 2's raw motion on Qt's own xcb connection moves content's pointer from where the cursor stood,
+  past the view's edges too; Esc releases it (that Esc and its release are not the game's), as do the view losing
+  the keyboard and the game ending, and the cursor then stands where it stood. The Qt adapter now links
+  `xcb-xinput` (found through pkg-config); its xcb tests drive the X server through XTest (`libxtst-dev`). The
+  Linux gaps for `requestPointerLock` / `exitPointerLock` in `api-platform-decisions.json` are gone.
+- The Linux Host Kit answers the window service with Qt's own: `setWindowSize` (the game's size in pixels; the window
+  grows or shrinks by what the view must, and is not sized while full screen), `setCursor` (a CSS keyword as Qt's
+  cursor, or an image and its hotspot) and `onWindowStateChange` (minimize, maximize -- full screen included --
+  normalize, each change once). A pointer lock is refused, as a host may, until the Host Kit reads the mouse's raw
+  motion; `api-platform-decisions.json` records that gap. `MigoQtBuiltInHostServices` now takes the view and the
+  Session's host-service channel, which the window's events are reported through.
+- `MigoManagedSession::Options::appId`: who the App is, as content reads it (`getAppBaseInfo().host.appId`);
+  without it, the App's `QGuiApplication::desktopFileName()`.
+- `tests/qt_host/linux`: a whole App on the Linux Host Kit's Managed shape -- an engine, a window, a game with its
+  network policy and launch options -- built and run by `scripts/dev-run-qt-host.sh` (cargo drives the link, as for
+  the C host; `tools/qt-host-example` runs moc over the Host Kit's QObject headers). It is the host of
+  migo-conformance's Host Kit lane, the first to verify what the Linux platform's own host layer answers: the
+  clipboard, toasts, loading indicators, modals and action sheets pass there.
+- The Linux Host Kit answers the host services a desktop already offers: `migo::qt6-host-services`'s
+  `MigoQtBuiltInHostServices` answers the clipboard (`QClipboard`) and the game's toasts, loading indicators,
+  modals and action sheets (one indicator at a time, a mask that keeps the player's input from the game, a
+  window-modal dialog, a menu over the game), and `MigoManagedSession` installs it. `MigoManagedSession::Options`
+  carries what a Managed App could not give before: the network policy -- without one its game had no network,
+  and no way to be granted any -- the launch options, and the App's own services (`MigoQtHostServiceProvider`),
+  which take precedence over the built-in ones. A reply answers once, from any thread, and an answer that
+  arrives after the game has gone reaches nobody (`MigoQtHostServiceChannel`).
+- The developer docs say, for every API of the common mini-game platform and every platform Migo ships, who answers
+  it, whether conformance testing verified it there, and what a host provides for it: Host capabilities > API
+  platform support, in Chinese and English. The page is rendered when the docs are built, from
+  `contracts/runtime/api-platform-matrix.json`, the reasons in `api-platform-decisions.json` and each platform's
+  `api-conformance-<platform>.json`, so it says what the commit it was built from says and cannot fall behind it;
+  it also says how to check each verdict from the public repository.
+- `getNetworkType` answers with every field the reference names -- `signalStrength`, `hasSystemProxy`, `weakNet` with
+  `networkType` and `isConnected` -- on every platform. A C ABI host reports them in one record,
+  `migo_session_report_network` with `MigoNetworkReport` (flags `MIGO_NETWORK_FLAG_CONNECTED`, `_SYSTEM_PROXY`,
+  `_WEAK`, and the signal in dBm, 0 when unknown); `migo_session_set_network_status` is that report with the rest
+  unknown. The Apple SDK reports the system's proxy setting (and the Wi-Fi signal on a Mac). Content's listeners hear
+  only what changed for them: `onNetworkStatusChange` a change of the connection or its type, and
+  `onNetworkWeakChange` a change of the weak-network judgement -- every report reached the first, changed or not, and
+  a change of the judgement alone reached nobody.
+- C ABI hosts launch a game with options of their own: `MigoSessionConfig.launch_options_json_utf8` (appended) is the
+  object `getLaunchOptionsSync()` answers -- the scene, the query of the link that opened the game, who referred it --
+  and what content is shown with until a show carries options of its own; anything but a JSON object refuses the
+  session. A C ABI host had no way to give any, so every game it ran was launched in scene 1001 with an empty query.
+  `MigoGameView.Configuration.launchOptionsJSON` takes them on macOS and iOS, `RuntimeConfig.Builder.setLaunchOptions`
+  on Android, the headless player `--launch-options FILE`, and the C example hosts `MIGO_C_HOST_LAUNCH_OPTIONS` (Linux)
+  and `files/launch-options` (NativeActivity). The runtime is launched with them before content's first line, which
+  may read them; until now launch options existed only as the first show's, so a host that never showed the game
+  launched it with none. On Android a show carries options only when the activity's intent says how the game was
+  opened, rather than defaults that replaced the launch's.
+- `scripts/measure-session-churn.sh` measures what a session leaves behind when a host runs one game after another,
+  as a game centre does: the player's `--sessions N` runs the game N times in one process, shuts each session down and
+  joins it, and reports the C heap's live bytes and the resident set once glibc has handed back what it held free; the
+  script fits a line through each and fails above 3 kB and 256 kB a session, or when a session presents nothing. The
+  resident set on its own could not answer this -- glibc's arenas grew it from 160 to 467 MB over sixty sessions with
+  nothing left alive. It found the EGL library being reloaded every session; a session whose JS runtime is kept alive
+  reads 3.4 MB and 20 MB a session.
+- The headless player (`engine/tools/player`) takes `--prelude SCRIPT`, any number of times, and runs each in the global
+  scope before the game's entry, in the order given -- as an Android or Apple host injects an adapter. Content written
+  against `wx` or the browser could not run there at all: `migo-examples`' `wx-adapter-demo` stopped on
+  `ReferenceError: wx is not defined` and presented nothing; with the wx adapter bundle as a prelude it runs.
+- `scripts/prescreen-run.sh` takes `--adapter FILE` and `--record`: the host is handed the adapter the content is
+  written against and this checkout's compatibility recorder, and the run report calls each injected only when the
+  host's log names its sha256 -- a host that ignores the request is said to, rather than its absence being charged to
+  the bundle. `migo-examples`' debug-only `PrescreenProbeActivity`, which `PRESCREEN.md` sends a stranger to, reads
+  both; wx content through it no longer stops on `wx is not defined`.
+- `scripts/prescreen-game.sh` reads `game.json` and counts the plugins it declares, which the mini-game platform serves
+  to `requirePlugin(...)` and Migo cannot. A bundle that also calls `requirePlugin` does not start as built, and no name
+  scan saw it; one that only declares a plugin is told the declaration may be unused. Cocos Creator's "Separate Engine"
+  builds deliver their engine this way, and the report says to rebuild without it.
+- A compatibility report for one game: `scripts/compat-report.sh BUNDLE [--adapter FILE]...` runs it on the Linux
+  player with `tools/compat-recorder/recorder.js` injected behind the adapter, and writes Markdown and JSON saying
+  which `migo` and `wx` APIs it called, the names it looked for and did not find, the names it installed itself, the
+  WebGL extensions it asked for and the GL errors it saw, the time to the end of its entry and to its first frame, and
+  the errors the engine logged -- each API judged by this build's contracts for Android: who answers it (the engine,
+  the platform's host layer, or the host app's own integration), whether the conformance suite verified it, whether it
+  is deliberately not offered -- and the calls the host answered "not supported", judged for Android, the globals the
+  game needed that nothing defines, and a run in which the player presented nothing. The report says it is a partial view:
+  Linux has no device services, and the device run is the authority. The recorder is a prelude a host injects, never part of a shipped one; the game keeps the
+  arguments, identities, `new.target`, own properties, descriptors and absent names it has without it, and its
+  surface methods are called on the surface itself.
+- Android: `MigoGameActivity.onCreateRuntimeConfig()` can refuse a launch by throwing `LaunchRefusedException`
+  (an error code and a message), which reaches `onLaunchFailed` and starts nothing. It is documented as the place to
+  make sure the game's files are in place, and had no way to say they were not: returning null ran the game on a
+  default config. The exception is checked, so a subclass that refuses launches does not compile against an SDK
+  without it.
+- `request`, `downloadFile` and `uploadFile` answer `res.profile` (`enableProfile`, on by default): the phases of the
+  request in epoch milliseconds (invoke, queue, redirect, fetch, DNS, connect, TLS, request, response), the peer, whether
+  the connection was reused, the bytes each way, the protocol (`http1.1`, `h2`), the connection's RTT from the kernel
+  (`TCP_INFO` / `TCP_CONNECTION_INFO`), the transfer's throughput, and network estimates -- HTTP and transport RTT,
+  downstream throughput and the effective connection type -- kept by one estimator per process from every response it
+  completes. Each field keeps the reference's definition: a reused connection's DNS, connect and TLS phases are the fetch
+  start, a plain connection's TLS phase is 0, only same-host redirects are timed, an estimate with no sample is -1.
+- `contracts/runtime/minigame-api-spec.json`: every API of the common mini-game platform as its reference documents
+  it. For each API it records how it is called (options with callbacks, a listener, a value returned, an object made),
+  Promise support, the options it takes, the fields of its success result, return value or listener argument (with
+  their types), the scope it needs, and which of the reference's clients support it. It is generated from a local
+  mirror of the reference (`scripts/gen-minigame-api-spec.py`). `scripts/test-minigame-api-spec-contract.sh` checks
+  that it covers the platform's API list exactly, and that it is current where the mirror exists. It is what the
+  verification lane checks implementations against.
+- The iOS game view follows its size while a game runs. Laid out at another size (the interface turned, a scene
+  resized in Split View), it resizes the session's surface and hands the producer the new size and device. Content then
+  hears `onWindowResize` with what `getWindowInfo()` answers, and a main canvas content never sized follows, as on every
+  platform; the session used to keep its first layout's size. The producer receives the host's updates on a port of
+  their own (`MigoPerformancePlusHost.resize`) and adopts them before the engine's surface-change ingress runs.
+- `setDeviceOrientation` on iOS 16 and later: the scene is asked to turn to the shape content asks for, and the call
+  succeeds when the interface has turned. It fails when the view controller showing the game does not support that
+  orientation, and answers "not supported" on iOS 15. On Performance+ it travels the host-service channel like the
+  screen's other calls (service op 282); it was refused in the producer.
+- `setInnerAudioOption` and `getAvailableAudioSources` on iOS, macOS, Linux and Windows, answered by the engine: it
+  opens the process's audio output on those systems, so the settings that govern it are its own, and a C ABI host
+  provides nothing.
+  - iOS: the process's `AVAudioSession`, as before for the options. The inputs are `auto` plus `buildInMic` and
+    `headsetMic` as the session lists them.
+  - A desktop: one shared mixer, which none of the options can act on, so setting them succeeds. The input is the
+    system's default, as `auto`. It is read from the system's setting rather than the device, because asking a Mac's
+    input device for anything is microphone access: it waited 454 s on the privacy prompt in a process with no one to
+    answer it.
+  - Both executions take the settings from the platform's device services. The Performance+ host no longer keeps a
+    second source of its own.
+- The screen's orientation on Apple platforms. On macOS it is the game's shape: `onDeviceOrientationChange` fires when
+  the game's view crosses between taller and wider (the player dragging the window, the app's layout, or
+  `setDeviceOrientation`), and `setDeviceOrientation` turns the window to the shape asked for, exchanging the game's
+  width and height with the title bar where it was; it fails in full screen, or when the screen cannot hold the window
+  turned, without resizing anything. On iOS `onDeviceOrientationChange` reports the interface's orientation
+  (`landscape` with the Home side on the right, `landscapeReverse` on the left); `setDeviceOrientation` still answers
+  "not supported" there, as the iOS lane cannot resize a session while content runs. A host-service provider can now
+  answer one method of a service the SDK answers (`MigoHostServiceProvider.answers(_:)`), which is how the macOS game
+  view takes `setDeviceOrientation` from the SDK's screen service.
+- `setEnableDebug` on every platform, and the debugging aids it turns. A session's console is now recorded only while
+  the aids are on, and can be turned on while a game runs: every session has a console (allocated at its first line),
+  where only a session started with debugging on had one -- so Android's panel, turned on at runtime, showed nothing.
+  C ABI: the screen service's `SET_ENABLE_DEBUG` command `{"enableDebug"}` tells the host to show or hide its aids, and
+  `migo_session_copy_console_logs` reads what content wrote since a cursor for its panel; content reads the new state
+  at once (`getAppBaseInfo().enableDebug`), as Android's does. Apple: both game views show a panel over the game --
+  frames a second and the latest console lines, taking no touches -- while the aids are on, and `MigoEngineSession`
+  gains `debugAids`, `setDebugAids(_:)`, `consoleLogs(since:)` and `Event.debugAids`. On Performance+ the call and
+  `getAppBaseInfo` cross synchronously, so what the app says about itself -- the aids, the language, the text size --
+  is the host's latest report rather than a snapshot taken at start; the snapshot and `migo_session_copy_app_info`,
+  which carried it, are gone.
+- `getLocalIPAddress` answers on every platform: the engine reads the device's address on its local network and its
+  netmask from the system (`shared::device::local_address`) -- the active network's, as the routing table picks it,
+  so not a VPN tunnel, a container bridge or an idle cellular link that happens to be listed first; IPv4 where that
+  network has an IPv4 address, even when its only default route is IPv6 -- rather than asking a host. C ABI hosts (macOS, iOS, Linux, Windows, OpenHarmony) had no way to report it and every call failed as
+  not supported; Android's own lookup took the first IPv4 address of the first interface that was up, and answered an
+  empty success when there was none. A device on no network now fails the call. On Performance+ the host's process
+  reads it, synchronously.
+- Apple: `setEcosystemValue(_:json:)` on `MigoEngineSession` and both game views reports the value a synchronous
+  ecosystem getter answers with (`getExtConfigSync`, `isChatTool`, ...), which the C ABI took and the Swift SDK never
+  passed on, so those getters answered as for a host with none. A view keeps what was reported and gives it to each
+  game it runs, before the game's first line; `nil` withdraws a value.
+- iOS: on Performance+, whether the host app answers ecosystem calls and the values it reported for the synchronous
+  getters are read from the host synchronously, as the embedded ops read them, rather than answered "no ecosystem" by
+  the producer: getExtConfig(Sync), isChatTool, getExptInfoSync, the privacy APIs, createPageManager, createStoreGift
+  and the rest of the ecosystem reach the app on iOS.
+- iOS: a hardware keyboard, an iPad's mouse and trackpad, and the window service. The game view takes the keys when
+  the game starts and when touched, and sends each with its DOM `key` and `code` (UIKit's HID usages mapped by
+  position; a key pressed again before it came up is a repeat). The pointer's hover, presses, drag and release are the
+  mouse, in DOM button numbers, beside the touches iPadOS makes of primary clicks; scrolling is the wheel. The view
+  answers the window service itself: `setCursor` keywords are iPadOS pointer styles (an image, which iPadOS cannot
+  show, leaves the pointer as it was), the pointer lock is asked of the view controller showing the view -- it returns
+  the view's new `prefersPointerLocked` -- and taken when the scene reports it, the mouse's raw motion moving
+  content's pointer through GameController while it is held (the app's own mouse handlers kept and still called),
+  released by Esc or by the system; and the scene's state is reported (`maximize` filling the screen, `normalize`
+  beside another app, `minimize` in the background). Apps set `UIApplicationSupportsIndirectInputEvents`.
+- Apple: the DOM `key` of a key that types nothing, and of one that does, is one table both game views use
+  (`MigoKeyNames`). On the Mac a Control combination now reports the key's character rather than the control
+  character it typed (Control-A is "a"), the keypad's Clear key is "Clear", and the volume keys are named.
+- iOS: on Performance+, `setCursor` reaches the host's window service and answers whether it took the cursor, rather
+  than being refused by the producer. It crosses synchronously, as the embedded op answers, and the host shapes the
+  request as the embedded op does -- a CSS keyword by name, or one of content's images resolved through the game's
+  sandbox, a package entry copied out once for the session (`migo_services::cursor`, which both executions call).
+- iOS: the motion sensors -- `startAccelerometer`, `startGyroscope`, `startDeviceMotionListening` and `startCompass`
+  with their listeners -- read by CoreMotion as the SDK's own service (raw motion needs no purpose string), each at
+  content's interval, as typed sensor samples. The accelerometer reads the device's reaction to gravity in g (face up,
+  z = +1) and the gyroscope radians a second, on the device's axes. The orientation is the W3C DeviceOrientation
+  angles -- alpha [0, 360), beta [-180, 180), gamma [-90, 90) -- computed from the two vectors CoreMotion documents in
+  the device's frame, gravity and the calibrated magnetic field, so no attitude-matrix convention is assumed; the
+  compass is CoreMotion's heading from magnetic north with the field's calibration as its accuracy. One device-motion
+  stream serves both, referenced to magnetic north where there is a magnetometer.
+- iOS: iBeacons. `MigoLocation` ranges them with CoreLocation, under the location grant (asked for if the player has not
+  decided): `startBeaconDiscovery` ranges the proximity UUIDs it names in place of what was being ranged,
+  `onBeaconUpdate` hears every beacon in range as each ranging reports, `getBeacons` answers them, and
+  `onBeaconServiceChange` hears ranging start, stop or fail. A capability that ranges beacons (`MigoBeaconRanging`) is
+  handed the Bluetooth service's three beacon methods by the session -- and declares that service so they reach it --
+  while the rest of the service stays with `MigoBluetooth`; failures carry the common platform's codes 11000-11006
+  (`MigoBeaconError`). Content still holds `scope.bluetooth` for them, which the engine checks.
+- iOS: on Performance+, `getSetting`, `getAppAuthorizeSetting`, `getSystemSetting` and the authorization and switch
+  fields of `getSystemInfoSync` read the host's last report, as the embedded ops do, rather than failing or answering
+  defaults: each changes during a session -- a prompt answered, a setting changed and come back from -- so they are
+  asked of the host synchronously, as the network type is. `getSetting`'s composition (a decided scope only) is one
+  function both executions answer with.
+- iOS: content on Performance+ reaches the host app's services that take content's files -- `compressImage`,
+  `previewImage`, `previewMedia`, `saveImageToPhotosAlbum`, `saveFileToDisk`, `shareAppMessage`,
+  `shareMessageToFriend`, `showShareImageMenu`, a menu share's reply and the ecosystem's group shares. The host resolves
+  every path content names through the game's sandbox into a file the app can open, copying a package entry out where
+  it has no file of its own, before the app is asked -- the same export the embedded ops make, now one implementation
+  for both executions (`migo_services::host_paths`, with which fields of each request are files). These are awaited
+  requests, as their embedded ops are: a scope not granted, a missing service or a path that is not content's file
+  fails content's call in the embedded op's words. Ads reach the host app's ad integration the same way (whether it has
+  one is asked once, and each ad's lifecycle is a command), and `checkIsSupportMidasPayment` asks the app's store. The
+  embedded ad ops are now one function each rather than macro-stamped, so the producer's conversions of their
+  arguments are checked against their signatures.
+- iOS: content on Performance+ reaches the host app's services. The host-service channel's methods that the embedded
+  runtime answers with one scope check and one device-service call -- toasts, modals, loading and action sheets, the
+  clipboard, location, the screen's brightness and capture state, code scanning, the motion sensors, the image, media
+  and file pickers, login and the account, permission requests and the settings pages, Bluetooth and beacons,
+  payment, the share menu, mini-program navigation, the window's pointer lock and size, applying a package update --
+  cross from WebContent as commands under their ops' own numbers, and the host makes the same scope check, from the
+  same table (now in `shared::services`, for both executions), and the same call. What the host app answers reaches
+  content through the hook the embedded runtime calls, and so does a refusal -- a scope not granted, a service no one
+  supplies, a request the service turns down -- so content's call fails as it does in process instead of waiting out
+  its timeout. The motion sensors' readings and Bluetooth's reports (the adapter, found devices, connections,
+  characteristic values with their bytes, the MTU, beacons) reach content as typed events, routed for both executions
+  by one table, and whether the host offers package updates is asked of it. The external session now owns the mounted
+  content's `/tmp` as the embedded one does -- emptied at mount, removed at the end -- which is where the pickers' files
+  land. The staging generator checks that the host reads each channel op in the shape of the op's Rust signature.
+- Apple: `MigoAppleBluetooth`, an optional capability: a BLE central through CoreBluetooth -- the adapter and its
+  state, scanning with found devices reported at content's interval (their manufacturer segment, services, service
+  data and local name), the connected devices, connections answered once their services and characteristics are
+  known (with timeouts and the common platform's error codes), reads arriving as typed characteristic values, writes
+  with and without response, notifications, RSSI and the write MTU -- the Bluetooth grant, the Bluetooth switch (read
+  only once the app may use Bluetooth, since making a central asks the player), and `scope.bluetooth` decided by the
+  system's prompt. Capabilities can now post their services' events and BLE characteristic values. Pairing, asking
+  whether a device is paired and setting the MTU are decided unsupported on iOS and macOS (the platform documents
+  them for Android only); iBeacon APIs are unsupported on macOS, which ranges none, and a gap on iOS until the location
+  capability ranges them.
+- macOS: `createVideoDecoder` decodes with AVFoundation's asset reader in the engine -- its decoders, VideoToolbox's
+  hardware where there is one, and its colour handling -- each BGRA frame becoming straight RGBA. A reader reads only
+  forward, so a seek starts a new one two seconds before the position and continues from the frame shown there,
+  stepping further back when it started past the last frame. The API x platform matrix now reads an engine-side
+  accessor compiled for some operating systems only (`#[cfg(target_os = ...)]` in the C ABI's services) as provided on
+  those, and its gate proves one moved to another system turns it red. The video-decoder probe (renamed from the
+  Android one) runs through the macOS headless host too, whose fixtures now carry every file beside `game.js`.
+- Android: `createVideoDecoder` decodes on the device's own codec. The NDK's media extractor and codec run in the
+  engine, the codec rendering into an image reader of YUV_420_888 -- the one output every decoder supports, whatever
+  its buffer layout -- whose planes become straight RGBA through their strides, in the matrix and range the codec
+  reports (BT.601 below 720 lines and BT.709 from there, limited range, for a stream that says nothing). Rendered
+  images are matched to their buffers by timestamp, so none from before a seek's flush is taken for one after it, and
+  a seek continues from the frame shown at that position. A local file is opened by the engine and lent to the
+  extractor as a descriptor; an http(s) URL is opened by the extractor. `scripts/test-android-video-decoder.sh`
+  checks it on a device or emulator against a clip of known frames.
+- Apple: game controllers as content's gamepads on both lanes (`getGamepads`, `onGamepadConnected` /
+  `onGamepadDisconnected`). Each pad with an extended profile is announced in the lowest free slot once the session
+  has a surface, in the standard layout (17 buttons, 4 axes, up negative), sampled whenever an element changes, and
+  withdrawn when it goes; its motors play `vibrationActuator` effects through CoreHaptics -- the strong effect on the
+  left handle and the weak on the right where there are two, the larger on a single motor, and trigger rumble where
+  the triggers have motors. The session installs `on_gamepad_rumble`, which a pad with motors needs.
+- Apple: `MigoApplePhotos`, an optional capability: `saveImageToPhotosAlbum` through PhotoKit, asking only to add to
+  the library; the photo-library grant (`albumAuthorized`, a limited library counting as authorized); and
+  `scope.writePhotosAlbum` decided by the system's prompt, refused without one when the app declares no
+  `NSPhotoLibraryAddUsageDescription`. The SDK's image service hands it that one method through the
+  `MigoPhotoLibrarySaving` role, keeping the rest of the service its own.
+- Apple: `previewImage` and `previewMedia` in QuickLook when the app does not name the image service -- full screen
+  on iOS, a window with a step control on a Mac -- from the item content asked for. Each item is the host's own copy
+  first (a clone on APFS), an http(s) URL downloaded with no referrer, so the viewer outlives the call that lent the
+  files; the call is answered once the viewer shows, and the copies go when it closes.
+- Apple: the image service, answered by the system when the app does not name it. `compressImage` re-encodes with
+  ImageIO (decoded no larger than the target, orientation applied, a PNG kept a PNG and anything else a JPEG, at most
+  50 megapixels as on Android); `chooseImage` and `chooseMedia` show PHPicker on iOS -- which needs no access to the
+  library and no purpose string -- and the open panel on a Mac; `chooseMessageFile` the document picker or the open
+  panel, filtered by kind and extension; `saveFileToDisk` the save panel on a Mac. Picked files are copied into the
+  host's staging directory before the engine takes them, an image content cannot draw becomes a JPEG, and a video is
+  described with its duration, displayed size and a cover frame. A call that allows only the camera is refused until
+  the camera capability exists; previews and saving to the photo library are recorded as gaps in the matrix.
+- Apple: the settings pages, answered by the system when the app does not name the setting service:
+  `openAppAuthorizeSetting` opens this app's page in the system's settings (Settings on iOS, Privacy & Security on a
+  Mac), as does `openSetting` while the SDK decides content's scopes through a linked capability. Each is answered
+  when the player comes back, after the capabilities report what the player changed, so the `authSetting` content
+  reads is the one left. `openSystemBluetoothSetting` is decided unsupported on iOS and macOS: the platform documents
+  it for Android only, and iOS offers apps no link to its Bluetooth settings.
+- Apple: optional capabilities, one product per privacy-sensitive part of the system, so an app links -- and declares
+  a purpose string for -- only what it uses (`MigoSystemCapability`, handed to either game view's
+  `Configuration.capabilities`). The first is `MigoAppleLocation`: `getLocation` / `getFuzzyLocation` from
+  CoreLocation (a high-accuracy call given 3 s or more waits it out for the best fix; a fuzzy one reads a
+  reduced-accuracy manager), the location grant and the location services switch, and `scope.userLocation` decided
+  by the system's prompt -- refused without one when the app declares no purpose. A capability answers its services
+  behind the app's own and decides its scopes only while the app answers no permission service. An app that does
+  answer it records its decisions with the game views' new `setScopeState(_:_:)`, which until now it had no way to
+  do. Each reporter now owns its own fields of the grants and switches the session reports.
+- macOS: the accelerometer, gyroscope, device-motion and compass APIs are decided unsupported in the API x platform
+  matrix, with the reason: a Mac has no motion sensors or magnetometer an app can read -- CoreMotion's motion manager
+  is unavailable on macOS and CoreLocation reports no heading there. Content feature-detects them, as on any device
+  without the sensor.
+- Apple: the SDK reports the Wi-Fi switch (`getSystemSetting().wifiEnabled`; on a Mac CoreWLAN's power state, on iOS
+  whether the network path has a Wi-Fi interface, since iOS offers no read of the switch) and the notification grants
+  (`getAppAuthorizeSetting()`'s `notification*` fields), read again whenever the app comes back to the front. The
+  core SDK does not read grants behind a purpose string -- location, camera, microphone, photo library, Bluetooth,
+  calendars -- so it never makes an app declare a purpose it does not have; they read "not determined".
+- macOS: the game view answers the window service when the app does not name it. `setWindowSize` sizes the window
+  so the game's view gets the size asked for (pixels), its title bar kept in place; `setCursor` maps the CSS keywords
+  to the system's cursors (macOS 15's resize and zoom cursors where present; the arrow where macOS has none) or takes
+  an image file with its hotspot; `onWindowStateChange` reports minimized, maximized (zoomed or full screen) and
+  normal; `requestPointerLock` freezes and hides the cursor and keeps reporting mouse positions that accumulate the
+  raw motion, granted only while the window is key and the cursor over the game, and released by Esc, the window
+  losing key, or the game ending. Right- and middle-button drags now report pointer moves too.
+- Apple: the screen service, answered by the system when the app does not name it. iOS: `getScreenBrightness` /
+  `setScreenBrightness`, `onUserCaptureScreen` (the screenshot notice), `getScreenRecordingState` and
+  `onScreenRecordingStateChanged` (`UIScreen.isCaptured`), and `onDeviceOrientationChange` (`landscape` with the home
+  side to the right, `landscapeReverse`, `portrait`). macOS: `setVisualEffectOnCapture('hidden')` keeps the game's
+  window out of screenshots, recordings and screen sharing. The rest is decided unsupported with the platform's
+  reason -- a Mac has no public brightness control, device orientation, screenshot notice or recording state, and iOS
+  no public way to hide content from a capture.
+- Apple: the system's dialogs and indicators answer the interaction service when the app does not name it -- a toast
+  or a loading indicator over the game (one at a time; `hideToast` hides only a toast, a toast hides itself after its
+  duration, `mask` holds touches back), `showModal` as an alert (an editable one with an input, its text the answer's
+  `content`) and `showActionSheet` as an alert sheet on a Mac or an action sheet on iOS, a dismissed one failing with
+  `cancel`.
+- Apple: the Swift SDK answers the host services the system already offers itself, for every service the app does not
+  name -- first the pasteboard (`setClipboardData` / `getClipboardData`). The session declares the app's services and
+  the SDK's; a service the app names is the app's. The API x platform matrix counts a service the Swift SDK answers
+  itself (`MigoBuiltInHostServices`) as provided on Apple.
+- Apple: the host-service channel in the Swift SDK. `MigoGameView.Configuration.hostServices` takes a
+  `MigoHostServiceProvider` that names the services the app supplies and answers each `MigoHostServiceRequest` through
+  its `MigoHostServiceReply` -- once, now or later; a reply dropped unanswered fails the call -- and
+  `postHostServiceEvent` sends a service's events to the game. The service, method and event numbers
+  (`MigoHostServiceID.Clipboard.getClipboardData` and the rest) are generated from the contract by
+  `scripts/gen-swift-host-services.py`, and `scripts/test-host-services-contract.sh` holds them to it.
+  `scripts/test-macos-game-view.sh` proves a game reaching an app's services through the product surface.
+- `createVideoDecoder` runs on the engine: a platform supplies only its decoding (`VideoDecoderService` -- open a
+  source, decode the next frame as RGBA, seek), and the engine runs it on a thread per decoder, paced by the frames'
+  presentation times (`mode: 0`) or decoding up to three frames ahead of content (`mode: 1`), with `start` (with the
+  size), `seek`, `stop`, `ended` and `bufferchange` events and `start` / `seek` / `stop` / `remove` promises.
+  `getFrameData()` hands over the decoded buffer as the frame's `ArrayBuffer`, without a copy. The platform decoders
+  follow per platform; where none is integrated yet, `start()` fails as not supported -- every method was a no-op, so
+  content waiting for a frame waited forever.
+- `saveFileToDisk` saves a file of content's where the player chooses, through the host's save dialog: the image
+  service's `MIGO_IMAGE_SAVE_FILE_TO_DISK` (7) is handed the real path resolved from the sandbox -- never a path
+  outside it, never a remote URL -- and a player who cancels fails the call. It threw `Not Supported` on every
+  platform; the platform documents it for desktops, and Android, iOS and OpenHarmony still answer not supported.
+- `migo_session_post_memory_warning(session, level)`: a C ABI host reports the system's memory warnings at the
+  platform's three levels (`MIGO_MEMORY_WARNING_MODERATE` / `LOW` / `CRITICAL`, 5 / 10 / 15). The engine releases a
+  share of its caches for the level and then tells content (`onMemoryWarning`, `{level}`), on Performance+ too. The
+  Apple hosts report it: an iOS memory warning as critical, macOS memory pressure as low or critical.
+- Android: `NavigationHandler.navigateBackMiniProgram(extraData)` takes the player back to the mini program that opened
+  this one; `migo.navigateBackMiniProgram` settles on its answer, as it does on the C ABI channel.
+- Package updates are the host's: a new host service, `MIGO_HOST_SERVICE_UPDATE` (18), reports each step as
+  `MIGO_UPDATE_EVENT_STATE` -- `{"event":"checkForUpdate","hasUpdate"}` for the check the host makes on every start,
+  then `{"event":"updateReady"}` or `{"event":"updateFailed"}` -- and carries content's `applyUpdate` back as
+  `MIGO_UPDATE_APPLY_UPDATE`. Android: `GameSession.setUpdateHandler` (`UpdateHandler.applyUpdate`) with
+  `reportUpdateCheck`, `reportUpdateReady` and `reportUpdateFailed`. `getUpdateManager()` keeps each step, so a
+  listener registered after it still hears it, and asks for the restart only once the host said the version is
+  ready; a host that offers no updates has none, and content is told so at once.
+- `createPageManager` opens the host platform's pages: a manager's `load` and `show` (`openlink`, `query`, `extraData`)
+  are requests to the host's ecosystem (`PageManager.load`, `PageManager.show`, `PageManager.destroy`), each carrying
+  the manager's own `pageId`, and the page's events (`PageManager.on`, `{"pageId","eventName","data"}`) reach that
+  manager's `on(eventName)` listeners only. Failures carry the platform's codes: -1 with no openlink, -3 with no host,
+  -5 after `destroy`.
+- The host reports its own cover advert -- the one it shows as the game launches -- as it changes: an ad event with no
+  `adId`, `{"event":"splashStatus","status","code"}` (C ABI), or `GameSession.reportSplashAdStatus` (Android).
+  `getShowSplashAdStatus` answers the last report.
+- What the host says about itself and the content it runs. C ABI: `migo_session_set_host_app_info` reports a
+  `MigoHostAppInfo` -- the host app's id, its interface language (BCP 47), its text scale, its own score and tier for
+  the device, whether its debugging aids are on -- at start and whenever it changes; `MigoContentDescriptor` names the
+  content's build (`environment`, the field that was `reserved0`, `MIGO_CONTENT_ENVIRONMENT_*`, zero a release) and
+  its released `version_utf8` (appended). Android: `RuntimeConfig.Builder.setContentEnvironment`, `setContentVersion` and
+  `setDeviceBenchmark`, with the app's package name, locale and font scale read from its configuration. The Apple
+  hosts report the bundle identifier, the app's locale and, on iOS, the text size the person chose.
+- Gamepad haptics: every pad in `getGamepads()` has the standard `vibrationActuator` -- `effects`, `playEffect`
+  (`dual-rumble`, `trigger-rumble`; `startDelay`, `duration`, the four magnitudes) resolving `complete` or `preempted`,
+  and `reset`. The engine times each effect (at most 5 s, delay included) and preempts it for the next effect, for
+  `reset`, when the game goes to the background or when the pad leaves; the host only sets motors. C ABI:
+  `MigoGamepadInfo.haptics` (the reserved field, so existing hosts announce pads without motors) declares the
+  `MIGO_GAMEPAD_HAPTICS_*` a pad plays, and the appended `MigoHostCallbacks.on_gamepad_rumble` receives a
+  `MigoGamepadRumble` -- magnitudes and a duration, replacing what the pad plays. Android drives a pad's vibrators
+  (`VibratorManager` from Android 12, strong and weak motors on their own channels) and stops them when the session
+  ends.
+- The API x platform matrix, `contracts/runtime/api-platform-matrix.json`: every API of the common mini-game platform
+  (382, `contracts/runtime/minigame-api.json`) on Android, iOS, macOS, Linux, Windows and OpenHarmony, as engine,
+  default (the platform's host layer provides it), host (a host interface with no default yet), missing or
+  unsupported, with what each API needs from a host. Generated, not written: the runtime calls every API and records
+  the ops it dispatches and the host services it asks for (`minigame-api-reach.json`), each platform's host layer is
+  read for what it installs and feeds, and only what cannot be measured is decided, with a reason
+  (`api-platform-decisions.json`). `scripts/test-api-platform-matrix-contract.sh` regenerates it and fails on any
+  difference.
+- The native buttons are drawn. `createUserInfoButton`, `createOpenSettingButton`, `createGameClubButton` and
+  `createFeedbackButton` show their background, rounded corners, border, text (`color`, `fontSize`, `textAlign`,
+  `lineHeight`) or picture -- a game-club button without one shows a neutral mark in the tone `icon` names -- above the
+  game on every platform, Performance+ included. The engine draws them into a canvas of its own the size of the
+  buttons' box and composites it over the window when it presents (wire record `SET_OVERLAY`, 578), so nothing that
+  reads the content's canvas -- `getImageData`, `readPixels`, a screenshot of the game -- sees them. Writing a button's
+  `style`, `text`, `image`, `type` or `icon` repaints it in the next frame, whether or not the game is running a loop.
+  A mouse press on a button is the button's from press to release, and so is the pointer over it; a button taps once
+  when the last press on it lifts on it, so a click a host delivers as both a mouse press and a touch taps once.
+- `canvas.toTempFilePath` and `canvas.toTempFilePathSync`: a region of any canvas (`x`, `y`, `width`, `height`, the
+  whole canvas by default) as a PNG or JPEG file (`fileType`, `quality`) of `destWidth` x `destHeight`, in the game's
+  temporary directory -- the region copied exactly and then scaled by the renderer, so nothing past its edge reaches
+  the file. The callback form writes the file off the engine's thread and, as on the common platform, has no promise
+  form. A share with no image of content's own -- `shareAppMessage`, or the menu's "share" when the game gives none
+  or does not answer -- now carries the screen: the top 5:4 of the frame the player sees, taken at the end of the next
+  frame before it is presented, so a WebGL game whose drawing buffer is not preserved is captured too.
+- Android keyboards and gamepads. A physical keyboard's keys reach `onKeyDown` / `onKeyUp` as DOM `key` / `code` with
+  modifiers and `repeat` (system keys stay Android's), and gamepads appear in `getGamepads()` on the standard mapping
+  with `onGamepadConnected` / `onGamepadDisconnected` -- sticks past the device's dead zone, analogue triggers, a hat
+  switch as the d-pad. `GameSession.dispatchKeyEvent`; `setInputView` now also takes the view's key listener.
+- Android on desktop-form devices: the mouse reaches `onMouseMove` / `onMouseDown` / `onMouseUp` / `onWheel` (hover,
+  every button, the wheel in lines), `setCursor` sets the view's `PointerIcon`, pointer lock is pointer capture with
+  relative motion accumulated into positions, and `onWindowStateChange` reports maximize / normalize from the window's
+  metrics (Android 11+). `GameSession.setInputView`, `dispatchGenericMotionEvent` and `onPointerCaptureChanged`;
+  `MigoGameView` and `MigoGameActivity` wire them. Screenshots are heard through Android 14's
+  `registerScreenCaptureCallback` (Full declares the install-time `DETECT_SCREEN_CAPTURE`), where a MediaStore query
+  sees no other app's images from Android 13 on.
+- `createOpenSettingButton`. `UserCryptoManager.getRandomValues` answers from the OS's cryptographically secure
+  random source (up to 1048576 bytes).
+- The share menu on every host. After each `showShareMenu` / `hideShareMenu` / `updateShareMenu` the host receives the
+  menu's whole state (C ABI `MIGO_SHARE_SET_SHARE_MENU`, Android `ShareHandler.onShareMenuChanged`); when the player
+  picks "share", "share to moments" or "add to favorites" the host asks the game (`MIGO_SHARE_EVENT_MENU_SHARE`,
+  `GameSession.requestMenuShare`) and the `onShareAppMessage` / `onShareTimeline` / `onAddToFavorites` listener's
+  answer comes back once (`MIGO_SHARE_MENU_SHARE_REPLY`, `MenuShareCallback`) -- an `onShareAppMessage` promise waited
+  on for up to three seconds, images resolved through the sandbox, null when nothing answers. A mini game's share items
+  start hidden.
+- `createAdSkipCard`, through the ad service as ad type `skipCard`: `load()` fetches the offer and `show()` opens the
+  host's purchase sheet; `onClose` carries `result` (`close` / `pay_cancel` / `pay_success`) and `onUse` the passes
+  spent today. Android's `AdEventSink` gains `emitSkipCardClose` and `emitUse`. Without a host, `load()` and `show()`
+  fail with the platform's -1001 and -1002. An advert's `show` event now also reaches `onShow` listeners.
+- The objects of the host's ecosystem, through the same channel: `getGameServerManager` (frame sync: rooms, matching,
+  frames, state service and its twelve events), `getRankManager` (challenges; a challenge the player accepted before the
+  game listened reaches its first `onChallengeStart` listener), `getMiniReportManager`, `getScenePerformanceManager`
+  (the common info is merged into every `setData`, the scene's own fields winning) and `createStoreGift`
+  (`isSupported` reads a value the host reports; without a host `open` fails with -1005). An object's members cross as
+  `Class.member` -- `UserCryptoManager.getLatestUserKey` too -- and report as the member (`createRoom:ok`); the frame
+  service's methods return their promise whether or not content passed callbacks, and binary frame actions cross as
+  hex. Value names take the same `Class.member` form on both SDKs.
+- `shareMessageToFriend` and `showShareImageMenu` on every host: the C ABI share service gains
+  `MIGO_SHARE_SHARE_MESSAGE_TO_FRIEND` and `MIGO_SHARE_SHOW_SHARE_IMAGE_MENU`, and the Android `ShareHandler` gains
+  `shareMessageToFriend(FriendShareRequest, ShareSink)` and `showShareImageMenu(ImageShareRequest, ShareSink)`.
+  `shareAppMessage` carries `toCurrentGroup` and `path`.
+- The host's own ecosystem, on every host: `MIGO_HOST_SERVICE_ECOSYSTEM` on the C ABI and `EcosystemHandler` on
+  Android (`GameSession.setEcosystemHandler`, `postEcosystemEvent`, `setEcosystemValue`). 68 APIs -- groups and friends,
+  open-data cloud and interactive storage, gifts, live channels, voice chat, handoff, chat tools, facial verification,
+  background fetch, subscription messages, privacy agreements and the rest -- cross as one request keyed by the content
+  API's name, from a closed list the host-service contract names (`ecosystem.names`) and the gate holds to the runtime.
+  Eleven events (`onCopyUrl`, `onHandoff`, `onNeedPrivacyAuthorization`, `onVoIPChat*`, ...) are posted by the host;
+  those content answers come back through `MIGO_ECOSYSTEM_REPLY`, every one finally with `done`. `getExtConfigSync`,
+  `getExptInfoSync`, `getOfficialComponentsInfo` and `isChatTool` read what the host reported through
+  `migo_session_set_ecosystem_value`. A file a request names (`shareImageToGroup`'s `imagePath`, ...) reaches the host
+  as the real file behind its sandbox path. With no host to ask, the APIs with a true answer give it --
+  `getPrivacySetting` needs no authorization, `getExtConfig` is empty, `checkIsAddedToMyMiniProgram` is not added --
+  and every other one fails as not supported. The common platform's API that updates its own app is `updateHostApp`
+  here, named for what it does; an adapter maps the platform's name onto it.
+- The desktop window: `setCursor`, `requestPointerLock` / `exitPointerLock` / `isPointerLocked`, `setWindowSize` and
+  `onWindowStateChange` / `offWindowStateChange`, through `MIGO_HOST_SERVICE_WINDOW` on any C ABI host with a window.
+  `setCursor` takes a CSS cursor keyword or an image path resolved through the sandbox; while the pointer is locked a
+  host keeps reporting positions that accumulate the motion, so `onMouseMove`'s `movementX` / `movementY` keep coming.
+  Where there is no window (mobile), `setCursor` answers `false` and pointer lock does nothing, as on the common
+  mini-game platform's mobile clients.
+- `createPath2D`.
+- Bluetooth on every C ABI host: `MIGO_HOST_SERVICE_BLUETOOTH` carries the adapter, scanning, pairing, iBeacons and BLE
+  GATT as 22 calls and six events, with the common mini-game platform's Bluetooth codes as each failure's `errCode`;
+  characteristic values arrive through the typed `migo_session_post_ble_characteristic_value`
+  (`MigoBleCharacteristicValue`).
+- Motion sensors and the screen on every C ABI host. `MIGO_HOST_SERVICE_MOTION` starts and stops the accelerometer,
+  gyroscope, compass and device-motion sensors, whose readings arrive through the typed
+  `migo_session_post_sensor_sample` (`MigoSensorSample`) rather than as JSON; `MIGO_HOST_SERVICE_SCREEN` carries
+  brightness, `setDeviceOrientation`, screenshot and screen-recording observation and the device-orientation event.
+- `getScreenRecordingState`, `onScreenRecordingStateChanged` / `offScreenRecordingStateChanged` and
+  `setVisualEffectOnCapture`. On Android the recording state is read from Android 15 on (the Full profile declares the
+  install-time `DETECT_SCREEN_RECORDING`), and `hidden` keeps the game out of captures with `FLAG_SECURE`.
+- `chooseMedia`, and the image APIs on every C ABI host: `MIGO_HOST_SERVICE_IMAGE` carries `saveImageToPhotosAlbum`,
+  `previewImage`, `previewMedia`, `compressImage`, `chooseImage`, `chooseMessageFile` and `chooseMedia` as calls. A
+  path content names reaches the host as the real file behind its sandbox path; a file a result names is handed over
+  and moved into the session's `/tmp`, so content receives a path its own file APIs read and a host path never reaches
+  JavaScript (contract field `files`).
+- C ABI host-service channel: native UI, the clipboard, code scanning and location. `MIGO_HOST_SERVICE_INTERACTION`
+  carries `showToast` / `hideToast` / `showLoading` / `hideLoading` as commands and `showModal` / `showActionSheet` as
+  calls; `MIGO_HOST_SERVICE_CLIPBOARD`, `MIGO_HOST_SERVICE_SCAN_CODE` and `MIGO_HOST_SERVICE_LOCATION` (still gated on
+  `scope.userLocation`) carry the rest. `showModal` takes `editable` and `placeholderText` and answers with the typed
+  `content`, on Android too.
+- The engine reads the content's own `game.json`: its `subpackages` (or `subPackages`) and its `workers` directory,
+  through the same verified mount the game is served from, on every platform and both executions. Only the Android SDK
+  could declare them before -- its host app repeated them in a `RuntimeConfig` -- so on Apple, Linux, Windows and
+  OpenHarmony every `loadSubpackage` was "subpackage not configured", and Performance+ answered an empty list whatever
+  the package said. A `game.json` that is not valid refuses the launch rather than being half-read.
+- C ABI host-service channel: subpackages, permission and the settings pages. `MIGO_HOST_SERVICE_SUBPACKAGE` carries
+  `loadSubpackage` / `preDownloadSubpackage` downloads, with progress reported through the new
+  `migo_session_update_host_service_call` and the downloaded zip's path kept by the engine for the install, never handed
+  to content. `MIGO_HOST_SERVICE_PERMISSION` carries `authorize`, and the host records its standing decision per scope
+  with `migo_session_set_scope_state` -- what `getSetting` reports and every gated capability is checked against, so a
+  revocation takes effect on the next call. `MIGO_HOST_SERVICE_SETTING` carries `openSetting`,
+  `openSystemBluetoothSetting` and `openAppAuthorizeSetting`. `migo_session_set_system_settings` and
+  `migo_session_set_app_authorize_setting` report what `getSystemSetting` and `getAppAuthorizeSetting` describe; on a C
+  ABI host `getSystemSetting` used to throw, and now answers with the reported switches and the attached window's
+  orientation.
+- C ABI: the host-service channel (`include/migo/host_services.h`). Ads, payment, sign-in, sharing and mini-program
+  navigation are the host app's own integrations, and until now only Android could carry them (through the Java SDK's
+  handlers): every C ABI platform -- Apple, Linux, Windows, OpenHarmony -- answered content's `login`,
+  `requestMidasPayment`, `shareAppMessage`, `navigateToMiniProgram` and every advert with "not supported". A host now
+  declares the services it supplies in `MigoHostCallbacks.host_services` (one bit per `MIGO_HOST_SERVICE_*`) and installs
+  `on_host_service_call`; content's request arrives as a service, a method and its options as a JSON object; a call is
+  completed exactly once, from any thread, with `migo_session_complete_host_service_call`, and an advert's own events
+  (load, close with `isEnded`, resize) are reported with `migo_session_post_host_service_event`. A success
+  reaches content as `<api>:ok` with the host's fields; a failure carries the host's reason, which content composes into
+  `<api>:fail <reason>` from the API it actually called (one method can serve several: a subpackage download is both
+  `loadSubpackage` and `preDownloadSubpackage`), with the code in `errno` or `errCode` as that API has it. Content's
+  settlers now all compose that way, idempotently, so a host that already sends a whole `errMsg` -- as Android's
+  handlers do -- is read the same. The host never handles content's callback ids: a call id carries its own route,
+  so a host that never answers costs nothing to track. A service the host does not declare is never called. The numbers
+  are append-only and defined once, in `contracts/runtime/host-services.json`; `scripts/test-host-services-contract.sh`
+  holds the header and the library's constants to it in both directions, and the macOS archive gate now runs
+  `headless-host-services-probe`, which checks every result content receives from a fixed fake backend through the
+  shipping archive.
+- Performance+: `migo.createWorker` works. Content already runs as a Dedicated Worker in this lane, and WebKit offers
+  no nested-Worker constructor inside one (confirmed on-device, iPhone 12 / iOS 17.0.3: `typeof Worker ===
+  "undefined"` there); the page that constructed the content worker in the first place does not have that gap, so
+  content's five worker ops now cross a dedicated `MessagePort` to it instead of a Rust op, and the page constructs
+  the real classic Worker (`worker-nested-bootstrap.js?script=<path>`), giving it `self.postMessage` / `self.onmessage`
+  over a small shim shaped like `02_worker_inner.js`'s `worker.postMessage` / `worker.onMessage`. One worker at a
+  time, JSON-message round-tripping, `terminate()` quiet and restart-right-after-terminate all match the in-process
+  lane's own contract exactly -- the same `worker-spec` conformance bundle that was five known failures on this lane
+  now passes all of it. Not yet carried over: the in-process lane's worker-side `connectSocket` / `createInnerAudioContext`
+  / `downloadFile` / `getFileSystemManager` / `request` / `uploadFile` -- those would need the nested worker proxied
+  through to the host's own services, which this change does not add.
+- Canvas 2D: `reset()`, `isContextLost()` and `getContextAttributes()`. `reset()` puts the context back to its default
+  state -- the bitmap transparent black, the state stack and every clip gone, every attribute and the transform at its
+  default, the current path empty -- without the surface being made again, which is what assigning the canvas's size
+  costs and a context reset every frame would otherwise pay every frame. `isContextLost()` answers the GPU's lost state,
+  which a 2D canvas shares with every other context. `getContextAttributes()` answers what `getContext("2d", settings)`
+  was given: sRGB, 8 bits a channel, alpha, never desynchronized, and the `willReadFrequently` hint as it was asked for.
+  `getContext("2d", settings)`'s dictionary is read as WebIDL reads a dictionary: `undefined` and `null` are the empty
+  one, any other non-object value is a TypeError, and `colorSpace` / `colorType` refuse a value outside their enums.
+- WebGL: `KHR_parallel_shader_compile`, where the driver compiles and links in parallel (`GL_KHR_parallel_shader_compile`):
+  COMPLETION_STATUS_KHR of a shader or program is asked of the renderer without waiting for the compile or link -- the
+  renderer's deferred link read stays queued -- and is kept once true, or once LINK_STATUS was read, so polling content
+  (three.js, Babylon) keeps its frames while shaders build. True for one never compiled or linked and on a lost context;
+  INVALID_ENUM and null before the extension is enabled.
+- WebGL 1: `OES_texture_float` and `OES_texture_half_float` -- FLOAT and HALF_FLOAT_OES uploads of each unsized format,
+  held as ES 3.0's 32- and 16-bit float formats, luminance and alpha through a swizzle so they sample as (l, l, l, 1)
+  and (0, 0, 0, a) -- with `OES_texture_half_float_linear`, and `WEBGL_color_buffer_float` and
+  `EXT_color_buffer_half_float` enabled with them where the renderer renders to floats, as browsers enable them: RGBA
+  float attachments and RGBA32F_EXT / RGBA16F_EXT renderbuffers, read as FLOAT, HALF_FLOAT_OES or the implementation's
+  pair and never as bytes, blended into as EXT_float_blend has it. `WEBGL_depth_texture`: DEPTH_COMPONENT and
+  DEPTH_STENCIL images of TEXTURE_2D's level 0 made without data, never sub-uploaded, copied or mipmapped, sampled as
+  luminance through any filter (the driver is given NEAREST, the filtering ES 3.0 has for depth). `EXT_sRGB`: sRGB
+  textures, attachments and SRGB8_ALPHA8 renderbuffers. `EXT_blend_minmax`, `OES_fbo_render_mipmap`, and
+  `OES_standard_derivatives`, `EXT_shader_texture_lod` and `EXT_frag_depth` where the driver compiles them. Each adds
+  nothing before it is enabled: its formats, types, renderbuffer formats, attachment queries (COMPONENT_TYPE,
+  COLOR_ENCODING), equations, hint and levels are refused as a browser refuses them.
+- WebGL: `OES_texture_float_linear`, where the driver filters 32-bit float textures. Without it such a texture is
+  incomplete -- sampled as (0, 0, 0, 1) -- while a filter of it is not NEAREST, as WebGL specifies: the driver
+  underneath filtered it regardless wherever it could. The filters judged are those of the sampler bound to the unit
+  where WebGL 2 has one, else the texture's; the image judged is the base level's; every texture target is judged,
+  as WebGL 1's rule for textures whose size is not a power of two now is too. With the extension and
+  EXT_color_buffer_float, a 32-bit float texture may be mipmapped.
+- WebGL: `EXT_texture_filter_anisotropic`, where the driver filters anisotropically: TEXTURE_MAX_ANISOTROPY_EXT on a
+  texture or a sampler, from 1 to MAX_TEXTURE_MAX_ANISOTROPY_EXT (INVALID_VALUE outside it, INVALID_ENUM before the
+  extension is enabled). `WEBGL_debug_renderer_info`, whose UNMASKED_VENDOR_WEBGL and UNMASKED_RENDERER_WEBGL are the
+  driver's strings, answered whether or not it is enabled, as browsers now answer them; VENDOR and RENDERER are a
+  browser's masked "WebKit" and "WebKit WebGL". WebGL 2's `EXT_color_buffer_half_float`, where the driver renders to
+  the 16-bit float formats: R16F, RG16F and RGBA16F become colour-renderable, and EXT_color_buffer_float's other
+  formats do not.
+- WebGL 2: `EXT_color_buffer_float`, offered where the renderer's driver renders to float colour buffers (ES 3.2, or
+  `GL_EXT_color_buffer_float`). Enabled, R16F, RG16F, RGBA16F, R32F, RG32F, RGBA32F and R11F_G11F_B10F are
+  colour-renderable: a framebuffer with such an attachment is complete, a renderbuffer and a copy may have such a
+  format, and a 16-bit float or R11F_G11F_B10F texture may be mipmapped. three.js's half-float render targets -- PMREM
+  environment maps among them -- rely on it; without it, the framebuffer completeness the facade now judges refused
+  them. The renderer's WebGL capabilities reach the facade as one bitfield, `op_webgl_query_gpu_caps` (bit 2
+  for float colour buffers), on both lanes.
+- Performance+: `readPixels` reads the pair the call names -- RGBA/FLOAT from a float colour buffer, RGBA_INTEGER from
+  an integer one, the driver's own IMPLEMENTATION_COLOR_READ pair -- as the in-process runtime does; it read
+  RGBA/UNSIGNED_BYTE only and refused every other pair as INVALID_OPERATION, so a float or integer framebuffer could not
+  be read at all. The synchronous readback's reply is sized by the pair (`frame_wire::sync::readback_bytes_per_pixel`,
+  the one table both lanes size reads by; the producer's copy is held to it pair by pair).
+- WebGL: `WEBGL_compressed_texture_etc1`, with an object of its own carrying `COMPRESSED_RGB_ETC1_WEBGL`. The name used
+  to answer with the ETC2/EAC object, so content asking for ETC1 found ten other formats and not its own, and an ETC1
+  upload was INVALID_ENUM. Its blocks are uploaded as ETC2 RGB8, which decodes every ETC1 block to the same texels and
+  which every GLES 3.0 driver has. An ETC1 image is a 2D one defined whole, by `compressedTexImage2D` or 2D immutable
+  storage; a sub-image upload, a 3D call or 3D storage of it is INVALID_OPERATION, as a browser has it.
+- Canvas 2D: `ImageData`, `TextMetrics` and `CanvasPattern` are interfaces, and globals. `new ImageData(sw, sh,
+  settings)` and `new ImageData(data, sw, sh, settings)` construct as the specification has them -- PixiJS's extract
+  and Egret's render textures call it, and three.js's `image instanceof ImageData` threw while the name was missing --
+  and `createImageData`, `getImageData` and every `ImageData` the engine makes (the snapshot and text-cache readbacks
+  included) are instances. `putImageData` takes an `ImageData` and nothing that only looks like one; the three methods
+  convert their numbers as `[EnforceRange] long` (a non-finite or out-of-range one is a TypeError, where it was
+  truncated) and require their arguments. `ImageDataSettings.colorSpace` is read: an `ImageData` in Display P3 is
+  converted from and to the canvas's sRGB through the primaries, as Chrome converts it. `measureText` answers a
+  read-only `TextMetrics`, a new one each call over cached numbers -- it was a plain object the cache handed out again,
+  so a write to one changed every later measurement of that text. `new CanvasGradient()`, `new CanvasPattern()` and
+  `new TextMetrics()` are TypeErrors, and the four interfaces' members are enumerable on their prototypes.
+- Canvas 2D: `Path2D`, `roundRect`, and `isPointInPath` / `isPointInStroke`. A `Path2D` is built by the `CanvasPath`
+  calls, from another path, or from SVG path data (every command, relative and implicit forms, reflected control
+  points and arcs, read up to the command holding the first error), and `addPath` adds another under a
+  `DOMMatrix2DInit`. `fill`, `stroke` and `clip` take one, resolved as WebIDL resolves their overloads; a fill rule that
+  is not `nonzero` or `evenodd` is now the TypeError a browser raises rather than nonzero. The path travels with each
+  use as the segments its calls made, is drawn through the transform current at the use, and leaves the current
+  default path alone; one longer than a stream buffer goes by op behind a flush. `roundRect` converts its radii -- a
+  number, a point, or a list of one to four -- and checks them in the specification's order, and the renderer scales
+  radii that would overlap and mirrors a negative size. The hit tests are answered by the renderer, which holds the
+  path, the transform and the line styles, after everything recorded before them: points on an edge are inside, a
+  stroke's outline is traced under the line width, caps, joins and dashes, and a singular transform answers false.
+  They were stubs that answered false, `roundRect` threw, and `fill(path)` filled the current default path. On
+  Performance+ the records are new in the 2D block (573 to 576) and the hit test is synchronous operation 14, whose
+  body is bounded by the longest path a record carries rather than the 4096 bytes of a fixed-argument call.
+- WebGL 2: `texImage2D` and `texSubImage2D` from an offset into the bound PIXEL_UNPACK_BUFFER (`..., format, type,
+  offset)`). The number used to be a TypeError, as WebGL 1 has it. The four `tex*Image*` uploads now name one source
+  -- the call's bytes or the buffer from an offset -- in the command, the ops and the Performance+ records alike, and
+  the renderer hands the driver the offset only with a buffer bound. Refused before anything is sent, in a browser's
+  order: no buffer bound, or UNPACK_FLIP_Y_WEBGL / UNPACK_PREMULTIPLY_ALPHA_WEBGL set, is INVALID_OPERATION before
+  the other arguments are judged; then a negative offset is INVALID_VALUE, and an offset past 2^31 - 1, not a multiple
+  of the type's size or reading past the buffer is INVALID_OPERATION.
+- WebGL 2: `getBufferSubData`. The bound buffer's bytes, read into a range of the destination view (`dstOffset` and
+  `length` in its elements), after the GPU work that writes them -- a copy, transform feedback, a `readPixels` into a
+  pack buffer, which is how three.js reads render targets back asynchronously. The renderer maps the range for reading
+  (GLES has no glGetBufferSubData); the embedded op copies the bytes straight into the destination, and the
+  Performance+ lane asks for them through the new synchronous operation 13, in parts of at most one reply (16 MiB)
+  each. Everything the specification refuses is refused before anything is asked, against the buffer state the facade
+  keeps: no buffer bound or transform feedback active on its target (INVALID_OPERATION), a negative offset or a range
+  past the view or the buffer (INVALID_VALUE).
+- Canvas: `toDataURL(type, quality)` on every canvas, 2D and WebGL. It writes a PNG, or a baseline JPEG for
+  `image/jpeg` (`quality` in [0, 1], default 0.92); any other type is answered with a PNG, an empty canvas with
+  `data:,`, and a canvas that was never given a context is a transparent image. The encoders are JavaScript
+  in the engine's own web layer, so the embedded runtime and the iOS Performance+ producer run one
+  implementation and no native encoder is linked in. A WebGL canvas is read from its drawing buffer, right
+  way up, with alpha un-premultiplied unless the context asked for premultiplied. PNG is written as RGB
+  when nothing is transparent, with per-row filters and LZ77 matching; JPEG is 4:4:4 with Huffman tables
+  built for the image. `scripts/test-canvas-image-encode.sh` decodes what they write (PNG through Node's
+  inflate, JPEG through a decoder that shares no code with the encoder) and is a CI step.
+- WebGL: `vertexAttrib{1,2,3,4}f`, `vertexAttrib{1,2,3,4}fv`, `getVertexAttrib` and `getVertexAttribOffset` on WebGL 1 and 2,
+  and `vertexAttribI4i`, `vertexAttribI4iv`, `vertexAttribI4ui`, `vertexAttribI4uiv`, `vertexAttribIPointer` and
+  `isVertexArray` on WebGL 2. They were `TypeError: not a function`: three.js writes the default value of an attribute a
+  geometry lacks (a `ShaderMaterial` with `defaultAttributeValues`) with `vertexAttrib*fv`, and engines read an
+  attribute's array state back with `getVertexAttrib`. All four arities of the constant-value call cross as one record
+  (the components a call leaves out are 0, 0, 0, 1), the integer forms as two, and the integer pointer as a fourth; the
+  render side keeps `vertexAttribPointer` and `vertexAttribIPointer` apart when it skips a repeated call. The queries are
+  answered from a per-vertex-array-object shadow of what the calls set. A list that is too short is INVALID_VALUE and
+  changes nothing; an integer pointer with FLOAT is INVALID_ENUM. Opcodes 59..62 (the GL block's fixed range is now
+  1..=62); in the embedded runtime, the Performance+ producer and the frame decoder alike.
+- WebGL 2: `uniform{1,2,3,4}ui`, `uniform{1,2,3,4}uiv` and the non-square matrices `uniformMatrix{2x3,2x4,3x2,3x4,4x2,4x3}fv`.
+  They were `TypeError: not a function`; an engine that uploads an unsigned-integer uniform (a `uvec` / `uint` the shader
+  takes, an instance or bone index) or a `mat3x4` skinning palette had no way to do it. The unsigned vectors cross as
+  records of their own with the words kept unsigned (a value above 2^31 is not negative), the matrices keep their
+  `transpose` flag, and a list is taken with WebGL 2's `srcOffset` / `srcLength`. A list that is empty, not a whole
+  number of elements, or shorter than `srcOffset` / `srcLength` ask for is INVALID_VALUE and sends nothing; a value
+  that is not a list is a `TypeError`. Opcodes 267..=276 (the variable block is now 256..=276), in the embedded
+  runtime, the Performance+ producer (including its decode-budget estimate) and the frame decoder alike.
+- WebGL 2: `clearBufferfv`, `clearBufferiv`, `clearBufferuiv`, `clearBufferfi` and `drawRangeElements`. They were
+  `TypeError: not a function`; three.js, Babylon.js and PlayCanvas clear a render target with an integer colour format
+  with `clearBufferuiv` / `clearBufferiv` (`clear` writes floats, which an integer buffer cannot take), and PlayCanvas
+  clears each colour attachment of a multiple-render-target framebuffer by its draw buffer. Each clear crosses as one
+  fixed record (opcodes 63..=66; the GL block's fixed range is now 1..=66) with its values typed as the call types
+  them, and it honours the scissor and the write masks as `clear` does; on the shown canvas it damages what the
+  `clear` of the same buffers would (COLOR in draw buffer 0 only). A buffer the call does not take is INVALID_ENUM, a
+  draw buffer that is negative, at or past `MAX_DRAW_BUFFERS` for COLOR, or other than 0 for DEPTH / STENCIL /
+  DEPTH_STENCIL is INVALID_VALUE, and so is a list with fewer elements than the buffer needs after `srcOffset`; a value
+  that is not a list is a `TypeError`, raised before any of them. `drawRangeElements` draws what `drawElements` does
+  (its range is a hint), and an `end` below `start` is INVALID_VALUE. In the embedded runtime, the Performance+ producer
+  and the frame decoder alike. Not yet: INVALID_OPERATION for a clear whose type does not match the draw buffer's
+  format (an integer buffer cleared with `clearBufferfv`), which needs the facade to know each attachment's format;
+  until then such a clear is what the driver makes of it (OpenGL ES leaves it undefined).
+- WebGL: `copyTexImage2D` and `copyTexSubImage2D` (WebGL 1 and 2), and WebGL 2's `copyTexSubImage3D`,
+  `copyBufferSubData`, `framebufferTextureLayer` and `invalidateSubFramebuffer`. They were `TypeError: not a function`:
+  three.js copies the framebuffer into a texture for its transmission pass every frame, and renders into the layers of
+  array textures. The copies are fixed records of the GL block (opcodes 67..=70; its fixed range is now 1..=70) -- only
+  their arguments cross, the GPU reads the read framebuffer or the buffer -- and `copyTexImage2D` charges the level it
+  defines to the GPU budget as `texImage2D` does. `framebufferTextureLayer` and `invalidateSubFramebuffer` are ops in
+  process and records 175 and 206 of the resource block on the Performance+ lane, with the layer answered back by
+  `getFramebufferAttachmentParameter(..., FRAMEBUFFER_ATTACHMENT_TEXTURE_LAYER)`. A target or format a call does not
+  take is INVALID_ENUM (a depth or stencil format for `copyTexImage2D` INVALID_OPERATION; WebGL 1 takes only the five
+  unsized formats), a negative level, offset, size or layer, a nonzero border and a cube face that is not square
+  INVALID_VALUE; `copyBufferSubData` converts its offsets and size as WebIDL's `long long` and refuses one past 2^31,
+  which no buffer reaches, rather than wrapping it into range.
+- WebGL 2: `compressedTexImage3D`, `compressedTexSubImage3D`, `waitSync` and `isSync`, and WebGL 2's overloads of
+  `compressedTexImage2D` / `compressedTexSubImage2D`. A compressed upload now takes either a view -- its elements from
+  `srcOffset`, `srcLengthOverride` of them unless that is 0, counted in the view's own element size -- or an
+  `imageSize` / `offset` pair naming a range of the bound PIXEL_UNPACK_BUFFER; the 2D records carry that range too
+  (resource records 198/199 grew two words, 207/208 are new). glow takes `glCompressedTexImage2D/3D`'s data only as a
+  slice, so for the buffer form the renderer resolves those two entry points once and passes the offset where GL reads
+  it. A view range past its end, a negative `imageSize` and a buffer offset that is negative or past 2^31 are
+  INVALID_VALUE. A compressed 3D level is charged to the GPU budget at its image size. `fenceSync` returns a real
+  `WebGLSync` object: `isSync` answers for it, `deleteSync` marks it, and `waitSync` / `clientWaitSync` on a deleted one
+  are INVALID_OPERATION; `waitSync` takes only flags 0 and `TIMEOUT_IGNORED` (INVALID_VALUE otherwise) and a value that
+  is not a `WebGLSync` is a TypeError. Resource record 176 on the Performance+ lane.
+- WebGL: `getAttachedShaders`, `detachShader`, `validateProgram` and `sampleCoverage`, and WebGL 2's `isSampler`,
+  `getSamplerParameter`, `getIndexedParameter` and `getSyncParameter`. The queries answer from what the calls did, as
+  `getVertexAttrib` does, so none crosses: what a program has attached (ATTACHED_SHADERS too -- a cached count used to
+  go stale on the next attach), what `samplerParameter*` set (from ES 3.0's initial values), what `bindBufferBase` /
+  `bindBufferRange` bound (uniform buffers on the context, transform feedback buffers on the bound transform feedback
+  object, a deleted buffer unbound from both), and a fence's type, condition and flags (its status is a poll of the
+  fence, as `clientWaitSync` answers). To keep those answers true the calls refuse what GL would: attaching a shader
+  already attached or of a type already attached, detaching one that is not, a deleted program, shader or sampler
+  (INVALID_OPERATION); a sampler parameter it does not have or a value it does not take (INVALID_ENUM; an enum set
+  through `samplerParameterf` takes the nearest integer); an indexed binding point past the maximum and a uniform
+  buffer offset off UNIFORM_BUFFER_OFFSET_ALIGNMENT (INVALID_VALUE -- the driver's error would not have reached
+  `getError`). `createShader` of a type that is not one is INVALID_ENUM and null, where it returned a shader the
+  render side had silently dropped. Samplers are `WebGLSampler` objects. `sampleCoverage` is GL record 71;
+  `detachShader` and `validateProgram` are resource records 177 and 178, and `validateProgram` drops the cached
+  VALIDATE_STATUS. The render side keeps its list of attached shaders (the shader-cache key at link time) in step
+  with a detach.
+- WebGL: `getUniform`, and WebGL 2's `getFragDataLocation`. Each asks the driver through the generic state query
+  (`frame_wire::sync::gl_state` 7 and 8; `program_state.rs` answers), so nothing new crosses on either lane. A
+  uniform's value is typed as WebGL types it -- a number or a boolean for a scalar, a Float32Array, Int32Array,
+  Uint32Array or Array of booleans for a vector or a matrix -- and a float crosses as its bits, so it is the float
+  the uniform holds (NaN and the infinities included). A uniform location now belongs to its program and the name
+  it was looked up by until the program links again: `getUniform` with another program's location, or one from before
+  a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
+
+### Changed
+- `scanCode` on Android opens the SDK's own scanner instead of handing the scan to a ZXing-compatible scanner app,
+  which few phones have (none on a Mate 30), so it failed with `no scanner app available` almost everywhere. The
+  scanner reads the back camera's picture under a frame -- a code across the frame is read as it comes, a bar code in
+  either direction -- and, unless content asked for `onlyFromCamera`, a picture from the album; it is answered with
+  the code's `result`, `scanType`, `charSet` and `rawData` in base64, and fails with `cancel` when the player backs
+  out. It uses the camera where the app declares and is granted `android.permission.CAMERA` (asking the system the
+  first time), and the album otherwise; content hears only the code, never the camera's picture, so no
+  `scope.camera` is asked for. Decoding is ZXing's core library (Apache-2.0), a new runtime dependency of the SDK:
+  the Maven publication names it, and a host that adds the AAR as a file declares `com.google.zxing:core` itself
+  (see the Android getting-started page).
+- A call that needs a scope nobody has decided asks for it, as `authorize` does, and goes ahead once the host has
+  decided: granted, it runs; refused, or with no permission service to ask, it refuses as before (`auth deny: <scope>
+  is not granted`). The reference's `authorize` is how content asks *in advance* -- once granted, later calls do not
+  ask -- so a game that calls `getLocation`, `saveImageToPhotosAlbum`, `openBluetoothAdapter`, `createCamera` or
+  `RecorderManager.start` straight away no longer fails on a question nobody put to the player. Calls made while the
+  player is asked share one question; a decided scope is not asked again; `scope.userInfo` is never asked this way;
+  the call's own timeout stops while the player is asked. `authorize`, `openSetting`, `openSystemBluetoothSetting`,
+  `scanCode` and `navigateToMiniProgram` no longer time out after 30 seconds: a player answers them when they do.
+- `contracts/runtime/minigame-api-spec.json` records where the reference contradicts itself about a field, and reads
+  it as the page's own words support (`erratum`): `getGamepads` returns gamepads whose `index` is a number, as the
+  browser standard the page cites has it and its own description says, though its table types it string. An
+  erratum is held against the page, so once the reference is corrected, regenerating the spec says to drop it.
+- **Content reaches no network until the host grants it.** This changes every host: one that sets nothing now gets no
+  network at all. A policy is one domain allowlist per channel -- `request`, `download` (which also covers remote
+  images, audio streaming and asset prefetch), `upload`, `socket` (WebSocket), `tcp` and `udp` -- and a channel may
+  instead be `unrestricted`. It is set with `RuntimeConfig.Builder.setNetworkPolicy(NetworkPolicy)` on Android,
+  `MigoSessionConfig.network_policy_json_utf8` through the C ABI, `networkPolicyJSON` on either `MigoGameView`
+  configuration, and `--network-policy FILE` on the Linux player (and through the Windows spike driver). The
+  OpenHarmony host and the Linux Qt kit's managed session take no policy yet, so content there reaches no network.
+  Entries are domains, never IP addresses. `http://`,
+  `ws://` and the local network are off unless the policy turns them on, and a request, download or upload never
+  reaches the local network or the loopback -- except through an HTTP proxy the machine is configured with, which
+  resolves the domain itself. Every redirect hop is held to the channel the request was made on, so a redirected
+  download still answers to the download allowlist. A UDP socket is made only when content could send to someone, and
+  hears only the senders it could send to: one on the local network when that is granted, and a public one once the
+  socket has sent or connected to its address. A URL content hands the host app to show, share, play or decode --
+  `previewImage`, `previewMedia`, a share's image, a `createVideo` source and cover, a video decoder's source -- is
+  held to the download allowlist and reaches the app as the URL that was checked; the app or the system media stack
+  fetches it, resolving the domain and following its redirects itself. These went to the app unchecked under every
+  policy, so a game granted nothing could still have any URL fetched -- and a video player was handed content's own
+  path string, so it could open any file the app could. No platform could set a policy before, and the one every
+  session got permitted every domain, over plain HTTP too. A refusal names the channel and the domain.
+- At most ten requests run at once -- `request`, `downloadFile` and `uploadFile` together, as the reference allows --
+  and the rest wait their turn (an abort while waiting ends the request); the wait is the profile's
+  `queueStart`/`queueEnd`, which were the fetch start when the engine had no limit. At most five WebSocket connections
+  exist at once, one still opening included: a sixth `connectSocket` fails before it connects, saying why.
+- Raw sockets follow the reference's connection limits. A TCPSocket may not connect to a port below 1024 or to the
+  well-known service ports the reference lists (1099, 1433, 3306, 3389, 6379, 8000-8100, 8443, 27017, ...): its connect
+  fails `connect:fail port N is not allowed`. At most 20 TCPSockets are created in any 5 minutes: the one past that is
+  still made, and its connect fails saying why. A UDPSocket may send to the limited broadcast address and to multicast
+  groups (it may not reach the loopback, or a private address off the local network, any more than a stream may);
+  `setBroadcast` turns broadcast on for the socket instead of failing the send, and `255.255.255.255` needs no flag.
+- With the local network granted (`lan`), a WebSocket, a TCPSocket and a UDPSocket may reach the other devices on
+  the device's own networks -- what the reference allows ("the non-local IPs on the local network") so games can play
+  on a LAN -- and such an address is not held to the domain allowlist, as the reference does not hold it. Which
+  devices those are is read from the device's networks rather than from the address range: on IPv6 a neighbour's
+  address is as often global as unique-local, and a device given a public IPv4 has neighbours with public addresses
+  too. The device itself, by any of its addresses, stays out of reach either way, so a domain pointed at the phone's
+  own address reaches nothing. A private address on none of the device's networks, loopback, link-local (cloud
+  metadata included), multicast and the special-purpose ranges no internet host has stay refused for every API; an
+  IPv6 address that embeds an IPv4 one (mapped, NAT64's well-known prefix, 6to4) is judged as that IPv4 address, and
+  local-use NAT64 and Teredo are refused: where it embeds an IPv4 address depends on a prefix length the address does
+  not carry, so on a network whose NAT64 uses a local-use prefix an IPv4-only server is out of reach.
+- Every outbound HTTP request -- `request`, `downloadFile`, `uploadFile`, a streamed `InnerAudioContext.src`, an
+  `http(s)` image source, `prefetchAssets` -- is made by the engine's own client (hyper, with rustls and the same
+  Mozilla roots) instead of reqwest, so a request's connection is the engine's to measure: DNS, TCP and TLS each timed,
+  the connection a response came on, its RTT. The address policy, the redirect gate, the environment's proxies,
+  timeouts and pooling behave as before. Visible differences: a `data:` URL's response reports that URL (it reported
+  `http://no.url.provided.local/`); `uploadFile` writes a non-ASCII field or file name as UTF-8 with only `"`, CR and
+  LF escaped, as browsers do (it percent-encoded every non-ASCII byte); and a failed request's message carries its
+  causes, e.g. which address the resolver refused.
+- The API x platform matrix counts a cell ready only where the API was verified on that platform, not where it is
+  merely wired. `contracts/runtime/api-conformance-<platform>.json` records what migo-conformance's `api-spec` bundle
+  measured there (`scripts/import-api-conformance.py`): per API verified, failing (with the failing checks), present
+  (exists, not yet exercised) or absent, with the date and the commits it ran against. A cell is now ready when it is
+  wired and verified, or deliberately unsupported, or the host app's to answer; the summary keeps the wired count
+  beside it. Recorded for Android (emulator), iOS (simulator, Performance+), macOS (the view) and Linux (the C ABI
+  host); Windows and OpenHarmony have no runner yet, so nothing is verified there.
+- C ABI: a permission request carries the scope's `MIGO_SCOPE_*` number as `scopeId` beside its name, the number the
+  host reports the decision with (`migo_session_set_scope_state`), so a C host keeps no table of scope names.
+  `authorize` with a scope the platform does not define fails `authorize:fail invalid scope` before any host is asked.
+- Location: hosts answer in WGS-84 and the engine does the rest, the same on every platform -- GCJ-02 when content
+  asks for it (`type: 'gcj02'`), and `getFuzzyLocation`'s position rounded to 0.01 degrees, whatever the host's
+  precision. `GET_LOCATION` and `GET_FUZZY_LOCATION` no longer carry `type`, and a fuzzy answer passes on the position
+  only. The Android SDK's own converter and rounding are gone; the deferred-API helper takes a per-request shaping
+  function for results like these.
+
+### Removed
+- `migo.checkUpdate`, which no platform defines, and `UpdateManager`'s `hasUpdate` and `isReady` properties, which
+  the platform's manager does not have: what an update is doing is heard through the manager's events.
+- `onAddToFavorites` / `offAddToFavorites` leave the Slim profile with the rest of sharing; the internal hooks that
+  read the share listeners and that nothing called are gone.
+- APIs no mini-game platform's content could rely on, because they answered without asking anyone: `addColorSign`,
+  `addRecentColorSign`, `isColorSignExistSync`, `fetchSecondFloorIconOptionSync`, `updateSecondFloorChannel`,
+  `checkScene`, `navigateToScene`, `openPage`, `getUserGameLabel`, `requestSubscribeWhatsNew` and
+  `getWhatsNewSubscriptionsSetting` (both reported a subscription the player never made), `subscribeAppMsg` (likewise),
+  `updateApp`, `saveAppToDesktop`, `createLivePlayer` / `createLivePusher` (a local state machine with nothing behind
+  it), and the H5 JS-SDK's `config` / `ready` / `error`. None is a WeChat mini-game API; each kept local state or a
+  fixed answer and reported success.
+- Android SDK: `RuntimeConfig.Builder.addSubPackage`, `setWorkersPath`, `getSubPackages` and `getWorkersPath`. Content
+  declares its subpackages and Worker directory in `game.json`, which the engine now reads itself; a second copy in
+  the host's configuration could only disagree with the first.
+
+### Fixed
+- A second Windows Managed session in one process no longer faults in its first WinRT call. C++/WinRT keeps the
+  activation factories it has used for the life of the process, and a session leaving its COM apartment -- the
+  thread's last hold on COM -- left that cache pointing at factories torn down with it; the next session's
+  gamepads, location or system switches called through one. Seen on a Windows Server runner, where nothing else in
+  the process keeps COM alive, never on a desktop. The session lets the factories go before it leaves the apartment.
+- A platform's conformance record no longer counts an API verified over a check that never passed there. Runs on
+  several hosts were merged API by API, the best answer any run gave: a run that only found the recorder and its
+  methods outvoted the run where it would not record. They merge check by check now -- a failed check is outvoted
+  only by a run that passed that same check (`scripts/import-api-conformance.py`). Two cells were counted ready on
+  that: `getRecorderManager` on Windows, where no run has recorded (the lane's PC has no microphone), and
+  `getScreenBrightness` on iOS, where reading back a brightness that was set has only been tried on the Simulator,
+  whose screen does not change. Windows is ready on 371 of 382, iOS on 381.
+- On Windows the Direct3D 11 device is no longer lost as content starts. Images were uploaded on a thread of their
+  own, a second thread in ANGLE's one device, and an NVIDIA driver answered that with DXGI_ERROR_DEVICE_REMOVED
+  (DXGI_ERROR_DRIVER_INTERNAL_ERROR) as the render thread compiled its first shaders: every context lost, the content
+  failed with a render error, about one start in nine for content that loads its first images as it first draws.
+  Images are uploaded on the render thread there now, as on X11.
+- A WebGL fence signals on Direct3D 11 with an NVIDIA GPU. There, a fence made with nothing drawn after it was never
+  submitted -- `flush()` did not submit it, and a poll without SYNC_FLUSH_COMMANDS_BIT does not either -- so every
+  fence of a context after its first stayed unsignalled for as long as content polled it. Every poll of a fence, the
+  engine's own for image uploads, pixel buffers and the game recorder's read back among them, now carries the bit, and
+  a context's flush asks after its fences. WARP and an AMD GPU signalled either way.
+- The Windows Host Kit's view attaches when its top-level window is shown after it -- the order an App most often
+  shows them in: a child is not told its window was shown, so the view watches it.
+- On Android `closeBLEConnection` tells content the connection is gone: `onBLEConnectionStateChange` hears
+  `connected: false` for a disconnect content asked for, as the reference says it does. The SDK left that to the
+  system's callback, which closing a connection takes away, so content heard nothing -- found with a phone as the
+  central of another. A connection is reported gone once however it ends, and `closeBLEConnection` for a device with
+  no connection fails with 10006 "no connection" as it does on iOS; it answered ok.
+- On iOS `chooseMessageFile` with `type: "image"` or `"video"` picks from the photo library, where the player keeps
+  them -- as the Android SDK's `image/*` and `video/*` reach the system's photo picker -- and any other type from the
+  Files app. It opened Files for every type, which holds no photos until the player puts some there.
+- WebGL lists a program's uniforms in one order on every GPU: the default block's values, then its samplers, each in
+  the order the shaders declare them (the vertex shader's first), then the members of uniform blocks -- where the
+  samplers and blocks go is what every browser does, and the values follow their declarations too. `getActiveUniform`,
+  `getUniformIndices`, `getActiveUniforms` and a block's `UNIFORM_BLOCK_ACTIVE_UNIFORM_INDICES` agree on it. The order
+  was the driver's, and content builds on it: p5 hands out texture units in this order and binds the default texture
+  it makes on its first textured draw to the first sampler's unit. A Mali driver lists p5's `uSampler` ahead of the
+  environment maps declared before it, so that draw sampled the default texture, and `filter()` on a 2D sketch came
+  back transparent on a Mate 30.
+- On Android the motion sensors deliver at the rate content asked for: the compass five readings a second, as the
+  reference documents, and the accelerometer, gyroscope and device motion at their `interval` -- `game` about every
+  20 ms, `ui` about every 60 ms, `normal` about every 200 ms. Android takes a sampling period as a hint, and a sensor
+  the hardware already runs faster for another listener delivers at that rate: the compass answered fifty readings a
+  second on a Mate 30. Each sensor is now registered at its rate and its readings held to it by their timestamps.
+- A host that paces frames from its display has at most one frame asked of it at a time, and the frame loop can no
+  longer stop with content awaiting a frame nobody asked for. The render thread and content's
+  `requestAnimationFrame` asked for frames independently while the render thread kept its own note of whether it had
+  asked; a vsync it dropped as a repeat of a frame already handled also skipped clearing that note and asking again, so
+  when the dropped vsync was the answer to its own request -- a host answering two requests back to back, the second
+  converting to a frame time no later than the first -- the note stayed set and nothing asked the host again. Seen on
+  the macOS headless C ABI host on CI: two frames requested, two answered, then nothing. Both now ask through one
+  shared request that every vsync clears, and a repeat that runs no frame asks again for demand that remains.
+- On Android `stopBluetoothDevicesDiscovery` answers 10000 "not init" while the adapter is not open -- never opened,
+  or closed by `closeBluetoothAdapter` -- as the reference documents and as `getBluetoothAdapterState` on the same
+  adapter already did. It answered ok. The iOS and macOS SDK already refused it.
+- A C ABI host that reports both lifecycle and visibility -- the iOS and macOS game views, the OpenHarmony view, the
+  Linux host kit -- no longer has content hear `onHide` and `onShow` twice for one trip to the background: each of
+  `migo_session_set_lifecycle` and `migo_session_set_visibility` told content on its own, so leaving for the system's
+  settings and coming back fired both events twice. Content is shown while the Session is not PAUSED and is visible,
+  and hears once each time that changes, whichever the host reports and in either order; a surface replaced while
+  shown is no longer a second `onShow`.
+- On iOS `previewImage` and `previewMedia` no longer end the game. The preview was presented full screen, which takes
+  the views below it out of the window once it is up, and the game view leaving its window is the app ending the game:
+  the game was torn down under the preview and started over from its entry when it closed. It is presented over the
+  game, which runs on under it.
+- On iOS a picker, a modal, an action sheet or a preview asked for while another of the system's sheets is still
+  leaving now appears once it has left. UIKit refuses to present from a controller in the middle of a transition with
+  a console warning and nothing else: a `chooseMedia` right after a cancelled `chooseImage` never showed, and every
+  pick after it failed with "another picker is showing". Every presentation goes through one place
+  (`MigoSystemPresentation.present`), which waits for the transition under way and says when there is no window.
+- On iOS (Performance+) content's console reaches the app in order with everything else the game does. It travelled
+  the page's message channel, which nothing orders with the service stream, so an `exitMiniProgram` or a restart on
+  the stream overtook the lines written just before it and the view was gone before they arrived. It is now the
+  command the op-boundary contract always said it was (`op_console`, 311): the host logs it as the embedded op does,
+  keeps it for the debugging aids, and hands it on through `on_console`. A line too long for one service record is
+  cut, and a line written after the channel broke is dropped, rather than either throwing from `console`. And
+  `exitMiniProgram` and `restartMiniProgram` are sent once the task that asked has ended, as the embedded runtime
+  acts on them only between tasks: the call's own success and complete, and whatever they log or save, now happen
+  before the session goes, where the host acted on the command as it read it and closed the game first.
+- On iOS and macOS the clipboard is read and written off the main thread. Reading what another app put there asks
+  the player first (iOS 16, macOS 15.4) and blocks the reading thread until they answer: on the main thread
+  `getClipboardData` froze the game -- its frames, its touches, every other answer -- for as long as the prompt was
+  up. Reads and writes share one serial queue, so a read after a write still reads it.
+- On iOS (Performance+) a call that needs a scope nobody has decided asks the player for it, as it does in process,
+  instead of failing with `auth deny`. The host checks the scope there, after the request has left, and refuses in
+  its answer rather than by a throw; the call now asks for the scope on that answer too, keeps its request pending
+  while the player is asked, and sends it again once decided. Every scope-gated host-channel call was affected:
+  Bluetooth, location, the peripheral server.
+- On iOS (Performance+), `restartMiniProgram` launches the game again: the session asks its host to start the game
+  over in a new session, launched as a restart launches it -- with the options it was last shown with, its query the
+  one `path` names -- and `MigoGameView` does. It did nothing: the session, whose content runs in WebKit's process,
+  cannot replace it in place, and it had no way to ask. The C ABI carries the request as
+  `MigoHostCallbacks.on_restart_requested` (appended), which only a session whose content runs outside the engine
+  calls.
+- A restart is a cold start: the restarted runtime is shown before its content runs, as a host's first show is, rather
+  than after it, which made the new entry's `onShow` listener hear one. The reference reads a cold start from
+  `getLaunchOptionsSync()` and `getEnterOptionsSync()`; `onShow` is the return to the foreground.
+- Apple: `MigoEngineSession.close` completes when its surface is released while the session is still running. Its
+  polls held the session weakly, and a view lets go of its session as it closes it, so the polls stopped and neither
+  the destroy nor the completion ran; a game started again in a new session never started.
+- Android camera frames reach content as the reference defines `onCameraFrame`'s `data`: straight RGBA, four bytes a
+  pixel. They were the camera's three YUV planes concatenated as they lay, row padding and interleaved chroma
+  included -- 1.5 bytes a pixel nobody could read without the strides, which were not given. The planes' strides now
+  cross JNI and the frame is converted once, as camera2 defines its YUV (full-range BT.601).
+- The Linux Host Kit's toasts and loading indicators took the clicks that landed on them: Qt (6.4, xcb) gives an X
+  window created with `Qt::WindowTransparentForInput` no empty input shape. What stands over the game now takes none
+  of its input.
+- The Linux Host Kit's view attaches once Qt has mapped its window at the widget's size. Qt sends a widget its show
+  event before it maps the native window and applies its geometry, and the engine binds the window as the X server
+  has it: a view a layout placed -- every Managed Session's -- was bound while its window was still unmapped at a
+  child's default 100x30, and the game drew into a 100x30 canvas behind a full-size view. `MigoManagedSession`
+  loads content once the view has attached, which is when the Session has something to run it on; asked for
+  earlier, it is loaded then (a refusal at that point arrives as `contentFailed`), where it used to be refused.
+  Both were found by migo-conformance's new Host Kit lane, the first to run real games on the Host Kit.
+- `getGameLogManager` answers its callbacks once it has returned the manager, so a `success` that uses it -- as the
+  reference's example does -- finds it, instead of throwing on a variable not yet assigned (the throw was swallowed
+  and the callback never ran). The run's 999-log limit is the run's, not each manager's, and a log's 16 KB is
+  counted in the bytes it leaves as rather than in UTF-16 units. The manager's state is private: it carried
+  `_commonInfo`, `_debug` and `_logCount` as enumerable properties.
+- A video decoder where the platform has none (iOS, today) answers every call as a decoder that is not decoding:
+  `getFrameData()` is null, `seek()` fails, `stop()` and `remove()` succeed. Only `start()` said "not supported";
+  everything else threw, so a game tidying up after a failed start -- `remove()` -- threw out of its own cleanup.
+- Android: `getNetworkType().hasSystemProxy` is the platform's own default proxy (`ConnectivityManager.getDefaultProxy`),
+  a configuration script included; it read the JVM's `http.proxyHost`, which the framework copies a hand-set proxy
+  into and a configuration script never sets. The cell's `signalStrength` is the dBm the platform reports, or 0,
+  rather than its 0-4 level mapped to a made-up dBm.
+- `getDeviceInfo().memorySize` is the device's memory in MB, as on Android, on every platform: it was empty on macOS,
+  Linux, Windows and OpenHarmony, and absent on iOS (Performance+), though the engine reads the memory for its own
+  budgets.
+- `setInnerAudioOption` follows the reference on every platform. With the speaker on -- the default, and so nearly every
+  call, `{ obeyMuteSwitch: false }` to play through the silent switch among them -- the reference ignores
+  `mixWithOther` and plays alone: on iOS the session took the `Ambient` category, which mixes by its nature, so other
+  apps' music played on under every game; it is now `SoloAmbient` (or `Playback` through the silent switch). On
+  Android the option took a second audio focus with no listener, never given back, ducking other apps for
+  `mixWithOther`, and switched the device's call routing with `setSpeakerphoneOn`; the session's own focus is the
+  game's, and the option asks Android for nothing. `speakerOn: false`, the earpiece, which no platform routes a
+  game's output to, is answered as not supported rather than played through the speaker. Both it and
+  `getAvailableAudioSources` answer callback-style content after returning, and return it nothing.
+- An API the reference gives no Promise style (`reportScene`, `login`, `restartMiniProgram`, `setDeviceOrientation`,
+  71 in all), called without callbacks, still returns a Promise, as every asynchronous API does here, but its failure
+  is no longer reported as an unhandled rejection. Content written for the reference does not look at what such a call
+  returns, and with no rejection listener an unhandled rejection reaches the game's `onError`: each such call that
+  failed arrived there as an error the platform never raises. Content that waits for the Promise still has the
+  rejection. `scripts/test-promise-style-contract.sh` holds the list to the API spec. `saveFileToDisk`,
+  `getShowSplashAdStatus` and `getDeviceBenchmarkInfo`, which each kept a rule of their own and returned nothing
+  without callbacks, return that Promise too.
+- On iOS (Performance+), a show that carries no options shows the game as it was last entered, as the embedded
+  execution has since the previous fix: it reset `getEnterOptionsSync()` and `onShow`'s options to the defaults. Both
+  executions now follow one rule.
+- A game that calls `exitMiniProgram` is closed. The engine told a host the game exited whenever its session ended
+  on a shutdown, the host's own included, so a host could not tell its own shutdown from content's exit; it now says so
+  only when content asked. `MigoGameActivity` finishes when its game exits unless a listener of the subclass's takes
+  the exit; before, with none, the activity stayed open on a session that had stopped. The headless player ends its run
+  at the exit, and the C example hosts close: the Linux one ends its loop, the NativeActivity one finishes its activity.
+- `restartMiniProgram` relaunches the game as a launch does: it is shown again, and launched with the options it was
+  last shown with, its query the one `path` names after its `?` (the reference's "the part after ? becomes the
+  query"). The restarted runtime used to get no show at all -- `getLaunchOptionsSync()` answered the defaults, scene
+  1001 and an empty query, and content that starts or resumes on `onShow` waited for one that never came -- and `path`
+  was ignored. `restartMiniProgramSync` takes the same options. A show the host sends without options -- the macOS
+  view's, when its window comes back -- shows the game as it was last entered, rather than with a scene and query no
+  host gave.
+- Android C ABI: `encode` and `decode` take GBK. The Java SDK encodes it through java.nio.charset, which a host with no
+  JVM cannot reach, so a C host refused "gbk"; the C ABI package now carries `encoding_rs`'s tables there, as it carries
+  the Rust image decoders. The NativeActivity example host reports its package name as `host.appId`, takes the
+  network its runner grants it from `files/network-policy`, and declares `INTERNET`, without which every socket was
+  refused before any policy was asked.
+- A failed `request`, `downloadFile` or `uploadFile` says why in its `errMsg`, as the reference does --
+  `request:fail timeout`, `downloadFile:fail abort`, `request:fail fetch: connection to 10.0.2.2 is not allowed ...`
+  -- rather than a bare `request:fail` with the reason only in `exception.reasons`; an abort and a timeout are worded
+  as the reference words them. An aborted download or upload failed as a request (`request:fail`); it now fails as
+  itself.
+- Windows: the CSS generic font keywords reach the faces Chrome and Edge give them there -- `serif` Times New Roman,
+  `sans-serif` Arial, `monospace` Consolas (Courier New where it is missing), `cursive` Comic Sans MS, `fantasy`
+  Impact, `system-ui` Segoe UI. Skia's DirectWrite manager finds a family only by its name, so every keyword fell
+  through to the bundled Noto Sans, as it did on Apple and Linux before their tables.
+- WebGL `readPixels` is refused with `INVALID_OPERATION` in a format and type the read buffer is not read as, on every
+  driver: the pair its component type fixes -- RGBA and `UNSIGNED_BYTE` for a normalized buffer (and
+  `UNSIGNED_INT_2_10_10_10_REV` for RGB10_A2), RGBA and `FLOAT` for a float one, `RGBA_INTEGER` and `INT` or
+  `UNSIGNED_INT` for an integer one -- or the driver's `IMPLEMENTATION_COLOR_READ` pair (ES 3.0 4.3.2). The engine left
+  the judgement to the driver, and the Android emulator's read a half-float buffer as bytes without an error. The facade
+  judges the buffer's own pair, which costs nothing; another pair is checked against the driver's on the render thread,
+  with no extra crossing.
+- The program binary cache no longer stalls frames on a driver whose binaries are huge or that will not take them
+  back. ANGLE's Vulkan back end puts the context's whole pipeline cache in every program binary -- 0.7 MB more for each
+  program the context has linked, up to 60 MB on the Android emulator -- and the emulator's driver refused nearly every
+  binary the cache handed back: each launch read and uploaded them all, was refused, linked from source and fetched
+  them again on the render thread, up to 1.9 GB a run, growing with every run, so that WebGL frames took 1.5 s each for
+  minutes at a time. A binary larger than a sixteenth of the cache (4 MiB) is no longer fetched, a file that large is
+  no longer read, and a binary the driver refuses is removed rather than offered again at the next launch.
+- A texture source -- a canvas, an image -- uploaded with `texImage2D` as one of WebGL 2's sized formats (`RGBA8`, as
+  Pixi's WebGL 2 renderer uploads every texture, or `RGB8`) holds the source on the Android emulator. Where the upload
+  needs no conversion the engine copies it on the GPU, and the copy was one `glCopyTexImage2D`, which the emulator's
+  GLES answered with an empty image and no error: every Pixi sprite sampled transparent black. The level is now
+  specified as the call names it -- internal format, format and type -- and the source copied into it, so an unsized
+  format's level also takes the call's format rather than that of the framebuffer it is copied from.
+- Content that draws outside `requestAnimationFrame` -- at its top level, from a timer, in an input handler -- is shown.
+  The frame end that publishes a frame's commands and presents them ran only in the `requestAnimationFrame` loop, which
+  runs only while callbacks are queued: on Android a game drawing from `setInterval` stayed black for as long as it ran,
+  the Linux player reported such a game as never having drawn, and a game that drew once showed only when some unrelated
+  frame happened to follow it. The first command after a frame end -- written to the command stream, or pushed by an op
+  that reaches the renderer directly, as `fillText` does -- now has its frame ended at the next frame, as a browser
+  presents what a task drew; a game that animates through `requestAnimationFrame` is unaffected.
+- Building from source with `CARGO_TARGET_DIR` (or `CARGO_BUILD_TARGET_DIR`, or `build.target-dir`) set no longer
+  packages or runs an earlier build. The SDK, host and snapshot build scripts, the Android C host and the player gates
+  built where cargo was told to and then read `engine/target/...`, so they went on with whatever was left there: the
+  Android C host packaged a months-old staticlib, and the player gates passed against a player from before the change
+  they checked. Each now asks cargo where it wrote (`scripts/lib/cargo-target-dir.sh`), and the V8 component-manifest
+  scripts build their sealing tool into the directory they read it from.
+- Android: a game has no title bar, whatever theme the host gave its app. `MigoGameActivity` took the app's theme --
+  neither the SDK's manifest entry nor a host's subclass names one -- so under a framework theme with an action bar the
+  game drew below the host's title, in a surface shorter than the screen. Found by an integration from the
+  game-center kit's documentation alone.
+- A frame that could not be presented, other than through a lost context, reaches the host as `RenderSwapBuffersError`
+  (413), which Android reads as recoverable (`NATIVE_RENDER_SWAP_BUFFERS_ERROR`). Both lanes reported it as
+  `RenderBackendError`, a session to restart or destroy, although the session goes on: the render loop presents again
+  next frame, and a Surface it can no longer present to is retired and reported through `onSurfaceLost`, which tells
+  the host what to do.
+- A render command the game got wrong -- a 2D draw, a GL call, a canvas change the renderer could not execute -- reaches
+  the host as `RenderCommandFailed` (430), which Android's `ErrorCode.isRecoverable` reads as recoverable
+  (`NATIVE_RENDER_COMMAND_FAILED`), with the command's own error in the detail. It was reported under the command's own
+  code, one fatal reports carry too -- an invalid argument, a shader that did not compile -- so Android hosts were told
+  each such failure was non-recoverable, and a host that closes the game on those closed it over a GL error. A Surface
+  the host handed over that could not be installed is not one of these: it is reported under the backend's own code, now
+  on the external-frame lane too, which had logged it and told the host nothing. A test now holds every `NATIVE_*`
+  constant the Android SDK declares to the engine code of the same name and number.
+- The headless player stops as soon as the game fails to start, and says why: `the game did not start: module
+  evaluation failed: Error: ...`. It heard nothing from the engine -- `LinuxPlatform` and `WindowsPlatform` reported
+  their host notifications nowhere -- so a game whose entry threw waited out the 30-second present ceiling and the run
+  after it, 36 seconds, then said only that nothing was presented; a launch that failed for a reason no content line
+  names, such as a renderer that never came up, was in no report at all. Both platforms take an embedder's
+  `HostNotifier` (`with_notifier`), and the launch's failure reaches it as `notify_game_failed`, the other half of
+  `notify_game_ready` -- by default a `notify_error`, as every host heard it before. The compatibility report blocks on
+  the player's verdict. A launch that fails after a loading screen presented fails the run too: the player reads the
+  launch's outcome once the session is joined, when nothing more can be reported. `scripts/test-player-launch-outcome.sh`
+  holds both in CI.
+- Android: closing a session stops its engine even when releasing one of its other resources fails. `close()` shut the
+  engine down only once every Java-side resource had let go, so one manager that threw left the engine running the game
+  its player had closed, for the life of the process: `MigoGameActivity` drops the session once it has closed it, and
+  nothing retried. `GameSession.isEngineStopped()` says whether the engine was confirmed stopped, for a host that hands
+  the game's files to something else when the game ends.
+- The system EGL library is loaded once per process, on every platform. Each session opened its own handle and dropped
+  it at shutdown, so a host that ran one game after another unloaded and reloaded the whole GL driver between them --
+  on Linux, glvnd's `libEGL` and `libGLdispatch`, Mesa's `libEGL_mesa`, its gallium driver -- and each cycle leaked
+  what the driver's teardown does not free: about 4 kB a session on Mesa, four fifths of what a session left behind. A
+  driver that keeps a thread or an exit handler past its unload crashes there instead.
+- The headless player's frame capture no longer keeps a frame read after its request was taken: one landing between
+  `take` and the session's end stayed in the slot, a whole frame's pixels held after the session that drew it had gone.
+- WebP and GIF images load on Linux, Windows, OpenHarmony and Apple, and through the Android C ABI. The Rust decoders
+  covered JPEG, PNG and BMP, and those builds have no platform decoder to fall back to (the C ABI's `AImageDecoder` needs
+  Android 11), so every WebP or GIF asset failed with "no image decoder available" -- and mini-game packages ship WebP to
+  save size. The `image` crate's WebP and GIF decoders come with `rust-image-decode`; the Java SDK's Android build, which
+  decodes through BitmapFactory, carries neither.
+- `scripts/prescreen-run.sh` reads the device's log by the engine's own error lines, the table the Linux report uses. It
+  kept a table of its own with no pattern for the engine's fatal "event loop error" unless the exception was a TypeError
+  or a ReferenceError, so a game that painted and then died in a callback was reported as running. Rejections and calls
+  the host answered "not supported" are now listed too, and a log the compatibility recorder wrote into adds what the
+  game reached for. The reading moved to `scripts/lib/prescreen_run_report.py` and is tested on captures made without a
+  device.
+- Linux: a character the named fonts lack is drawn in an installed font that has it. Skia was built with fontconfig
+  turned off, which left its directory font manager: it lists `/usr/share/fonts` by name and never answers which face
+  has a character, so SkParagraph's per-character fallback found nothing -- Chinese, Japanese, Korean, Arabic and every
+  other script the bundled Latin face lacks drew as boxes, with the fonts installed. Fontconfig, Skia's own default on
+  Linux, is back, which also finds the user's fonts and resolves `Arial` to its metric-compatible face as a browser does.
+  Android, Windows, Apple and OpenHarmony builds are unchanged.
+- `Object.keys(migo)` and `for...in` list every API `migo` publishes, and so the `wx` an adapter mirrors from it. The
+  namespace copied the attributes of the globals it mirrors, most of which are not enumerable, so 422 of its 452 names
+  were missing from the list -- and the platform's own namespace is a plain object whose every API is listed. Cocos
+  Creator 3 builds its environment from `Object.keys(wx)`: its `minigame.onHide` was undefined and its start-up threw.
+- `console` has every member of the Console Standard's namespace: `assert`, `clear`, `count`, `countReset`, `dir`,
+  `dirxml`, `groupCollapsed`, `table`, `time`, `timeLog`, `timeEnd` and `trace` joined the seven it had. A missing
+  member was a TypeError -- Cocos Creator 3 calls `console.time` while it starts its physics. A string first argument is
+  formatted as the standard says (`%s %d %i %f %o %O %c %%`), which no member did; `clear()` empties the group stack; no
+  member needs `console` as its receiver; and a log call never throws, whatever content did to `Error` or a value's
+  `toString`.
+- An MP3 whose ID3v2 tag holds bytes that look like a frame header decodes. The decoder found audio by sync words, and a
+  sync-like pair inside the tag measured as a frame that decoded to nothing, which ended the decode: a Cocos Creator
+  game's 22.05 kHz sound effect failed to load, and the game waited for it on its splash screen. A tag is now skipped by
+  the length it declares, and a frame that decodes to nothing costs that frame rather than the rest of the file -- in a
+  whole-file decode and at the end of a stream, where the frame used to be decoded again over its own bytes.
+- A game whose entry module throws -- on its first line, or after a top-level `await` -- fails to launch with
+  `ModuleLoadError` "module evaluation failed" and the exception, and the host is told through its error callback. It
+  used to be logged "module evaluated" and reported ready: deno_core settles a rejected evaluation as done and rethrows
+  the exception as an unhandled rejection, and the engine's rejection handler hands every unhandled rejection to the
+  game's listeners and calls it handled, so the only trace was a console line over a blank surface. A Worker script that
+  throws is refused the same way instead of running its message pump for a script that never set `onmessage`.
+- An entry module with three or more static imports loads. Each module read was charged the 100 MiB a read may be at
+  most against the IO scheduler's pending-byte budget, and deno_core reads a module's imports concurrently, so whenever
+  a third read overlapped the first two the launch failed with `ByteLimitExceeded` -- one launch in three on the Linux
+  player for an entry importing four modules. A module read is now charged its size, as the file system API's reads are,
+  and produces no more than it was charged: a module that grew after it was sized is refused, and so is one that is not
+  a regular file, which a FIFO named like a module would otherwise have blocked the host thread on.
+- An Android app using the Full SDK requests `READ_EXTERNAL_STORAGE` only up to API 28, as it does
+  `WRITE_EXTERNAL_STORAGE`. The AAR never declared it; the app's manifest merger inferred it from
+  `WRITE_EXTERNAL_STORAGE` in a library manifest with no `targetSdkVersion`, and added it with no bound, so every host
+  asked for storage on every Android version. The gates read the library's own merged manifest, where it never appears;
+  `scripts/test-maven-consumer.sh` now holds the permissions of an app built from the staged repository to the policy.
+- A C ABI record whose `struct_size` ends inside one of its pointers is refused with `MIGO_ERROR_INVALID_ARGUMENT`.
+  `MigoContentDescriptor` and `MigoHostCallbacks` accepted any size between their oldest release and their current
+  one, so such a size copied part of a pointer and zeroed the rest, and the engine used an address nobody wrote. A
+  size a compiler produces for any release is unaffected.
+- An Android app that shrinks its code with R8 can start a session. The engine reads `RuntimeConfig`'s private fields
+  by name, and the rules the AAR ships for its consumers kept only public members, so R8 renamed them (`cacheDir` to
+  `a`, `filesDir` to `b`) and every session failed to initialise. Those fields are now kept.
+- The JS watchdog no longer kills a game for the time it spends waiting on the renderer. It ends a task whose script
+  runs past its budget (ten seconds); a task blocked in a synchronous call is waiting, not running, and a slow GPU --
+  a software renderer, a low-end phone compiling shaders -- made a three.js scene's calls add up past the budget. The
+  wait no longer spends the budget (what is left carries across it), and a task that does nothing but wait is still
+  ended at six budgets.
+- An `InnerAudioContext` source that will not load is reported with the reference's `errCode` for why: 10003 for a
+  file that cannot be found, permitted or read, 10002 for a URL that is malformed, refused or unreachable, 10004 for
+  bytes no decoder reads, 10001 otherwise. Every such failure used to be 10002.
+- On Android, an `InnerAudioContext` playing a file from the game's package no longer kills the app. The sandboxed
+  file open tried the `openat2` system call first and fell back when the kernel refused it, but Android's app sandbox
+  does not refuse a call outside its seccomp list -- it kills the process (SIGSYS), as the Android 14 emulator did. Only
+  desktop Linux tries `openat2` now; Android and OpenHarmony open the path one component at a time, as tightly.
+- WebGL texture units past the 32th -- up to the driver's `MAX_COMBINED_TEXTURE_IMAGE_UNITS`, which content may name
+  and three.js uploads on -- are tracked like the first 32. The renderer used to call the driver for such a unit
+  without moving its own record of the active unit, so the next switch back to a low unit was dropped as a repeat and
+  textures went to the wrong unit: three.js's shadow maps sampled a placeholder and shadowed everything (on Mesa,
+  SwiftShader and any driver with more than 32 combined units), and the GPU budget charged uploads to the wrong
+  texture.
+- A WebGL shader's variables without an initializer read as zero, as WebGL requires (the conformance suite's
+  `uninitialized-local-global-variables`) and content relies on: the renderer used to hand the driver the shader as
+  content wrote it, and Mesa -- Linux's driver for Intel and AMD GPUs, and llvmpipe -- took the undefined value at its
+  word and folded the computation away; PlayCanvas's standard material came out black. The source the driver compiles
+  now has zero written in where a value is missing, on the line it belongs to, so compile messages keep their line
+  numbers; `getShaderSource` still answers what content set. The program binary cache keys on the source the driver
+  compiled, so a binary cached before cannot stand in for the amended shader.
+- `onDeviceMotionChange` reported its angles in degrees, where the reference documents radians -- alpha [0, 2*PI),
+  beta [-PI, PI), gamma [-PI/2, PI/2). Hosts keep reporting the W3C DeviceOrientation angles in degrees and the engine
+  converts them, in one place, before content hears them. On Android the angles were also decomposed from the
+  rotation matrix through `getOrientation`, whose pitch and roll have each other's ranges, so a device lying face
+  down reported a gamma of -147 degrees; they are now decomposed as the W3C specification does (as the Apple hosts
+  already did).
+- `onWindowResize` called a listener the moment it was added, with the window's current size, and the engine's first
+  surface report after start reached every listener even when the size had not changed. The reference calls the
+  listener when the size changes, with the size after the change; a listener now hears only the changes after it was
+  added -- the size at that moment counts as seen, so a report of it is no change.
+- Android: turning the device crashed the game with a `StackOverflowError` on Android 13 and later.
+  `MigoGameActivity` registered itself for component callbacks, and an activity dispatches its configuration changes
+  to the callbacks registered with it, so `onConfigurationChanged` called itself without end. An activity is
+  already a `ComponentCallbacks2` that the framework calls directly, so it no longer registers itself; on earlier
+  Android the registration went to the application instead, which delivered every configuration change and memory
+  warning to the activity twice.
+- Android: `getScreenBrightness` failed with `no activity` whenever the game had not set a brightness of its own. The
+  window's override then reads -1 (`BRIGHTNESS_OVERRIDE_NONE`, "follow the system"), which was taken for the
+  no-activity sentinel. It now answers the window's own brightness where it set one, and the system's brightness
+  setting, scaled to 0..1, where the window follows the system -- the last manual value when auto-brightness is on, as
+  the reference documents. Not having a window to ask is a distinct answer (NaN), still reported as a failure.
+- WebGL `texImage2D` / `texSubImage2D` / `texImage3D` / `texSubImage3D` of a canvas no context was taken from did
+  nothing -- a full call left the texture without an image, a sub call left the old pixels and raised an error. Such
+  a canvas has drawn nothing, and its bitmap is transparent black at its size, which is now what the upload uploads.
+- On ANGLE (macOS, iOS), a WebGL texture image defined without data was uploaded as a buffer of real zeros, one per
+  image, so that it reads as transparent black; Phaser 3.60's render-target pool took 600 ms longer to boot on macOS,
+  long enough that a tap in the first second missed its game objects. The engine's contexts now ask ANGLE for robust
+  resource initialization where the display offers it, and ANGLE keeps everything defined without data -- textures,
+  renderbuffers, buffers -- reading as zeros by clearing it on the GPU at first use; no data is passed through.
+  Elsewhere the renderer still writes the zeros itself.
+- WebGL storage was refused past a fixed 128 MiB per context (512 MiB per process) on every device, below what the
+  device could hold. Phaser 3.60+ keeps a pool of render targets from 32 pixels up to the canvas's shorter side --
+  171 MiB on a 720 x 1280 canvas, more on one sized in device pixels -- so its framebuffers were incomplete and the
+  game never started. The ceiling is now a quarter of the device's physical memory, never below 512 MiB, for each
+  context and for the process together; past it, allocations still fail with `OUT_OF_MEMORY` as WebGL specifies.
+- On iOS (Performance+), `getMenuButtonBoundingClientRect` answered an empty rect at the window's top left corner
+  when the host draws no menu button, where every other platform answers one at the top right of the safe area (the
+  host's notch and status bar included). The producer now derives that answer from the window the host describes,
+  as the native system-info service does, once per description; a host that does draw a menu button and describes
+  it is answered where it says.
+- On Linux, the CSS generic font keywords (`serif`, `sans-serif`, `monospace`, `cursive`, `fantasy`, `system-ui`)
+  were not resolved: Skia's fontconfig font manager matches installed faces by name and answers none of the keywords,
+  so every one of them fell through to the bundled Noto Sans -- `serif` measured the same as `sans-serif`, and a
+  `monospace` label was proportional. Each keyword now resolves to the face the system's fontconfig gives it (its
+  configured substitutions, then the best match), as a browser on Linux does. The answer is resolved once per process,
+  when the text context is built.
+- On the Linux player and the minimal C ABI host, `getSystemInfo` / `getAppBaseInfo` answered `host: {}`: a Linux app
+  has no identifier the system hands out, and neither host said who it was. `LinuxPlatform` / `WindowsPlatform` take the
+  host's own report (`with_host_app`), the player reports `com.migo.player`, and the example host reports its id through
+  `migo_session_set_host_app_info`, as an embedding host should.
+- With no audio output device -- a headless machine, a VM, a desktop with its output unplugged -- the audio thread did
+  not start, so `createWebAudioContext` and `createMediaAudioPlayer` failed with `AudioError`. The mix now plays into silence at a device's rate: a context's time advances and its sources end as
+  they would, only not heard. While there is something to hear, the audio thread looks for a device (after 1 s, then
+  less often, up to every 30 s) and moves the mix to it when one appears. A device lost mid-game falls back to silence
+  the same way instead of stalling the audio thread while it retries.
+- `preDownloadSubpackage` failed with `download service not available` for a subpackage that shipped with the game,
+  which has nothing to download; it now answers success, as it does for one already installed in the package store.
+- `encode` / `decode` with `ucs2` or `ucs-2` wrote and read UTF-16 big-endian with a byte order mark; the reference
+  reads them little-endian, as `utf16le`, and they now are that. Reading a zip entry as `ucs2` changes the same way.
+- `createImageData(width, height, data)` made a blank image and ignored `data`; it now holds a copy of it. The data-first
+  form of the reference's example, `createImageData(data, width, height)`, is taken the same way.
+- `getTextLineHeight` returned the height but never ran `success` / `fail` / `complete`; they now run after it returns.
+- `loadFont` answered `""` for a font it could not load; it answers `null`, as the reference does.
+- A successful `request` answered `exception: null`; it answers `{ retryCount: 0, reasons: [] }`. A failed one's
+  `exception.retryCount` and `exception.reasons` were not readable on the object the callback received; they are.
+- `getFileSystemManager()` answered the file system manager's class rather than an object of it (`typeof` said
+  `"function"`; its methods were static). It now answers one `FileSystemManager` object whose methods are its
+  prototype's. The class was also published as a `FileManager` global, which no reference API names; it is removed.
+- `getStorage` succeeded with `data: ""` for a key that is not there; it now fails `getStorage:fail data not found`, as
+  the reference does. `getStorageSync` still answers `""`.
+- Divergences from the platform's reference that the API spec bundle (migo-conformance `api-spec`) found on every
+  platform:
+  - `getSystemInfoAsync` succeeded with `getSystemInfo:ok`. A success's `errMsg` is now always the called API's
+    own name, whatever the result object carried; `getSystemInfoSync`'s result no longer carries an `errMsg`, which
+    the reference does not give a sync result.
+  - `getBatteryInfo` / `getBatteryInfoSync` answered `level` as a string, where the reference's is a number. A
+    device with no battery the host can read (a Mac, a C ABI host that reports none) answered success with a
+    made-up level `"0"`; it now fails `not supported`, and the sync call throws with its own name.
+  - `getLaunchOptionsSync` / `getEnterOptionsSync` never reported `apiCategory` (2.20.0). It is now `"default"`
+    unless the host says it is one of the reference's other categories.
+  - On Android, `getDeviceInfo().memorySize` was a number; the reference's is a string of megabytes.
+  - A failure raised under another API's name (a sync variant's op failing under its async sibling's) is told
+    under the called API's name, not prefixed twice.
+- Android listed `buildInMic` among its audio sources, which the mini-game API names for iOS only. It now lists
+  `auto`, `mic`, `camcorder`, `voice_communication` and `voice_recognition`. `RecorderManager.start` still takes the iOS
+  names, for content written against iOS.
+- iOS reported the device's physical orientation to `onDeviceOrientationChange`, which is not the game's screen when
+  the app locks its interface's orientation (as a game view's app must); it reports the interface's now.
+- The API x platform matrix decided `onDeviceOrientationChange` by what `setDeviceOrientation` needs, so a platform
+  that could not set the orientation counted as unable to report it. Listeners fed by a host-service event are now
+  decided by that event (the `events` section of `api-platform-decisions.json`): provided where the platform's host
+  layer posts it.
+- The Apple game view and getting-started references listed `setEnableDebug` as refused, which it has not been since
+  the debugging panel.
+- A macOS game view resized once per attach: every resize after the first was refused (`MIGO_ERROR_INVALID_ARGUMENT`)
+  and the game kept its old size. `MigoEngineSession.resize(to:)` counted its updates, but `migo_surface_update` takes
+  the generation the surface was attached with on every update, as the other platforms' hosts send it.
+  `include/migo/surface.h` and the reference said the generation was a count of updates; they now say what the engine
+  checks. The macOS game view gate resizes twice.
+- The API x platform matrix counted `getAppAuthorizeSetting` and `getSystemSetting` as answered by the engine alone;
+  they read what the host reports (`migo_session_set_app_authorize_setting`, `migo_session_set_system_settings`), and a
+  host that reports nothing gets every grant "not determined" and every switch off. They are now host-fed in the
+  matrix: default where the platform's SDK reports, host on Linux and Windows, missing elsewhere.
+- The API x platform matrix counted the touch events missing on every platform: its input table named a C entry point
+  that does not exist (`migo_session_send_touch_event`) and missed the Android SDK's touch path, which hands
+  `NativeMethods::onTouchRaw` over as a method reference. The generator now refuses an input table naming an entry
+  point the ABI or the Android bridge does not have, and the gate proves a host layer that stops feeding touch is seen.
+- `getShowSplashAdStatus` answered `success` / 1 whatever happened, and `createPageManager` was a mock whose `load`
+  resolved and whose `show` did nothing. The status is now the host's report (`unknown` / -1 before one, the
+  platform's initial value) and pages open through the host (see Added).
+- `getAppBaseInfo`, `getAccountInfoSync` and `getDeviceBenchmarkInfo` answered constants -- an `SDKVersion` of `4.0.0`
+  (a library level that does not exist), a host id `com.minigame.host`, `zh_CN`, version `1.0.0`, a benchmark level
+  of 26 (25 from `getDeviceInfo`, and on Android a guess from the device's memory) -- and `getAccountInfoSync` never
+  had the content's id, because nothing set it. `SDKVersion` is now the library level the runtime implements
+  (`3.17.0`: the newest any API in the platform's reference was introduced at, which
+  `scripts/fetch-minigame-api-reference.py` measures from each API's page into `minigame-api.json` and a test holds the
+  engine to), `version` the runtime's own, `appId` the content's id, and the rest what the host reports: without a
+  report, no host id, the system's language (read by the engine on macOS, iOS, Windows and Linux), a text scale of 1,
+  a release with no version, a benchmark level of -1 and a model level of 0 -- the platform's words for unknown.
+  `getSystemInfoSync` and `getDeviceInfo` carry the same values from the same place. `theme`, which the platform does
+  not give mini games, and `plugin`, which only a plugin is given, are no longer answered.
+- An engine listener on the game's visibility -- the audio clock that freezes in the background -- was one of
+  content's `onHide` / `onShow` listeners, so content calling `offHide()` with no listener removed it too. The engine
+  now observes visibility on its own.
+- The native buttons were inert objects, and a user-info button's tap could only be raised by an internal hook with an
+  empty profile. `createUserInfoButton`, `createOpenSettingButton`, `createGameClubButton` and `createFeedbackButton`
+  are hit-tested by the engine: a touch that begins on a shown button is the button's and content does not see it, and
+  a tap does what the button does -- the user-info button asks the host for `scope.userInfo` when it is not yet granted
+  and hands `onTap` the host's `getUserInfo` answer, the setting button opens the settings, the game-club and feedback
+  buttons ask the host to open its pages. A button is shown from creation; moving it is writing its style.
+- `getMenuButtonBoundingClientRect` answered a capsule rect sized for a 375-pixel-wide window on every host. A host
+  without a menu button now answers an empty rect at the top-right of the safe area.
+- `getRealtimeLogManager`'s entries reach the host's game log (`source: "realtime"`, with the `setFilterMsg` /
+  `addFilterMsg` keywords; the console when no host takes them), and `reportEvent`, `reportMonitor`,
+  `reportPerformance` and `reportScene` reach the host's analytics through the ecosystem channel -- all were no-ops
+  reporting success. `reportScene` takes the platform's `reportScene(Object)` and makes the platform's checks,
+  including a scene reported twice in one launch. Game log entries carry `source: "gameLog"`.
+- The image a share names reached the host as content's own string, so a host that opened it read whatever file
+  content named. `shareAppMessage`'s and `shareMessageToFriend`'s `imageUrl` and `showShareImageMenu`'s `path` now
+  reach it as the real file behind the sandbox path (only `shareAppMessage` may name an http(s) image), and a path
+  outside the sandbox fails before the request leaves.
+- `shareAppMessage` ran the `onShareAppMessage` listeners and folded their answers into the request; those answer the
+  share menu, and an active share sends what content passed. `setMessageToFriendQuery` stored a query nothing sent and
+  returned nothing: it returns whether the query was set (`query` at most 128 characters, `shareMessageToFriendScene`
+  0-50) and `shareMessageToFriend` carries it. `onShareMessageToFriend` hears how every `shareMessageToFriend` ended,
+  where only an internal trigger nothing called could raise it. A share no longer fails as timed out after 30 seconds
+  of the player choosing.
+- Ecosystem APIs that reported success while doing nothing: `requestSubscribeMessage` and
+  `requestSubscribeSystemMessage` reported every template accepted, `setUserCloudStorage` /
+  `removeUserCloudStorage` / `modifyFriendInteractiveStorage` stored nothing, `getFriendCloudStorage`,
+  `getPotentialFriendList` and `getGameClubData` answered empty lists, `authPrivateMessage` and `openBusinessView`
+  succeeded, and `onNeedPrivacyAuthorization` could only be triggered by content itself. Each now asks the host.
+- Bluetooth requests answered before anything had happened. `createBLEConnection` reported success before the device
+  connected (and before its services were discovered, so the `getBLEDeviceServices` after it found none),
+  `getBLEDeviceRSSI` returned the previous reading -- 0 the first time -- and writes, subscriptions, MTU negotiation and
+  pairing succeeded on being issued. Each now answers when the operation completes, and every failure carries the
+  platform's `errCode` (10000-10013, -1 already connected).
+- `startBluetoothDevicesDiscovery` no longer stops scanning silently after 30 seconds; a scan runs until stopped.
+- Bluetooth binary data reaches content as `ArrayBuffer`s: a found device's `advertisData` is the advertisement's
+  manufacturer-specific segment rather than the whole raw advertisement as a hex string, and `serviceData` and
+  `localName` are reported; a `makeBluetoothPair` `pin` is sent as bytes.
+- Starting a sensor the device does not have reported success; it fails with the reason. `getScreenBrightness`,
+  `setScreenBrightness` and `setDeviceOrientation` are requests the host answers.
+- Android: `onAccelerometerChange` reported m/s² (a phone lying flat read z ≈ 9.8), so shake thresholds written in g
+  fired constantly. Every host now reports g, with one axis convention.
+- The image APIs handed the host content's path verbatim, so `saveImageToPhotosAlbum` could copy any file the host
+  process could read into the player's album. Paths are resolved through the sandbox first; one outside it fails.
+- Android: a picked or compressed image arrived as the SDK's absolute cache path, which no file API resolves, so
+  content could not read what it had just been given. It arrives as a `/tmp` path.
+- Android: `saveImageToPhotosAlbum`, `previewImage` and `previewMedia` ran on the JavaScript thread and reported
+  failures as thrown errors; they are requests the SDK answers, with the album write off the main thread. Picked
+  files are copied off the main thread and keep their real type's extension.
+- Android: previewing a local file inserted a row into the player's photo library (and failed on Android 10+); it is
+  lent read-only to the viewer instead. A photo taken for `chooseImage` is no longer saved to the gallery.
+- `chooseImage`, `chooseMessageFile`, `previewImage`, `previewMedia` and `saveImageToPhotosAlbum` no longer time out
+  after 30 seconds while the player is still choosing.
+- `setClipboardData` / `getClipboardData` are requests the host answers, as the asynchronous APIs they are, rather than
+  synchronous reads a host that owns its clipboard on another thread could not serve.
+- Android: a modal or action sheet that could not be shown -- no activity, malformed options -- fails with the reason
+  instead of reporting that the player cancelled it.
+- Ads: `load()` and `show()` resolve when the host's ad SDK says the advert loaded or is on screen, and reject with its
+  error, as in wx -- not as soon as the command left. The host reports exposure with the new `AdEventSink.emitShow`
+  (Android) or a `"show"` lifecycle event (C ABI); a full-screen ad's close counts as shown, and destroying an ad
+  rejects what is still pending on it.
+- Asynchronous APIs answer by callback or by Promise, as wx does, not by both. Options carrying `success`, `fail` or
+  `complete` are answered through them and the call returns nothing; options carrying none get a Promise. Every API
+  used to return a Promise as well, which callback-style content never held -- so each failure it handled in `fail`
+  also surfaced as an unhandled rejection. The one helper that chained on such a call (`getWritePhotosAlbum`) now
+  follows the same rule.
+- A host result without a `requestId` is discarded rather than settling the oldest pending request of that API, which
+  answered the wrong call whenever two were in flight. Every host path stamps the id.
+- `openSystemBluetoothSetting` answers under its own name (`openSystemBluetoothSetting:ok`).
+- `getSetting` reports a scope nobody has been asked about as absent rather than `false`, as the mini-game convention
+  has it. Content sends the player to `openSetting` after a refusal and calls `authorize` for a scope it has never
+  asked, and a report that collapsed the two sent players to the settings page for a question nobody had asked.
+- `openSetting` succeeds with `authSetting`, the decisions as the player left them, on every platform.
+- `openSystemBluetoothSetting` no longer answers under another API's name (`openBluetoothAdapterSetting:ok`) with a
+  stray `code`, and `openAppAuthorizeSetting`'s failure carries a reason: both settings-page results now take the shape
+  every host result takes.
+- `shareMessageToFriend` and `showShareImageMenu` no longer report success for a share nobody made. Both went through
+  `shareAppMessage`'s op with a `type` field the host's share handler never received, and resolved as soon as the op
+  returned. Each is now its own request, settled by the host's answer (`_internalOnShareMessageToFriendResult`,
+  `_internalOnShowShareImageMenuResult`), and fails with "not supported" where the host offers neither.
+- C ABI ILP32 contract: the `MigoSurfaceDescriptor` size assertion consulted `_Alignof(uint64_t)`, which clang answers
+  with the type's preferred alignment (8) on i386 while the System V ABI places the member on a 4-byte boundary, so the
+  lane failed under `clang -m32` on macOS while passing under GCC. It now measures the member's alignment inside a
+  struct.
+- WebGL: `texImage2D`/`texImage3D` with no data zero-fills the image's storage instead of handing the driver a null
+  pointer and trusting it to initialize to transparent black (ES 3.0 3.7.2, WebGL 1.0/2.0): reusing a texture object's
+  storage at a level it previously held a smaller image at left that image's bytes visible at the equivalent offsets
+  of the new one.
+- Workers: a message crossing between the main thread and a worker is no longer logged -- on either side, in Rust or
+  JavaScript. A game posting every frame paid a log line per message, and the worker side logged the whole message
+  body, content's data. A worker's lifecycle (created, loaded, exited, failed) is still logged, once.
+- WebGL 2: `blitFramebuffer` refuses what ES 3.0 4.3.3 and WebGL 2.0 5.38 refuse, in a browser's order, before anything
+  reaches the driver, whose errors never reach `getError`: a filter of none (INVALID_ENUM), a mask of other bits
+  (INVALID_VALUE), LINEAR with depth or stencil (INVALID_OPERATION); then, framebuffers complete, the same image read
+  and written -- one framebuffer, two framebuffers sharing an image, or the drawing buffer onto itself --, integer
+  data with LINEAR or against other data, depth or stencil of another format or that the read framebuffer lacks, colour
+  from no read image, a multisampled draw framebuffer, and from a multisampled read framebuffer another format or
+  rectangle (INVALID_OPERATION). Only the framebuffers' completeness was judged.
+- WebGL: a program or shader is deleted as GL deletes it, once nothing uses it, as browsers have it: the current program
+  stays and answers every call until another is made current -- though it is not made current again nor takes a shader
+  (INVALID_OPERATION) -- and a shader stays while attached to a program that is there; `isProgram` and `isShader`
+  answer whether it is. Once gone, every program or shader call that takes it is INVALID_VALUE (it was
+  INVALID_OPERATION, or no error at all, or a stale answer); another context's is INVALID_OPERATION; a value that is
+  no program or shader, null among them, is a TypeError, where calls took it silently. Deleting another context's
+  object is INVALID_OPERATION. The renderer deletes a program or shader when it goes, and not before: it dropped the
+  program in use at once, so the draws until another was made current, and every query of it, named a program it no
+  longer had (on Performance+ the queries threw).
+- WebGL: the calls a browser refuses are refused, each with its error, where they reached the driver or were taken: an
+  attribute index past MAX_VERTEX_ATTRIBS on every attribute call (INVALID_VALUE); WebGL 2's attribute types in WebGL 1
+  (INVALID_ENUM); an attribute offset or stride off its type's size, a packed type not of size 4, an offset into no
+  buffer (INVALID_OPERATION; WebGL 2's packed attribute types are taken, where the decoder refused them); a gl_ name
+  bound (INVALID_OPERATION); an attribute or uniform location looked up in a program never linked, or whose link
+  failed (INVALID_OPERATION); a program or shader parameter WebGL does not have (INVALID_ENUM and null); a fence of
+  another condition (INVALID_ENUM) or flags (INVALID_VALUE); more storage levels than the size has (INVALID_OPERATION,
+  was INVALID_VALUE); a transform feedback buffer mode of none (INVALID_ENUM) or more separate varyings than there are
+  bindings (INVALID_VALUE). A detach ignores the textarget, and in WebGL 2 the level, as ES 3.0 has it, and gives the
+  driver TEXTURE_2D's level 0.
+- WebGL: every state setter refuses what WebGL refuses, and the state stays as it was: a comparison function, face,
+  stencil operation or blend factor that is none (INVALID_ENUM), a constant colour factor with a constant alpha one
+  among the colour factors (INVALID_OPERATION), SRC_ALPHA_SATURATE as a WebGL 1 destination factor (INVALID_ENUM), a
+  line width not above 0 (INVALID_VALUE), a depth range from far to near (INVALID_OPERATION). These reached the driver,
+  whose error never reaches `getError`. The rules are the decoder's, for the stream and the raw call alike.
+- WebGL: `getParameter` answers its version's parameters and the enabled extensions' only -- WebGL 2's in a WebGL 1
+  context, MAX_DRAW_BUFFERS and MAX_COLOR_ATTACHMENTS without WEBGL_draw_buffers, and any parameter of no WebGL are
+  INVALID_ENUM and null, where the driver answered a number -- and as WebGL types each: Float32Array, Int32Array and
+  booleans where it answered plain arrays, MAX_VIEWPORT_DIMS as both dimensions where it answered one, the GLint64
+  limits (MAX_ELEMENT_INDEX and the rest) whole, the stencil masks as the GLuint set where a driver clamps them, and
+  COMPRESSED_TEXTURE_FORMATS as the formats of the compressed-texture extensions enabled.
+- WebGL: an attachment of a texture level is complete only as ES 3.0 4.4.4.2 has it -- from the base level to the last
+  a full chain has, a level other than the base only of a mipmap-complete texture, a cube map's face only of a
+  cube-complete one -- and setting TEXTURE_BASE_LEVEL or TEXTURE_MAX_LEVEL judges framebuffers again; the facade had
+  called such framebuffers complete. A copy into a depth or depth-stencil image is INVALID_OPERATION; it was let
+  through to the driver. IMPLEMENTATION_COLOR_READ_FORMAT and _TYPE of a read framebuffer that cannot be read are
+  INVALID_OPERATION and null, as they are in browsers.
+- WebGL 1: `blendEquation`, `blendEquationSeparate` and `hint` refuse what they do not take (INVALID_ENUM): MIN and MAX
+  before EXT_blend_minmax, an unknown equation, target or mode reached the driver, which took MIN and MAX and logged the
+  rest. `readPixels` takes WebGL 1's formats and types only, and a view of another type than the type is
+  INVALID_OPERATION before the read buffer is judged, as browsers order them. `getFramebufferAttachmentParameter`
+  answers WebGL 1's targets, attachment points and parameters only (READ_FRAMEBUFFER, the attachment sizes and
+  TEXTURE_LAYER are WebGL 2's; a colour attachment past the context's is INVALID_ENUM), refuses the default framebuffer
+  (INVALID_OPERATION), and COMPONENT_TYPE of DEPTH_STENCIL_ATTACHMENT is INVALID_OPERATION in either version.
+- WebGL: every extension a context offers is one table's -- the registry's names, the WebGL versions that have each and
+  the renderer capability each needs -- which both `getExtension` and `getSupportedExtensions` read. A WebGL 2 context
+  offered WebGL 1's ANGLE_instanced_arrays, OES_vertex_array_object, WEBGL_draw_buffers and OES_element_index_uint,
+  which are WebGL 2 core and which no browser offers it; every context answered `EXT_instanced_arrays` and
+  `WEBGL_instanced_arrays`, names the registry does not have. Names now compare case-insensitively, as WebGL specifies,
+  and a lost context answers null to both calls. A driver's VENDOR, RENDERER, VERSION or SHADING_LANGUAGE_VERSION
+  string is escaped in the renderer's answer: a quote or a backslash in one made the answer unreadable.
+- WebGL: the default framebuffer's draw and read buffers. Where the engine's drawing buffer stands in for the default
+  framebuffer -- an FBO, which takes no BACK --, `drawBuffers([BACK])` and `readBuffer(BACK)` reached the driver as BACK
+  and were refused there, unseen: once content had turned either to NONE it could not turn it back, and drew or read
+  nothing until the context was lost. BACK now names the drawing buffer's colour attachment. The engine's own use of
+  that buffer no longer depends on the content's choice: the present reads the colour attachment, and the clear a
+  present owes clears it, whatever read or draw buffer the content set. `drawBuffers` (and WEBGL_draw_buffers'
+  `drawBuffersWEBGL`) is judged before anything is sent, in a browser's order -- a value that is not NONE, BACK or a
+  colour attachment the context has INVALID_ENUM, more than MAX_DRAW_BUFFERS INVALID_VALUE, anything but BACK or NONE
+  alone for the default framebuffer and anything but COLOR_ATTACHMENTi or NONE at place i for an object
+  INVALID_OPERATION -- and recorded per framebuffer, which is what `DRAW_BUFFERi` answers without crossing (the driver
+  answered COLOR_ATTACHMENT0 for the default framebuffer's, which is BACK).
+- WebGL 2: `EXT_float_blend`, offered where the renderer's driver blends into 32-bit float colour buffers (desktop GL,
+  or GL ES with `GL_EXT_float_blend`) and enabled with EXT_color_buffer_float there, as a browser enables it. Where it
+  cannot, a draw with blending on and a 32-bit float image among its draw buffers is INVALID_OPERATION, as the
+  extension specifies; the driver refused it unseen, or blended undefined values.
+- WebGL: an upload whose pixels are a TexImageSource -- a decoded image or `ImageBitmap`, a canvas, `getImageData`'s
+  snapshot, `ImageData` -- is converted to the call's format and type as WebGL defines it, on both lanes and for every
+  source alike. The renderer copied an 8-bit RGB(A) image of a source it held on the GPU and handed every other
+  combination the source's RGBA8 bytes as though they were already the asked-for format: an RGB, a packed
+  (`UNSIGNED_SHORT_5_6_5`, `4_4_4_4`, `5_5_5_1`, `2_10_10_10_REV`, `10F_11F_11F_REV`), a half-float or float, a
+  LUMINANCE / ALPHA / RG / RED / integer upload came out garbled, an sRGB or float destination of a GPU-held source was
+  refused by the copy, and `ImageData` was read with the content's UNPACK_ALIGNMENT and UNPACK_ROW_LENGTH. Now the
+  pixels are packed as a browser packs them -- a packed type truncated to its bits, `RGB10_A2` as `v * 1023 / 255`
+  rounded down, 8-bit and packed destinations premultiplied in 8 bits, float ones in floating point --, a GPU copy is
+  kept for a source the renderer holds whenever it reproduces that exactly (no flip, no alpha change, a destination of
+  the source's own 8-bit components), and a GPU-held source is read back otherwise, only the rows the call selects. WebGL
+  2's selection applies: `UNPACK_SKIP_PIXELS` / `UNPACK_SKIP_ROWS` and the call's size select a rectangle of the source
+  as `UNPACK_FLIP_Y_WEBGL` leaves it, and a selection past the source is INVALID_OPERATION. `texImage3D` and
+  `texSubImage3D` take a TexImageSource, sliced by `UNPACK_IMAGE_HEIGHT` from `UNPACK_SKIP_IMAGES`; they uploaded
+  nothing. The WebGL 2 table of TexImageSource formats (3.7.6) is enforced in a browser's order -- an internal format
+  outside it INVALID_VALUE, a format or type outside it INVALID_ENUM, a combination it does not list
+  INVALID_OPERATION --, and a value that is no TexImageSource is a TypeError, as is one in WebGL 1's 9-argument form.
+  One record and one op carry every such upload (`TEX_IMAGE_SOURCE`, `op_tex_image_source`), replacing six.
+- WebGL: a framebuffer object's completeness is judged by the facade, from the attachments, texture images and
+  renderbuffer storage it records (ES 3.0 4.4.4, WebGL 1.0 6.6): no attachment, an attachment that is not an image its
+  point can render to (a LUMINANCE texture, a float format while EXT_color_buffer_float is not enabled, a renderbuffer without
+  storage), WebGL 1's attachments of different sizes or a depth and a stencil attachment that are not one image, and
+  renderbuffers of different sample counts. `checkFramebufferStatus` answers those without crossing, and asks the
+  driver once a configuration the rules allow, for the combinations an implementation may still refuse. A draw, clear,
+  `clearBuffer*`, `readPixels`, copy or blit with a framebuffer that is not complete is INVALID_FRAMEBUFFER_OPERATION
+  and nothing is sent: the driver refused such a call too, but its error never reached `getError`, and the facade had
+  recorded what the call defined as if it had run. INVALID_FRAMEBUFFER_OPERATION is now recorded as itself; the
+  facade's error queue turned it into INVALID_OPERATION. A copy takes only a read buffer it can convert (ES 3.0 table
+  3.15, as a browser enforces it) -- a component the destination has and the source lacks, another component type,
+  colour encoding or component size is INVALID_OPERATION -- and a float destination is INVALID_ENUM without
+  EXT_color_buffer_float enabled. `readBuffer` is recorded and checked (BACK or NONE for the
+  default framebuffer, NONE or a colour attachment for an object) and READ_BUFFER answers from it; a read from NONE is
+  INVALID_OPERATION. The attachment calls are judged before they are recorded: the target and attachment point, a
+  texture of the textarget's kind, a level of 0 in WebGL 1, a renderbuffer that has been bound, a 3D or 2D-array
+  texture for a layer, and the default framebuffer, which takes none.
+- Canvas 2D: the context's arguments are converted as WebIDL converts them. Every method counts its required arguments
+  (`fillRect(0, 0, 1)`, `translate(1)`, `fillText("x", 0)` are TypeErrors; `drawImage` takes three, five or nine);
+  numbers are converted in order, so a BigInt or a Symbol is a TypeError where it was a silent no-op, and a Symbol for
+  a string (`fillText`, `fillStyle`, a keyword attribute) is one too. The gradient factories and `addColorStop` take
+  `double`s: one that is not finite is a TypeError, a negative radius and an offset outside 0..1 IndexSizeErrors (the
+  offset was a RangeError), and a colour stop of `null` is the SyntaxError of a colour that does not parse.
+  `setLineDash` takes any iterable and refuses anything else -- an array-like object was read by its `length`. An image
+  argument (`drawImage`, `createPattern`) is the engine's image, ImageBitmap or canvas: `null`, an ImageData or an
+  object with the right names is a TypeError, a broken image or a closed bitmap an InvalidStateError, an image still
+  loading draws nothing and is a null pattern -- and an ImageBitmap is drawn, which it never was (it was asked whether
+  it had `loaded`). `drawImage(image, dx, dy)` draws the image at its natural size. `createPattern`'s repetition is
+  read as the specification reads it: `null` is "repeat", `undefined` a SyntaxError, and a missing one a TypeError.
+  `setTransform()` and `setTransform(transform)` take a DOMMatrix2DInit. `direction` ignores what is not one of its
+  three keywords and is saved and restored with the rest of the drawing state. `new ImageBitmap()` is a TypeError.
+- Canvas 2D: `ctx.font` is read as Chrome reads it, by one parser in the facade. A shorthand needs a size and a family
+  (`20px` alone is ignored, `0px serif` is a font); each of style, `small-caps`, weight and stretch is given at most once,
+  `normal` standing for any; sizes in px, pt, pc, in, cm, mm, Q, em, rem, ex, ch, ic, %, the absolute keywords and
+  `larger`/`smaller` -- relative ones against the canvas default 10px, where `em` and `%` used to be 16px; families as
+  strings, identifier sequences and generic keywords, escapes and comments included; CSS-wide keywords refused. `font`
+  reads back the font serialised (`italic bold small-caps 16px "Noto Sans", serif`, the size to six digits) rather than
+  the string assigned. The renderer and the measurer are sent what the facade read -- size, weight, slant and the family
+  names -- never text, so `measureText` and `fillText` cannot read one string two ways. Gone: the two Rust parsers
+  (`shared::css_font_shorthand`, `shared::css_font`), the Performance+ producer's port of the first, and the corpus
+  gate that held the port to it (`scripts/test-css-font-agreement.sh`); on Performance+ the font record (550) carries
+  the fields, and its family names are charged to the decode budget one `String` each. Not read, so ignored: math
+  functions, `var()`, viewport, container, line-height and `cap` units. A system font keyword is the platform UI face
+  at 16px (`16px system-ui`).
+- Canvas 2D: the current default path keeps each point where the transform current when it was added put it, as the
+  specification has it. A path built and then filled after a `translate` was drawn through the later transform. The
+  renderer keeps the path in the space it was built in and moves it once, when it is next used, so a `save()` /
+  `translate()` / `restore()` around a path costs it nothing.
+- Canvas 2D: `ellipse` continues the subpath the line to its start is in. Its arc began a contour of its own, so
+  `moveTo(centre); ellipse(...); closePath(); fill()` filled the chord, not the pie.
+- WebGL: a drawing buffer is cleared after it has been presented unless the context asked for it to be preserved
+  (`preserveDrawingBuffer`, WebGL 1.0 2.2) -- colour to transparent black, depth to 1, stencil to 0. It was never
+  cleared: a frame that did not clear began on the frame before, a read after the present returned the presented frame,
+  and under bypass (drawing straight into the window) a swap left the window's buffer undefined and content drew over
+  whatever it held. The clear is owed from the end of a frame that drew into the screen -- when a browser hands the
+  buffer to its compositor, so what content finds in its buffer depends on its own frames and never on when the render
+  thread swapped -- until the content next draws into, clears or reads the default framebuffer, and made then, with the
+  content's state put back: a frame that begins with a clear of its own pays only for the buffers that clear does not
+  overwrite (one with no scissor, write mask or rasterizer discard in its way), and a frame that only reads leaves the
+  screen as it was. A preserved buffer is never bypassed. This replaces the latch that turned bypass off for good at the
+  first `readPixels` of the screen's default framebuffer (and the external-frame sessions' version of it, set from the
+  start), which kept a frame's contents across its present so that a read arriving after it saw them: such a read now
+  sees the cleared buffer, as the specification has it, and an in-frame read no longer costs a full-screen copy every
+  frame after it. `clear` with a bit that names no buffer is INVALID_VALUE and clears nothing; it was sent. The bypass
+  presentation probe asks for the window's buffers (`stencil: true`), which bypass has required since the drawing
+  buffer took the context's attributes.
+- Presentation: a frame is presented whole. A barrier -- the packet a synchronous call sends mid-frame so that it sees
+  what was recorded before it -- presented the GL work it carried at the next tick, half a frame, whenever content asked
+  a question between draws; Canvas2D barriers already did not. The frame's end presents what its barriers drew, in
+  Canvas2D and WebGL alike, and when everything it drew went ahead in barriers its end is still sent (an empty
+  presenting packet, in the embedded runtime and the Performance+ producer, where a frame with nothing left to carry
+  sent none and was never presented). And a finished frame is presented before anything that arrives behind it runs: a
+  task that drew between a frame's end and the tick that swaps it put its draws into the frame being shown. In the
+  steady state nothing arrives in between, and frames are still presented on the frame clock.
+- WebGL: `drawArraysInstancedANGLE` and `drawElementsInstancedANGLE` draw only with an attribute array enabled at
+  divisor 0, and are INVALID_OPERATION without one, as ANGLE_instanced_arrays has it in WebGL 1 and a browser enforces
+  it; a plain draw is not held to it. `vertexAttribDivisor` and `vertexAttribDivisorANGLE` refuse an index past
+  MAX_VERTEX_ATTRIBS (INVALID_VALUE) instead of sending it.
+- WebGL 2: sampler, transform feedback and query objects are the facade's, like every other object. SAMPLER_BINDING
+  and TRANSFORM_FEEDBACK_BINDING answer with the object bound, not the driver's integer name, and a deleted sampler is
+  unbound from every unit; `bindSampler` refuses a unit past the limit (INVALID_VALUE) and `bindTransformFeedback`
+  another target (INVALID_ENUM) or a change while the bound object is active and not paused (INVALID_OPERATION). A
+  transform feedback or query object was a plain object any `{_id}` could pass for, and an object of another kind is
+  now WebIDL's TypeError. A query is begun on one target for good, one at a time a slot -- the two occlusion targets
+  share one -- and `endQuery` with nothing active is INVALID_OPERATION, as is asking an active or never-begun query for
+  its result. QUERY_RESULT_AVAILABLE is a boolean, false in the task that ended the query and the same every time it is
+  asked within a task (WebGL 2.0 5.38); QUERY_RESULT is 0 until it is available, and the renderer asks the driver for a
+  result only once it is, where it used to wait for the GPU to finish the query on the render thread.
+- `requestAnimationFrame`'s timestamp is when the frame began, on the timeline `performance.now()` reads, and never
+  after the callback that receives it. Apple's display link reported when the frame is due to appear, still to come,
+  and the engine anchored the host's clock to the process clock at the first frame it handled, so a first frame
+  handled late -- a loaded machine, a long startup -- put every later timestamp that far ahead: under load a callback
+  read a timestamp 25 ms after its own `performance.now()`. The host's frame time is now the frame's start
+  (`CADisplayLink.timestamp`; `CVDisplayLink`'s host times, which are on the uptime clock where its video times are on
+  the display's own), and the engine converts it as it arrives, through a reading of the same monotonic clock taken
+  then, so a frame keeps the time it began however long it waited. `migo_session_notify_vsync` documents the clock
+  each platform reports on.
+- Canvas2D / WebGL: Skia's GL work runs in its own context. Skia does its GL work in whatever EGL context is current,
+  and a cleanup is GL work -- it deletes textures and framebuffers -- but the periodic purge of every 2D context's
+  unused resources (every 250 ms), the low-memory trim, and the re-capping of every context's share of the resource
+  cache on each canvas create and destroy were all run with whatever context happened to be current, often a WebGL
+  canvas's. A framebuffer name means a different object in every context, so the purge deleted that context's
+  framebuffer of the same name: on the iPhone a WebGL canvas lost its DrawingBuffer (its context's framebuffer 1)
+  mid-frame and drew into its 1x1 pbuffer from then on, a draw that read back as nothing. Purges and trims now go
+  through one sweep that makes each `GrDirectContext`'s own context current -- the shared offscreen-2D context once,
+  each other canvas's its own -- and a context installs its share of the cache when it is current for its own work
+  (its flush, or the sweep), which also makes a canvas create or destroy cost nothing per live context. The image-copy
+  framebuffer is keyed by the context that owns it, and a destroyed canvas's framebuffers, vertex arrays, queries and
+  transform feedbacks go with its context instead of being deleted by name from the resource context, as teardown's
+  are.
+- WebGL: the drawing buffer has exactly the buffers the context's attributes ask for (WebGL 1.0 5.2), and
+  `getContextAttributes()` says what it has. It used to be RGBA8 with a 24-bit depth and an 8-bit stencil buffer
+  whatever was asked: a context without stencil (the default) had one, so a stencil test that cannot fail without a
+  stencil buffer failed; `depth: false` kept a depth buffer; `alpha: false` read back the alpha it drew; the stencil
+  attribute was reported true by default and antialiasing on, though the buffer is single-sampled. Each context's
+  constructor now encodes its attributes ahead of its first command (frame-wire GL record 73, `WEBGL_CONTEXT`: alpha,
+  depth, stencil, preserveDrawingBuffer bits), and the renderer allocates the colour buffer RGBA8 or RGB8 and the
+  depth/stencil buffer as DEPTH24_STENCIL8, DEPTH_COMPONENT24, STENCIL_INDEX8 or none. The screen canvas's buffer takes
+  the format (and keeps it across a recreated surface and a GPU reset); an offscreen WebGL canvas, which drew into its
+  pbuffer's own framebuffer -- the EGL config's buffers, at the canvas's size -- gets a DrawingBuffer as its default
+  framebuffer and its pbuffer shrinks to one pixel. Bypass (drawing straight into the window) is taken only for a
+  context whose buffers are the window's own. Antialiasing, which the implementation may decline, is declined and
+  reported off; stencil defaults to false. `WebGL2RenderingContext`'s constructor dropped its options entirely, so a
+  WebGL 2 context ignored every attribute: it passes them on. A DrawingBuffer's same-size `canvas.width` assignment
+  now clears it, as the specification resets the buffer on every assignment (the screen canvas's did not).
+- WebGL: a draw reads no vertex outside the buffers of the attributes the program in use consumes, as the
+  specification has it (WebGL 1.0 6.4-6.6, kept by WebGL 2): a consumed attribute enabled as an array with no buffer, or
+  whose buffer does not hold every vertex the draw reads at the attribute's offset and stride -- or every instance an
+  instanced attribute reads by its divisor -- is INVALID_OPERATION and nothing is drawn. It was sent, and a driver
+  without robust access read past the buffer. An indexed draw is judged by its largest index: the facade keeps the
+  bytes of every element-array buffer (WebGL lets one take data only through `bufferData`, `bufferSubData` and copies
+  between element-array buffers) and caches the largest index of each range drawn until they change; in WebGL 2 the
+  primitive-restart index reads no vertex. Which locations a program consumes comes with LINK_STATUS, asked once per
+  link as the link's whole result (`gl_state::LINK_RESULT`), so it costs no crossing of its own. The draw's own
+  arguments are judged first, in a browser's order: a mode that is no primitive, or an index type the context does
+  not take (UNSIGNED_INT needs OES_element_index_uint in WebGL 1), is INVALID_ENUM; a negative first, count, instance
+  count or offset INVALID_VALUE; an offset off the index size INVALID_OPERATION.
+- WebGL 1: a texture whose level 0 is not a power of two each way samples as incomplete -- (0, 0, 0, 1) -- unless both
+  its wraps are CLAMP_TO_EDGE and its minification filter reads no mipmap, as the specification has it (ES 2.0 3.8.2).
+  The driver underneath is OpenGL ES 3.0, for which such a texture is complete, so it used to be sampled. The facade
+  keeps which textures are incomplete and where each is bound, after every call that can change either (a level 0
+  defined, a wrap or filter set, a bind, a delete); a draw holds no texture at those bindings -- texture 0, which WebGL
+  never gives an image, so the driver samples it as incomplete -- and puts them back after it. A draw with none
+  pays one size test; WebGL 2, whose rules are ES 3.0's, withholds nothing.
+- WebGL: the facade keeps a record of every texture image -- each level of a 2D, 3D or 2D-array texture and of each
+  face of a cube map, with its internal format, the format and type its data came in, its size and whether it is
+  compressed or immutable -- and judges by it, before anything is sent, what used to reach the driver, whose errors
+  never reach `getError`: an upload, copy or compressed upload into an image that is not there (INVALID_OPERATION),
+  past its edge (INVALID_VALUE), from a (format, type) ES 3.0 tables 3.2/3.3 do not have with the image's internal
+  format -- in WebGL 1 another format or type than the image was defined with -- (INVALID_OPERATION); immutable
+  storage defined again by `texImage*`, `copyTexImage2D`, a compressed image or `texStorage*` (INVALID_OPERATION); a
+  WebGL 1 mipmap level of a size that is not a power of two (INVALID_VALUE); `generateMipmap` of a base that is not
+  there, empty, compressed, not colour-renderable and filterable, a WebGL 1 non-power-of-two, or a cube map whose faces
+  are not all there and alike (INVALID_OPERATION), which starts at TEXTURE_BASE_LEVEL in WebGL 2 and whose levels are
+  recorded. An image is recorded when the call that defines it is sent, so `copyTexImage2D` judges the decoder's
+  rules here too, in the decoder's order, and the compressed uploads judge theirs: a format is one only while its
+  extension is enabled (INVALID_ENUM), its data is whole blocks over the size (INVALID_VALUE), an upload into it
+  starts on a block, ends on one or at the edge and is of its format (INVALID_OPERATION), and it is no 3D texture's
+  (INVALID_OPERATION).
+- WebGL 2: `texStorage2D` / `texStorage3D` take the compressed formats of an enabled extension, as three.js allocates a
+  KTX2 texture before `compressedTexSubImage2D` fills it: they were INVALID_ENUM in the facade and refused by the GPU
+  budget, so such a texture stayed black. The budget charges compressed storage in whole blocks, from one table of the
+  WebGL compressed formats (`compressed_upload::compressed_block`) that the KTX2 path now reads too.
+  `WEBGL_compressed_texture_astc` names all 28 formats of the LDR profile and has `getSupportedProfiles()`.
+- WebGL: `texParameteri` / `texParameterf` refuse a parameter the context's textures do not have, or a value an enum one
+  does not take (INVALID_ENUM; WebGL 1 has the filters and the two wraps only), and a negative TEXTURE_BASE_LEVEL or
+  TEXTURE_MAX_LEVEL (INVALID_VALUE); `getTexParameter` answers every WebGL 2 parameter (the LODs as the floats they were
+  set to, TEXTURE_IMMUTABLE_FORMAT and TEXTURE_IMMUTABLE_LEVELS from `texStorage*`). A value is converted as WebIDL
+  converts it and always encoded in the stream: `op_tex_parameteri`, `op_tex_parameterf` and `op_generate_mipmap`,
+  reached only by a non-number argument (and then a TypeError), are gone.
+- WebGL: a renderbuffer takes RGB565, which was INVALID_ENUM, and the formats are the specification's per interface
+  (WebGL 1's six; in WebGL 2 the colour-renderable sized formats that need no extension, depth and stencil);
+  `renderbufferStorage*` with no renderbuffer bound is INVALID_OPERATION. `texStorage*` refuses DEPTH_STENCIL, an
+  unsized format the old list took for a sized one, and a cube map that is not square (INVALID_VALUE).
+- WebGL 2: a 3D upload from a view while UNPACK_FLIP_Y_WEBGL or UNPACK_PREMULTIPLY_ALPHA_WEBGL is set is
+  INVALID_OPERATION, as the specification has it (the flags are defined for 2D images); it was uploaded unflipped. An
+  upload offset past 2^31 - 1 is INVALID_OPERATION, as a browser answers it; it was INVALID_VALUE.
+- Performance+: a sub-image upload's record always names its source. A `texSubImage3D` record could name none, and the
+  renderer then handed the driver a null pointer to read from.
+- WebGL: texture uploads are checked as the specification checks them, before anything is sent; the driver's own
+  error never reached `getError`, and an upload from a view shorter than its rows had the driver read past the view.
+  In the order a browser judges them: an internal format the context does not have is INVALID_VALUE, a format or a
+  type INVALID_ENUM (WebGL 1 has the unsized formats and their four types only), and a combination ES 3.0 tables 3.2
+  / 3.3 do not have INVALID_OPERATION (a format other than the internal format in WebGL 1; RGBA8 from RGB in WebGL 2;
+  a depth image in a TEXTURE_3D). Pixels from a view are INVALID_OPERATION when the view is not of the type's kind
+  (a DataView, a Uint16Array for UNSIGNED_BYTE), or holds fewer bytes from its `srcOffset` than the pixel-store state
+  lays the upload over -- rows padded to UNPACK_ALIGNMENT, UNPACK_ROW_LENGTH and UNPACK_IMAGE_HEIGHT in place of the
+  size, the skips in front -- and only those bytes are copied. A sub-rectangle outside its data store (WebGL 2.0 5.35)
+  is INVALID_OPERATION, `texSubImage2D` / `texSubImage3D` of null pixels INVALID_VALUE, an array or another value
+  that is not a view a TypeError. `texSubImage2D` and `texSubImage3D` take the format and type pairs of either table.
+- WebGL 2: `texImage2D` / `texSubImage2D(..., srcData, srcOffset)` upload from `srcOffset`; they uploaded from the
+  start of the view. A `srcOffset` past the data of a 3D upload is INVALID_OPERATION ("not enough data"), as the
+  specification has it; it was INVALID_VALUE.
+- WebGL 2: an upload names its pixels or a PIXEL_UNPACK_BUFFER, never both. With a buffer bound, an upload from a view
+  (or of null pixels) is INVALID_OPERATION; an upload from an offset needs a buffer bound and its range inside the
+  buffer, at a multiple of the type's size (INVALID_OPERATION), for the 3D and the compressed uploads alike. The
+  renderer refuses an offset with no buffer bound as well, asking the driver: GL would read the offset as an address,
+  and on the Performance+ lane it comes from another process. It refuses bytes fewer than the upload's rows read, by
+  the same layout.
+- WebGL: `pixelStorei` refuses what GL does not have -- a pname the context lacks (INVALID_ENUM; the row lengths and
+  skips are WebGL 2's), an alignment other than 1, 2, 4 or 8 or a negative length or skip (INVALID_VALUE), a
+  colour-space conversion other than NONE or BROWSER_DEFAULT_WEBGL (INVALID_ENUM) -- and changes nothing when it does.
+  `getParameter` answers the pixel-store state as it was set, without asking the driver.
+- Renderer: the pixel-store shadow keeps what content set apart from which values the driver is known to hold. A Skia
+  boundary forgot both, so an upload after it would have read its rows -- and its flip and premultiply flags -- as the
+  defaults; today only 2D canvases cross that boundary, so no upload was affected.
+- WebGL: texture, framebuffer and renderbuffer objects behave as GL's do. A texture keeps the target it was first
+  bound to (another is INVALID_OPERATION), a call on a texture -- every `tex*` upload, copy, storage and parameter
+  call, `generateMipmap`, `getTexParameter` -- needs one bound (INVALID_OPERATION) to a target the call takes
+  (INVALID_ENUM: a cube map's face for an image, the cube map for a parameter), and `activeTexture` past
+  MAX_COMBINED_TEXTURE_IMAGE_UNITS is INVALID_ENUM. `getParameter` answers TEXTURE_BINDING_3D and
+  TEXTURE_BINDING_2D_ARRAY with the objects (they were the driver's integer names). `bindFramebuffer` takes
+  READ_FRAMEBUFFER / DRAW_FRAMEBUFFER in WebGL 2 only and `bindRenderbuffer` RENDERBUFFER only (INVALID_ENUM), and
+  none of the three binds a deleted object or another context's (INVALID_OPERATION) or a value that is not one
+  (TypeError). A deleted texture leaves every unit and the framebuffers bound, a deleted renderbuffer RENDERBUFFER and
+  the framebuffers bound, a deleted framebuffer its bindings (ES 3.0 D.1.2). `isTexture`, `isFramebuffer` and
+  `isRenderbuffer` are false for an object never bound, as GL answers.
+- WebGL: deleting the framebuffer a context has bound left the draws after it on name 0, not the canvas's drawing
+  buffer, until content bound a framebuffer again: GL reverts a deleted binding to 0, which is not the default
+  framebuffer of a canvas that draws into a DrawingBuffer. The renderer binds the default -- the DrawingBuffer where
+  there is one -- before it deletes the object.
+- WebGL: calls the specification refuses are refused before they reach the driver, whose error never reached
+  `getError`. `enable` / `disable` / `isEnabled` of an enum that is not a capability -- RASTERIZER_DISCARD in WebGL 1
+  among them -- are INVALID_ENUM; a negative `viewport` size is INVALID_VALUE, as a negative `scissor` size already
+  was (the decoder reads the size as the signed GLsizei it is, for both lanes, and so does the op); `useProgram` of a program
+  that did not link, was deleted or is another context's is INVALID_OPERATION and leaves the program in use as it was
+  (whether a program linked is asked once per link and kept, as `getProgramParameter` keeps it), and a value that is
+  not a program is a TypeError; a draw with no program in use is INVALID_OPERATION.
+- WebGL: errors are flags, one per code (ES 3.0 2.5), as Chrome holds its own: a code raised by several calls before
+  `getError` reads it is read once. The queue used to hold every one, so a single `getError` left the same error behind
+  for the next. The facade's own refusals and the decoder's go into that one queue per context (the facade kept a
+  second, ahead of it). Held as flags, the queue cannot grow past the codes there are, so its 256-entry cap, the
+  overflow counter and the OUT_OF_MEMORY it planted are gone; the overflow slot of the debug statistics stays, at 0,
+  so the layout the platform overlays read is unchanged.
+- WebGL 2: `bufferData(target, view, usage, srcOffset, length)` and `bufferSubData(target, dstByteOffset, view,
+  srcOffset, length)` upload the elements they name. Both used to ignore `srcOffset` and `length` and upload the whole
+  view, so a partial attribute update -- three.js updates ranges of an attribute this way -- wrote the wrong bytes, or
+  ran past the buffer and was dropped by the driver.
+- WebGL: buffer state is kept for every target. `getParameter` answers COPY_READ / COPY_WRITE / PIXEL_PACK /
+  PIXEL_UNPACK / UNIFORM / TRANSFORM_FEEDBACK_BUFFER_BINDING and VERTEX_ARRAY_BINDING with the objects (they were the
+  driver's integer names), `getBufferParameter` answers on every WebGL 2 target (it was INVALID_ENUM there), the
+  element array buffer is the bound vertex array object's and the generic transform feedback buffer the bound transform
+  feedback object's (ES 3.0 tables 6.2 and 6.24). From that state the calls refuse what the specification refuses
+  before anything is sent: a target the context does not have and a usage it does not take (INVALID_ENUM); nothing
+  bound, a deleted buffer, an index buffer bound as other data or the reverse, a draw that would read past its index
+  buffer or has none, and a `copyBufferSubData` between index and other data (INVALID_OPERATION); a negative size or
+  offset, null data, a `bufferSubData` or `copyBufferSubData` range past its buffer and two overlapping ranges of one
+  buffer (INVALID_VALUE). Deleting a buffer unbinds it from this context and from the vertex array and transform
+  feedback objects bound, and an object not bound keeps it (ES 3.0 D.1.2). `isBuffer` and `isVertexArray` are false
+  for an object never bound, as GL answers.
+- WebGL 1: `OES_vertex_array_object` works. Its `bindVertexArrayOES` and `deleteVertexArrayOES` called WebGL 2
+  methods a WebGL 1 context does not have, and threw. Vertex array objects are `WebGLVertexArrayObject` objects of the
+  context that made them.
+- WebGL: a name passed to `getUniformLocation`, `getAttribLocation`, `bindAttribLocation` or `getFragDataLocation`
+  is checked as WebGL 1.0 6.20 and 6.21 say before GL is asked: longer than 256 characters (1024 in WebGL 2) or
+  holding a character outside the GLSL ES source character set is INVALID_VALUE, and a name WebGL reserves (`webgl_`,
+  `_webgl_`) finds nothing (`bindAttribLocation`: INVALID_OPERATION). They used to reach the driver.
+- WebGL 2: a fence signals. Nothing submitted the commands of a context that only draws offscreen -- a frame flushes
+  the canvas it presents -- so a fence made there never reached the GPU and `clientWaitSync` / SYNC_STATUS answered
+  TIMEOUT_EXPIRED / UNSIGNALED for good. A browser flushes at the end of every task; here the task that makes a fence
+  ends (its microtask checkpoint) by flushing each context that made one, once. Within that task the fence answers
+  unsignalled without asking the render side, as the specification requires, so a loop cannot spin on it there.
+  `flush()` and `finish()` now submit the context's commands (GL record 72) as well as sending what was recorded; on a
+  lost context they do nothing. On the Performance+ lane Promise's statics in the engine's primordials are bound to
+  Promise, as deno binds them: `PromiseResolve` threw there.
+- WebGL: a `srcOffset` is converted as WebIDL's `unsigned long long` (`clearBuffer*`, the uniform lists, `texImage3D`
+  / `texSubImage3D`, the compressed uploads). `>>> 0` wrapped it modulo 2^32, so an offset of 2^32 read from the start
+  of the list instead of being INVALID_VALUE. `texImage3D` / `texSubImage3D` with a `srcOffset` past the end of the view
+  are INVALID_VALUE, where they uploaded nothing in silence, and their PIXEL_UNPACK_BUFFER offset is refused when it is
+  negative or past 2^31 rather than truncated to 32 bits.
+- WebGL: a device limit the facade asks for (MAX_VERTEX_ATTRIBS, MAX_DRAW_BUFFERS, MAX_COLOR_ATTACHMENTS) is kept only
+  once the context answers: `getVertexAttrib` used to keep the fallback it took from a lost context for good. An index
+  below the minimum every implementation has (8 or 16 attributes, 4 draw buffers, 4 colour attachments) asks nothing.
+- WebGL: `invalidateFramebuffer` checks the attachments it names against the framebuffer bound: the default one
+  takes COLOR / DEPTH / STENCIL, a framebuffer object its attachment points, and a colour attachment past
+  `MAX_COLOR_ATTACHMENTS` is INVALID_OPERATION; anything else is INVALID_ENUM, where the call used to reach the driver.
+  On a canvas that draws into a DrawingBuffer (the framebuffer object that stands in for the default framebuffer),
+  COLOR / DEPTH / STENCIL are now passed as that object's attachments: GL takes only attachment points on an object,
+  so the invalidation the content asked for was an error the driver dropped.
+- iOS (Performance+): the producer's decode-budget estimate charges a gradient's stops. `OP2D_SET_FILL_STYLE_GRADIENT`
+  and `OP2D_SET_STROKE_STYLE_GRADIENT` carry a byte payload the host charges for, and the producer's table of payload
+  records did not list them, so a frame of gradients was estimated below what the host admits it at.
+  `scripts/test-render-opcode-agreement.sh` now holds the producer's payload-prefix tables to the Rust record specs,
+  opcode by opcode, which is how this was found.
+- iOS (Performance+): `getError()` returns the errors the producer found itself. A call the facade refuses before it is
+  encoded -- an upload over the budget, `texImage2D` with a nonzero border, a `readPixels` into a short buffer -- is an
+  error only the producer can know; it was recorded, and
+  `op_webgl_get_error` never drained that queue, so none was ever returned. It answers from the producer's queue first
+  (one per call, oldest first, without crossing) and then the host's.
+- Storage: the last `setStorage` / `removeStorage` / `clearStorage` for a key is the one that wins. Async
+  mutations ran as blocking SQLite writes on the scheduler's file-system pool, which has several workers, so two
+  writes to one key could run at once and finish in either order: a burst of saves left an earlier value on
+  disk (an iPhone 12 lost the last write for one or two of twenty keys every run; a Mac, whose writes finish in
+  microseconds, never showed it). Mutations of one store now apply in the order they were asked for, by a chain
+  per storage directory that holds no lock while it waits and that a cancelled write does not stop. The place in
+  line is taken when the call is made -- in the order the host handled the requests -- and not when the task that
+  runs it is first polled, so the spawn order of a multi-threaded runtime cannot reorder them. Both executions
+  share the one path, so the embedded runtime gets the same guarantee.
+- Canvas: a WebGL canvas can be the source of `drawImage(canvas, ...)` on a 2D context and of
+  `texImage2D` / `texSubImage2D` on another WebGL context (or its own), where both read nothing:
+  the renderer copies 2D canvases only, and a WebGL canvas's pixels are a drawing buffer. What the
+  canvas shows now is read back (`readPixels`, ordered after the context's own commands) onto a 2D
+  canvas the Canvas keeps for the purpose, and that is what is drawn or uploaded, right way up.
+  p5.js's `filter()` was the real engine that hit it (it copies its WebGL layer back with
+  `drawImage` and copies its own canvas into a framebuffer texture); its INVERT test is now
+  green. This costs a readback and an upload per use -- right for a screenshot or a filter, not
+  for a per-frame composite; a GPU-side copy is the optimisation if one is needed.
+- iOS (Performance+): a synchronous call (`readPixels`, `getImageData`, `toDataURL`, a WebGL query) no longer
+  waits out its 60-second deadline at random, and records are no longer lost. A finished packet shared its
+  buffer with the writer until it was sent, and a barrier that waits for the frame window blocks in a
+  synchronous request; a `FinalizationRegistry` callback that frees a collected canvas runs inside that
+  request's `send`, and the destroy op it calls appended a record to the same buffer. It overwrote the
+  packet's last word -- the host refused the packet for a pad that was not zero, every later packet was held
+  behind the gap, and the call waited out its deadline -- or, when the packet ended on the alignment, was
+  discarded by the next `reset()`, so the host never freed the canvas. The packet now owns its buffer from
+  `finish`, the writer moves onto another (two alternate, so the frame loop still allocates nothing), and a
+  record appended meanwhile is the next packet's. Found by `webgl-spec` dying on an iPhone 12 at a different
+  place on every change to the test order; the test now appends a record from inside a blocking call and
+  requires every packet well formed and the record delivered once.
+- iOS (Performance+): `downloadFile` works. Every download failed with "Invalid mix of BigInt and other type
+  in division": the host wrote the response's content length as a 64-bit integer, which the producer reads
+  as a BigInt, where the embedded runtime hands the facade a Number (serde_v8's `u64` in a struct) and the
+  download's progress divides by it. `uploadFile` reported the bytes sent as a BigInt for the same reason.
+  The host now writes both as the file-system answers already were -- a Number while it is a safe integer --
+  from one helper they all use, and a test holds each field.
+- Canvas2D: colour strings are read as the specification has them, by one parser. `fillStyle`,
+  `strokeStyle` and `shadowColor` read back the serialised colour (`#ff0000`, or
+  `rgba(255, 0, 0, 0.5)`) instead of the string that was assigned; a string that is not a
+  colour is ignored and leaves the previous style, where it used to be stored (and drew
+  black); `addColorStop` with one throws a SyntaxError. `hsl()`, `hsla()`, `hwb()`, the
+  modern space syntax (`rgb(10 20 30 / 50%)`), percentages, decimals and `none` are read;
+  `lab()`, `lch()`, `oklab()`, `oklch()` and `color()` are not (ignored). The facade is now
+  the only reader: there were three (the facade's, the host's `parse_color_string` behind
+  `op_set_fill_style`, and the Performance+ producer's port), kept in step by a corpus test,
+  and they read a narrower language than the one content writes. The renderer is only ever
+  sent the colour, so the Rust parser, its named-colour table, the three string ops and the
+  producer's port are gone.
+- Canvas2D: freeing the copy a `createPattern(canvas)` pattern holds, and allocating its id,
+  now go after everything the stream holds (the rule every op in the 2D facade follows; the
+  test that holds it had been missed when the pattern change merged).
+- iOS (Performance+): `decodeAudioData` works. It threw "audioData is detached or cannot be detached"
+  for every buffer: the producer looked `structuredClone` up when it ran, and by then the engine's
+  namespace handling had retired the Worker's own names. The platform primitive is now captured at
+  load like the others, and a test removes the global and requires the transfer to still work. This
+  was the whole audio path on iOS: Howler's WebAudio, Phaser's audio loader and three.js's AudioLoader.
+- iOS (Performance+): `requestAnimationFrame`'s timestamp is on `performance.now()`'s timeline. The host
+  stamped frames with its own clock, 115 ms apart from content's after a loading screen, so a
+  frame's timestamp came out before the moment it was asked for and elapsed times went negative.
+  Both clocks now count from the producer's start, and the host's stamps are put on that timeline
+  with the smallest transport delay seen taken out of the gap (never later than the clock, never
+  backwards, vsync spacing kept).
+- Canvas2D: `createPattern` accepts a canvas, and a pattern does not paint past its tile
+  on an axis it does not repeat. It returned null for a canvas -- so a tiled background
+  built from an offscreen tile (Phaser's Canvas TileSprite, every hand-rolled 2D game)
+  painted nothing -- and `no-repeat`, `repeat-x` and `repeat-y` stretched the tile's edge
+  pixels over the rest of the canvas instead of leaving it transparent. A new 2D record
+  (`CAPTURE_IMAGE`, 572, two words; `contracts/frame-wire/wire-v1.md`, amendment of
+  2026-10-02) keeps a copy of the canvas as it is when the pattern is made -- what the
+  canvas draws later does not reach the pattern -- in the image store under an id the
+  facade allocates and destroys when the pattern is collected. The repetition is
+  validated (SyntaxError), a canvas with no pixels is an InvalidStateError, `""` and
+  `null` mean `repeat`.
+- WebGL: a present no longer takes the content's framebuffer binding with it. The
+  engine presents on the display clock, which can land between two of the content's
+  GL batches, and the swap-time blit rebinds the read and draw framebuffers; it then
+  re-pointed `FRAMEBUFFER` at the default one. Content that had a render target bound
+  and keeps its own cache of what is bound (three.js, like most engines) did not
+  rebind, and its next passes drew onto the canvas: `PMREMGenerator` returned a black
+  environment map about one run in twelve, and a multiple-render-target scene
+  intermittently read black. The present now puts back exactly the read and draw
+  bindings it found. Found by running the conformance suite's engine bundles repeatedly;
+  `engine-three-advanced` gains a scene that runs the generator 40 times with the
+  frame clock ticking (24-28 black maps before, none after).
+- Canvas2D: a `getImageData` whose pixels were read while the renderer presented could
+  come back all zeros -- about one read in 400 on an iPhone 12 (Performance+), where
+  the capture and the read of `.data` are a socket round trip apart. The renderer
+  dropped its snapshot pool at every present; it now drops only the snapshots of
+  content frames that have ended (a presenting packet), and keeps the frame being
+  built. Found by running the conformance suite's suites on a device.
+- Canvas2D: an `ImageData` from `getImageData` read after its frame has ended no longer
+  reads as zeros. The facade captures a GPU snapshot and reads it back only on `.data`,
+  and the renderer keeps a snapshot for one frame: a stored `ImageData` used for
+  hit-testing was all transparent a frame later, on every platform (a 100 ms delay was
+  enough). The frame-end pass now reads back every `ImageData` nobody has read and no
+  `texImage2D`/`texSubImage2D` has consumed -- the readback a browser does at the call,
+  taken when it can no longer be avoided; the text-label pattern the snapshots exist
+  for (`texImage2D(imageData)` in the same frame) still costs no readback. The facade
+  also counts snapshot bytes (32 MiB, half the render pool's 64 MiB) and reads eagerly
+  past them: a capture the pool refuses reached nobody, and sixty 1 MiB captures read
+  later would have been all zeros from the 64th megabyte on.
+- iOS (Performance+): the on-screen canvas reports the size the renderer gives it
+  (the surface in CSS pixels: 390 x 844 on an iPhone 12), not the physical surface
+  (1170 x 2532). Content that sized its drawing from `canvas.width` drew at three
+  times the canvas it was drawing on, and a `getImageData` past the real canvas
+  came back empty. A size the content sets is still its own.
+- iOS: an image that finished decoding before the on-screen 2D canvas had been
+  drawn on or read left that canvas unwritable -- every later `fillRect`,
+  `drawImage` and `putImageData` read back as transparent black -- until a WebGL
+  context existed (measured on an iPhone 12, ANGLE Metal). The render thread now
+  flushes its own queue after taking an upload from the upload thread. Found by
+  running the conformance suite's `image-decode` suite on a device.
+- Canvas2D: `drawImage` accepts a canvas as its source, in all three forms and
+  including the canvas itself and the on-screen canvas. It silently drew nothing:
+  the facade only knew images the host had decoded. A new 2D record
+  (`DRAW_CANVAS`, 570) carries it; the renderer copies the source into a texture
+  the destination can see, keeps that one copy for every later draw of the same
+  unchanged canvas (200 draws of a 256x256 canvas took 264 ms with a copy per
+  draw and 51 ms with the cache), and drops it when the source is painted on,
+  resized or destroyed. Not yet: a WebGL canvas as a source, and `createPattern`
+  with a canvas.
+- Canvas2D: `fill("evenodd")` and `clip("evenodd")` honour the rule. The argument
+  was dropped and every fill and clip was nonzero, so the holes of an even-odd
+  shape (icons, rings, cut-outs) came out solid. Two new 2D records
+  (`FILL_EVEN_ODD` 568, `CLIP_EVEN_ODD` 569) carry it
+  (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- Canvas2D attributes now keep their previous value when assigned what the
+  specification rejects, instead of storing it: `lineWidth`/`miterLimit` that is
+  zero, negative or not finite, `globalAlpha` outside 0..1 or NaN (it was
+  clamped), an unknown `lineCap`/`lineJoin`/`textAlign`/`textBaseline`, a negative
+  `shadowBlur`, a non-finite shadow offset or `lineDashOffset`, a `setLineDash`
+  list with a negative or non-finite entry. `lineWidth = NaN` used to read NaN and
+  draw nothing. `getLineDash()` reports an odd list repeated to an even one
+  (`[5]` is `[5, 5]`) and `shadowColor` reads `rgba(0, 0, 0, 0)` by default.
+- Canvas2D methods that take numbers return without doing anything when an
+  argument is NaN or infinite (`translate`, `scale`, `rotate`, `transform`,
+  `setTransform`, the path methods, `fillText`/`strokeText`), as in a browser: a
+  single `translate(NaN, 0)` used to poison the matrix and blank every later
+  draw. `arc`, `arcTo` and `ellipse` with a negative radius throw
+  `IndexSizeError`.
+- `canvas.width` / `canvas.height` convert what they are given as an
+  `unsigned long` does: `canvas.width = 1023.75` reads back 1023 (it read back
+  1023.75 while the renderer used 1023), a numeric string works (it threw a
+  `TypeError`), a negative number takes the default of 300 (it threw an engine
+  error). `getContext` answers `null` for a different kind of context than the
+  canvas already has, and `createImageData(imageData)` is accepted.
+- `getImageData(0, 0, 0, 1)` threw a `ReferenceError` (`DOMException is not
+  defined`) instead of `IndexSizeError`: the 2D context now carries its own
+  `DOMException` where the host provides none.
+- Canvas2D: `imageSmoothingEnabled` now does what it says. The property was never
+  sent to the renderer -- assigning it left a plain value on the JavaScript object
+  -- so every scaled `drawImage` was sampled bilinearly and pixel art came out
+  blurred on every platform. `imageSmoothingEnabled = false` samples the nearest
+  texel; it is saved and restored with the rest of the drawing state, survives a
+  readback, and is reset by a canvas resize. `imageSmoothingQuality` is accepted
+  and validated; all three levels draw the same. Found by the first run of
+  the conformance suite on macOS, where a 2x display put the old assertion's sample a
+  device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
+  (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
+- `putImageData` writes pixels. It was an empty function (`// Not implemented`): p5.js's `updatePixels`, EaselJS's filters
+  and every game that edits pixels on the CPU changed nothing, found by running both libraries on the real host. The
+  specification's algorithm (the dirty-rectangle form, negative extents, WebIDL `long` arguments) is in the 2D facade, and
+  the rectangle -- cut to the ImageData's dirty part and the canvas's bounds, so nothing outside is sent -- goes to the
+  renderer as one command that Skia's `writePixels` executes: it ignores the transform, the clip, `globalAlpha`, the
+  composite operation and the shadow, as the specification says, and converts from `ImageData`'s unpremultiplied RGBA.
+  In process it is `op_put_image_data` (a stream op); on the Performance+ lane it is the new record
+  `OP2D_PUT_IMAGE_DATA` (571: `H x y width height byte_length | rgba`), written as bands of at most 1 MiB so a record stays
+  inside a packet, decoded with the byte count checked against `width * height * 4`. The damage of a put is its exact device
+  rectangle, whatever the drawing state. Tests: the renderer under a hostile state (transform, clip, alpha, composite),
+  edge clipping, a short buffer (red before, green after), the decoder (order, pixels, wrong byte counts), the
+  producer's banding (tiles the rectangle exactly), and the conformance `canvas2d-spec` assertions. Runtime-v8 JavaScript
+  changed: joins the snapshot backlog.
+- `onended` of `AudioBufferSourceNode`, `OscillatorNode` and `ConstantSourceNode` fires. The nodes accepted the handler and
+  told the console that "onended callbacks are not dispatched by the native graph", so Phaser's `complete`, three.js's
+  `onEnded` and every sound library that chains one sound after another never heard a sound end. The graph knew all along
+  (`prune` already collects the finished source): setting a handler now asks the audio thread to watch that node
+  (`op_audio_watch_source_ended`, service op 181, a command in every lane), and when a watched source finishes -- runs out of
+  buffer, or `stop()` comes due -- the audio thread sends `HostCommand::AudioSourceEnded`, delivered through the host-bridge
+  hook `_internalTriggerAudioSourceEnded` (in process and in the embedded runtime alike). A game that never sets `onended`
+  costs the audio thread nothing; a source collected while it still had audio to play reports nothing; an end is reported
+  once. Tests: the context (runs to its end, stopped, collected, unwatched), the embedded dispatch, and the runtime with a
+  fake audio thread. Runtime-v8 JavaScript changed: joins the snapshot backlog.
+- `InnerAudioContext`'s `canplay` listeners run after the duration is known. The context fetched `duration` from the
+  audio thread with an async op when the native `canPlay` arrived and fired the listeners without waiting for the answer,
+  so every `onCanplay` callback read `duration === 0` (it was right 50 ms later); Howler.js's HTML5 path computes its end
+  timer from `node.duration` in that callback, got a zero-length sound and ended it before it started. Events that arrive
+  while the state is being fetched now wait behind it, so listeners still see canplay before the play of an autoplaying
+  source (a test plays the audio thread: red before, green after). Runtime-v8 JavaScript changed: joins the snapshot backlog.
+- Uniform-block introspection: `getActiveUniformBlockName`, `getActiveUniformBlockParameter`,
+  `getUniformIndices` and `getActiveUniforms` exist (PlayCanvas 2.x reads every block's name while it links
+  a shader, and stopped there with a TypeError). The driver answers, through four more numbers of the generic state
+  query (`gl_state::ACTIVE_UNIFORM_BLOCK_NAME` .. `ACTIVE_UNIFORMS_PARAMETER`; no new wire kind, op or host
+  dispatch arm), in an envelope that carries either the value or the specification's error, so an unlinked program,
+  a block or uniform index past the count and a pname WebGL leaves out (`UNIFORM_NAME_LENGTH`,
+  `UNIFORM_BLOCK_NAME_LENGTH`) raise INVALID_OPERATION / INVALID_VALUE / INVALID_ENUM on the context instead of
+  reaching the driver. A list longer than the wire's name limit goes in pieces. ANGLE answers a `getActiveUniforms`
+  list longer than the program's active uniform count with zeros; the driver is asked about each uniform once and
+  every requested index is answered from that. 43 new conformance assertions pin std140 sizes, offsets and strides,
+  the long lists, and each error; with PlayCanvas 2.22.6, Babylon.js 9.29.0, Pixi, Phaser and three.js now all run
+  their scenes.
+- `getFramebufferAttachmentParameter` exists (Phaser 3.90 asks it while it boots: a TypeError that
+  stopped the game before its first frame). The facade now records what is attached to each framebuffer, so
+  the object (the wrapper the content holds, not a GL name), its type and its level are answered from
+  that, and the default framebuffer follows the specification (`BACK`/`DEPTH`/`STENCIL`, present as the
+  context attributes say, anything else INVALID_ENUM). What it cannot know -- an attached texture's component
+  sizes, type and colour encoding -- is the driver's, through the second number of the generic state query
+  (`gl_state::FRAMEBUFFER_ATTACHMENT_PARAMETER`; no new wire kind, op or contract line). With it Phaser 3.90.0,
+  Pixi 7.4.3 and three.js 0.186.1 all run their scenes on real pixels (conformance `engines/`).
+- Phaser 3 renders: dynamic text, `useProgram(null)`, integer uniforms. Found running Phaser on the runtime
+  (graphics, a canvas texture, `Text`; 5 of 6 checks passed, and then 6 of 6):
+  - **A canvas drawn and uploaded in the same frame became an empty texture.** `texImage2D(canvas)` of a
+    canvas with pending draws goes through a snapshot record whose `format`/`type` are zeros (the facade has
+    none to forward for the six-argument form); the GPU budget refuses an unsized internal format that does
+    not equal its format, so the upload was rejected -- logged once as "WebGL GPU storage rejected" -- and the
+    texture was never allocated. A texture without storage samples (0,0,0,1): Phaser's `Text` was an opaque black
+    box. Every text sprite built this way (Phaser, Cocos Labels) was affected; a canvas that had been read
+    back first went through the other path and worked, which is why no test saw it. The snapshot is RGBA8
+    pixels, so the budget now accounts it as such (`canvas_source_upload_format`).
+  - **`useProgram(null)` failed** with "program not found: 0" and left the previous program bound; it unbinds.
+  - **`uniform2i`, `uniform3i`, `uniform4i` did not exist** (WebGL 1; Phaser sets its integer vector uniforms
+    with them): now defined, over the array forms' records.
+  - `MIGO_GL_TRACE_FAILURES=1` makes the render thread log the command that failed beside its error. The error
+    named what went wrong, not which of the thousand calls of a frame asked for it, and finding that took bisecting
+    the content; it is how the first two items were found.
+- Pixi v7 renders: `getInternalformatParameter` exists. Pixi asks `gl.getInternalformatParameter(RENDERBUFFER,
+  ..., SAMPLES)` while it creates its renderer and three.js when it makes a multisampled target, and the
+  facade did not define it (a TypeError at construction). It is the driver's answer, descending as the
+  WebGL 2 specification promises, empty for a format that cannot be multisampled (ES 3.0 cannot multisample
+  an integer renderbuffer, which ANGLE's ES 3.1 reports anyway), `null` with INVALID_ENUM for a target other
+  than RENDERBUFFER or a pname other than SAMPLES. With it a Pixi scene -- graphics, a canvas sprite, Text,
+  alpha blending, a render texture, the ticker -- draws the right pixels (10 checks on a real device; they
+  crashed the process three times before this: a zero-sized canvas, `Intl`, and this).
+  Built on a new synchronous query kind, `STATE` (`gl_query::STATE`, 16): JSON text, one kind for every
+  query that reads a value or a list back and has no reply shape of its own, selected by a number in
+  `frame_wire::sync::gl_state`. The 40-odd methods of the specification that are still missing
+  (`getUniform`, `getVertexAttrib`, `getIndexedParameter`, the uniform-block family, ...) need no new
+  wire kind, producer op, contract entry or host dispatch each: a number and a handler arm.
+- `Intl`, `toLocaleString`, `localeCompare` and `normalize` work, and `new Intl.DateTimeFormat()`
+  no longer aborts the process. V8 does not carry its own locale data: the embedder hands it
+  ICU's data before the first isolate, and `deno_core` does that only with its
+  `include_icu_data` feature, which this runtime built without. So `new
+  Intl.NumberFormat('en-US')` threw `TypeError: Internal error. Icu error.`, and
+  `new Intl.DateTimeFormat()` or `new Intl.Segmenter()` crashed the process (a V8 CHECK,
+  not an exception; a segfault in the unit tests). Nothing had ever formatted a number
+  in a test, and a game that calls `score.toLocaleString()`, sorts names with
+  `localeCompare`, or runs Pixi's `Text` (which builds an `Intl.Segmenter`) was one line
+  from it. The full data is 10.7 MB, a quarter of the Android library, so the new
+  `migo-icu-data` crate reads deno_core's pinned ICU 77 file at build time and links only
+  what `policy.rs` keeps: 6.8 MB. Kept, because what is wrong when it is missing is a
+  wrong answer: the number/date/plural data of every locale (without a locale's file a
+  German player's `1234.5` is `1,234.5`), the time zone rules, the break iterators and
+  their dictionaries (`Intl.Segmenter`, Chinese word breaking), Chinese collation
+  (pinyin/stroke order for a leaderboard), and the display names of 16 languages. Dropped:
+  character converters, transliteration, number spell-out, and the display names and
+  collation tailorings of the other locales (they fall back to the root). Installed once,
+  before the first runtime of any kind (the main one, the prewarmed one, snapshot
+  generation). The data is stored uncompressed so ICU reads it in place and only touched
+  pages become resident. The filter is code (a 150-line reader/writer of ICU's package
+  format with tests, no tool and no committed blob) and the Android size budgets move by
+  its size, with the reason written next to them. Found running Pixi on the runtime;
+  the conformance suite's `intl-spec` (27 assertions) crashes the released v0.9.19 and passes
+  here.
+- Asking for WebGL on a canvas nobody has sized yet no longer takes the process down.
+  `document.createElement('canvas')` is zero-sized until something sizes it, and
+  Pixi, Phaser and three.js all test for WebGL on exactly such a canvas before they
+  make their own. The offscreen canvas's EGL pbuffer was created at the canvas's size,
+  zero by zero; on a Mac ANGLE turned that into a zero-width Metal texture descriptor,
+  Metal's validation asserted, and the whole process aborted -- no JavaScript
+  exception, no log line -- the first time a game merely looked for WebGL (on drivers
+  that refuse a zero pbuffer, `createCanvas()` failed instead). The pbuffer is only
+  the surface `eglMakeCurrent` needs and is now never smaller than one pixel
+  (`pbuffer_extent`, at both places one is made), and `drawingBufferWidth/Height`
+  say what the WebGL specification says for a zero-sized canvas: "A 0x0 canvas will
+  yield a 1x1 drawingBufferWidth/Height". Found running Pixi on the runtime;
+  the conformance suite's `webgl-zero-size` aborts the released v0.9.19 and passes here.
+- three.js can create a WebGLRenderer, and a canvas texture is the right way up.
+  Found by running three.js (r1xx) on the runtime for the first time, which no test
+  had done: `new THREE.WebGLRenderer()` threw `TypeError: expected i32` out of
+  `getParameter(gl.MAX_SAMPLES)`. The WebGL 2 facade had never declared 160 of the
+  specification's constants (`MAX_SAMPLES`, `TEXTURE_3D`, `COLOR_ATTACHMENT1..15`,
+  `DRAW_BUFFER0..15`, `UNIFORM_BLOCK_*`, `READ_BUFFER`, `RED`, `RG`, ...), so `gl.X`
+  was `undefined` and went to a native op as an argument. All 559 constants of
+  Khronos's WebGL 1 and 2 IDL are now declared with the specification's values.
+  With that, a three.js scene (basic and PBR materials, a sphere, a data texture, an
+  animation loop) renders correctly, with one more fix: `texSubImage2D(canvas)` ignored
+  `UNPACK_FLIP_Y_WEBGL` and `UNPACK_PREMULTIPLY_ALPHA_WEBGL` (only the whole-image
+  `texImage2D` honoured them), and three.js, Pixi and Cocos all allocate with
+  `texImage2D`/`texStorage2D` and stream every canvas texture in with `texSubImage2D`,
+  so every `CanvasTexture` (every text sprite, every canvas atlas) came out upside down.
+  New gate, `scripts/test-webgl-spec-surface-contract.sh`: Khronos's IDL is vendored
+  (`contracts/runtime/webgl-idl/`), every constant must be declared with its value,
+  and every method must be defined or listed with its reason in
+  `contracts/runtime/webgl-spec-surface.json`. The list is the honest size of the gap:
+  66 methods are not implemented yet (`uniform2i`..`4i` and the `ui`/non-square-matrix
+  uniforms, `vertexAttrib*f`/`I4*`/`IPointer`, `getUniform`, `getVertexAttrib`,
+  `clearBuffer*`, `copyTexImage2D`, `getBufferSubData`, ...). Proven red for a wrong
+  value, a missing constant, a method neither defined nor listed, a stale entry and a
+  reasonless group.
+- Three permission checks work again, and a failed call names its API once. Found by
+  probing every callback-style `migo.*` API once on a desktop host
+  (the conformance suite's new `api-surface-spec`, found at run time from the namespace so
+  an API added later is covered; 272 assertions, released v0.9.19 fails 18):
+  - `checkUserLocation`, `checkWritePhotosAlbum` and `getWritePhotosAlbum` answered
+    `fail: _authSetting is not defined` on every call since the host-owns-the-answer
+    refactor (2026-08-01) removed the local map and left these three naming it. The
+    checks now read the host's current answer; `getWritePhotosAlbum`, which used to set
+    its own entry to `true` (granting itself the permission), asks the host the way
+    `authorize` does and answers under its own name.
+  - An API a host does not serve (`getClipboardData`, `vibrateShort`, `showToast`,
+    ... on a host without that service) failed with its name twice,
+    `getClipboardData:fail getClipboardData:fail not supported`: the op answers a whole
+    message and the caller put the prefix on it again. One composer
+    (`failMessage`, in `02_async.js`) now builds every `<api>:fail <why>`, and the
+    open-coded sites in the login, update, payment, camera, audio, websocket and
+    download/upload modules use it.
+- Input events carry a time on the clock content reads. A host stamps input in its
+  own clock -- the system uptime on Apple and Android, which the C ABI does not name --
+  and the engine handed that number to content untouched: on macOS a touch arrived
+  with `timeStamp` 62,067,560 ms ahead of `performance.now()`. Content compares
+  `event.timeStamp` with `performance.now()` and with the requestAnimationFrame
+  timestamp (input smoothing, double-tap windows against the frame clock, latency
+  probes; every ported web game), so every such comparison was wrong on exactly the
+  platforms whose clock disagrees. Touch, key, mouse, wheel and gamepad timestamps now
+  go through one converter (`input/00_input_clock.js`): the host's clock is anchored to
+  the page's at the first event of a burst of input (a quarter-second gap starts a new
+  burst, so the clocks cannot drift apart over a long session or a sleep), inside a
+  burst the host's spacing is kept, and the result is never in the future. The header
+  documents the contract (`include/migo/input.h`: use one clock per host; do not
+  convert). Found by the conformance suite's new `input-touch-spec`, the first bundle that
+  sends the game input (a macOS host replays real mouse events through the view's own
+  handlers; 20 assertions; released v0.9.19 fails the timestamp one and passes the
+  other 19, which is the evidence the coordinate and lifecycle path is right).
+  Also: a touch listener that throws is now reported (`console.error`) instead of
+  swallowed silently, so a handler that throws on every touch is not a game that
+  mysteriously "ignores input"; the listeners after it still hear the event.
+- `migo.request` works again for any response that has a body. Since v0.9.10 every
+  request that received a non-empty body failed with `request:fail ... read data
+  failed: TypeError: expected typed ArrayBufferView` (errno 500): the perf pass that
+  made the body read bounded (#225) merged the chunks and handed the result on as an
+  ArrayBuffer to the code that decodes a typed array, so `text`, JSON and
+  `arraybuffer` responses all failed, and `readAll`'s old Uint8Array contract was
+  nowhere asserted. It went unseen because nothing ran the engine's own `request()`
+  over a body: the SSRF filter refuses every address a test could listen on, and
+  the one fetch test read the body with `core.read` itself. A `data:` URL is answered
+  through the same ops, reader and callbacks without a connection, so the new
+  `request_through_the_engine` tests (and the conformance suite's `network-spec`) run the
+  real code. They also pin what the same pass left wrong:
+  - A response with no body (empty, 204, 304, HEAD) arrives as `""` or an empty
+    ArrayBuffer, not `null`, so `res.data.length` is not a TypeError.
+  - A `success` callback that throws no longer makes the request a failure: the
+    delivery sat inside the `try` that reports a failed read, so the app's own bug
+    ran its `fail` and `complete` after its `success`. The same shape was in
+    `downloadFile` (the download was kept and reported failed) and `uploadFile`. One
+    settler now delivers a request's outcome once, each callback isolated, and a
+    `fail` that throws no longer escapes into the event loop.
+  - `request`, `downloadFile` and `uploadFile` with arguments that cannot make a
+    request -- an unknown or non-string `method`, a `null` options object or
+    `header` -- fail through `fail`/`complete` with `request:fail ...` instead of
+    throwing out of the caller's helper; callbacks that are not functions are ignored.
+  - A body that fits one chunk (most JSON) is no longer copied a second time.
+- A proxy on the machine no longer breaks every network request. With an HTTP or
+  SOCKS proxy configured -- the `HTTP_PROXY`/`HTTPS_PROXY` environment or the
+  system setting, which the engine's client honours as the system WebView does --
+  every `request`, image and streamed audio fetch failed with `connection to
+  127.0.0.1 is not allowed (private/loopback address)` (errno 500) *after the
+  server had answered it*: the SSRF check on the address a response came from was
+  the proxy's address, 127.0.0.1 for a local proxy and a private one for a
+  corporate proxy. That check guarded nothing the client's own resolver and the
+  gate before the send do not already guard (a name resolving to a blocked
+  address is refused before any connection; an IP-literal URL is refused when the
+  request is built, and on every redirect hop), so it is gone, and tests pin both:
+  a response a loopback proxy delivers is delivered, and a loopback destination is
+  still refused without the listener behind it seeing a connection. Found by
+  trying `migo.request` from the macOS conformance host on a machine behind a
+  local proxy.
+- Starting many reads at once no longer fails most of them. A game does not read
+  its assets one at a time: an asset loader starts dozens of `readFile` calls in
+  one tick. Each whole-file read was charged the largest read a read can be
+  (100 MiB) against the scheduler's pending-byte budget instead of what the file
+  is, so sixty reads of a few hundred bytes spent the budget twice over and 37 of
+  them failed with `IO pending-byte budget exhausted: requested 104857600 bytes`.
+  The same went for the digest (`getFileInfo`) and Brotli read of a package
+  entry. A read is now charged the size of the file (one `stat`) or of the
+  package entry, bounded by the caller's `length`; one nobody can size keeps the
+  cautious estimate, which is what the budget is for. Found by the conformance suite's
+  new `io-spec` bundle (released v0.9.19: 23 of 60 succeed), and by a unit test
+  that failed one run in twenty for the same reason.
+- Workers: `terminate()` is quiet. The worker's event loop ends with V8's
+  "execution terminated", which is the answer to the request, and it was reported
+  to the content's `onError` (and logged at ERROR) as if the worker had crashed,
+  every time. Also: `terminate()` followed at once by `createWorker()` -- restarting
+  a worker -- no longer fails or hands back a worker that never starts: the old
+  thread needs a moment to leave its isolate, and `createWorker()` now waits for it
+  (up to two seconds) instead of racing it. And a worker may post a burst of
+  messages: the queue held 64, so a worker that posted a result per item in a loop
+  threw `Worker message queue full` at the 65th and the rest never existed (68 of
+  200 arrived); it holds 4096 per direction, still inside the same byte budget that
+  actually bounds the memory. Found by the conformance suite's new `worker-spec` bundle
+  (17 assertions: the released v0.9.19 fails 3).
+- `performance.now()`'s origin is clamped to the clock it is read against, which
+  matters only to tests that advance a paused clock by hand: the worker timer
+  lifecycle tests failed when run on their own, since the shared process origin
+  introduced with the frame-timestamp fix could be later than a paused clock's
+  "now" and time then stood still at zero until the clock caught up. They passed in
+  the full run by accident of ordering.
+- The V8 code cache's directory has one name however many sessions start at once.
+  Two sessions asking for the cache while its worker was clearing and recreating
+  the directory (it does that whenever the stored V8 version differs, which a
+  fresh directory always does) could find it missing, fail to resolve it, and key
+  the shared registry on the unresolved spelling -- `/var/...` against
+  `/private/var/...` -- which gave one directory two caches, two counters and a
+  32 MiB budget each. The parent directory is resolved instead, which nothing in
+  the module touches. The unit test that guards the shared budget failed one run
+  in four on this and was recorded as a flake; the cause was real.
+- The first `createCanvas()` of a game no longer fails with
+  `[Timeout] get_canvas_info timed out` when the render thread is slow to start.
+  The call waited one second for the render thread's answer, and the render
+  thread answers only after its own start-up (creating the EGL context, probing
+  the GPU, a cold driver): on a slow or loaded machine the call timed out and the
+  unhandled rejection ended the game before its first frame. The wait is five
+  seconds -- it bounds a hung render thread, not a busy one (a dead one is seen at
+  once, and a stuck one is the watchdog's) -- and the presentation-paths CI gate,
+  which failed one run in several with "blit-probe never painted" after a cold
+  runner spent 3.3 s building the runtime and 5.8 s probing the GPU, stops
+  failing for that reason.
+- `getSystemInfoSync().platform` and `getDeviceInfo().platform` named the
+  platform the engine was built for instead of `"android"` on everything. A host
+  that attached no device services (the in-process Apple host, and the desktop
+  hosts that implement window info only) was answered with an `"android"` default
+  with an empty `system` string, so content branching on the platform -- which
+  audio format, which layout, which input model -- decided as if it ran on
+  Android on a Mac, a Windows PC or a Linux box. The answer is now `"mac"`,
+  `"windows"`, `"linux"`, `"ios"`, `"ohos"` or `"android"` from the build target,
+  with `system` leading with the OS name (`"macOS"`), `abi` from the build, and
+  nothing invented: `model` stays `"unknown"`, `brand` empty, `benchmarkLevel`
+  `-1`. A host that can say more (a model, an OS version) overrides it, as the
+  Android host and the iOS Performance+ profile already do. Found by
+  the conformance suite's new `system-info-spec` bundle (37 assertions: the released
+  v0.9.19 fails the one that checks the platform against the OS string).
+- File system: `readFileSync(path, "base64")` (and `readFile`, `unzip`'s readers)
+  threw `btoa is not defined`: the encoder called the page's `btoa`, which this
+  runtime does not have without an adapter. It uses the native codec the other
+  encodings use. `writeSync` / `write` returned `{ bytesWritten }` as a BigInt, so
+  `bytesWritten + 1` was a `TypeError` and `JSON.stringify` of the result threw;
+  it is a Number now, as `readSync`'s `bytesRead` already was.
+- File system: a failed `renameSync` / `copyFileSync` (and the async forms) told
+  the content the host paths the virtual ones resolved to -- `rename
+  /Users/<name>/Library/Application Support/Migo/files/.../user_data/x -> ...` --
+  which is the user's home directory and the game's sandbox location, in the text
+  of an error a game may well log or report. It names the paths the content gave.
+  The same for a `readdirSync` that meets a non-UTF-8 file name. Found by
+  the conformance suite's new `fs-spec` bundle (81 assertions: the released v0.9.19
+  fails 8, and two groups of its assertions never ran because the base64 read
+  threw first).
+- The timestamp handed to a `requestAnimationFrame` callback is on the same
+  timeline as `performance.now()`, as in a browser. They were two clocks:
+  `performance.now()` counted from the creation of the JavaScript runtime, the
+  frame timestamp from the first vsync (or from the render thread's start where
+  there is no display clock). A game that had loaded for two seconds read
+  `ts = 0` on its first frame against a `performance.now()` of 2000, so a loop
+  starting with `dt = ts - performance.now()` had a negative first step and an
+  animation timeline anchored to `performance.now()` began two seconds behind.
+  Both now count from one process-wide origin (`shared::time_origin`), and the
+  vsync clock's timestamps are put on it by anchoring the first frame
+  (`RafTimeline`) and keeping the host clock's spacing after that.
+  `performance.timeOrigin` exists (it was `undefined`, so
+  `performance.timeOrigin + performance.now()` was `NaN`).
+- `requestAnimationFrame` after an idle screen or a long frame no longer receives
+  a timestamp from before the stall. The render thread signals every vsync while
+  animating so a consumer that keeps up never blocks; the signal went through a
+  bounded channel that dropped the NEWEST signal when full, so a consumer that
+  fell behind was handed the oldest two timestamps the render thread had written
+  (on Android's eventfd path the newest, which was always right). The first
+  callback after 300 ms of idle got a time 267 ms old, its successor a step of
+  that size. Every platform now keeps only the newest unconsumed signal, and a
+  signal more than 50 ms older than the request is passed over for the next one.
+  Found by the conformance suite's new `timers-spec` bundle (25 assertions: the
+  released v0.9.19 fails 3).
+- Web Audio: the errors the engine's own audio, `ImageData` and Canvas 2D code
+  throw are the ones the specification names. They were written as
+  `new DOMException(...)`, and `DOMException` is the host page's to provide: with
+  no adapter installed, `createBuffer(1, 10, 1)`, a second `start()` on an
+  oscillator, `connect()` to a missing input and `createImageData(0, 1)` threw a
+  `ReferenceError` instead of `NotSupportedError`, `InvalidStateError` and
+  `IndexSizeError`. One shared factory (`base/06_dom_exception.js`) makes them: it
+  uses the adapter's `DOMException` when there is one, so `instanceof` holds in
+  content, and its own class (same `name`, `message` and legacy `code`) otherwise,
+  and installs nothing on the global object. Also: `createBuffer` / `new
+  AudioBuffer` with zero channels or zero length are `NotSupportedError` (they
+  were `RangeError`); `getChannelData`, `copyFromChannel` and `copyToChannel` with
+  a channel that does not exist are `IndexSizeError` (they were `RangeError`);
+  `decodeAudioData` rejects bytes it cannot read with `EncodingError` (it rejected
+  with an `AudioError` carrying the engine's text), through the promise and the
+  error callback alike.
+- Web Audio: `decodeAudioData` makes a buffer at the context's sample rate. It
+  resampled to the device's, so a context at 44100 Hz on a 48000 Hz device handed
+  content buffers whose `sampleRate` was not its own, and every sample index
+  computed from the context's rate was 8.8% off; playback also paid to resample
+  them back at run time. Found by the conformance suite's new `audio-spec` bundle (53
+  assertions: the released v0.9.19 fails 19 of them).
+- WebGL: `pixelStorei(UNPACK_FLIP_Y_WEBGL)` and
+  `pixelStorei(UNPACK_PREMULTIPLY_ALPHA_WEBGL)` were recorded and never applied,
+  so every upload ignored them: an engine that flips its textures (three.js and
+  Babylon do by default) drew them upside down, and one that uploads premultiplied
+  (Pixi, Phaser, Egret) got straight alpha and bright fringes. The renderer now
+  applies them to `texImage2D` and `texSubImage2D` from bytes (a typed array,
+  `ImageData`, a decoded image), reading the rows the way the driver would
+  (`UNPACK_ALIGNMENT`, `UNPACK_ROW_LENGTH`, the skips), and to `texImage2D` from a
+  canvas. A canvas also keeps WebGL's default of straight alpha: it holds
+  premultiplied colour, and was uploaded as it was whatever the flag said, so a
+  translucent edge came out too dark. The flags are no longer sent to the driver,
+  which has no such parameter and answers `INVALID_ENUM`; `getParameter` reports
+  them as booleans (and `UNPACK_COLORSPACE_CONVERSION_WEBGL` as
+  `BROWSER_DEFAULT_WEBGL`). Not yet: `texSubImage2D` from a canvas ignores them.
+- WebGL: `getParameter(VERSION)` and `getParameter(SHADING_LANGUAGE_VERSION)` begin
+  with `WebGL 1.0` / `WebGL GLSL ES 1.00` (`WebGL 2.0` / `WebGL GLSL ES 3.00` on a
+  WebGL 2 context) followed by the driver's string in parentheses, which is what
+  content and libraries test; they returned the driver's `OpenGL ES 3.0 ...`.
+- WebGL: `invalidateFramebuffer(target, 4294967295)`, `drawBuffers(4294967295)` and
+  `drawBuffersWEBGL(4294967295)` -- a number where a sequence of enums belongs --
+  built a 16 GiB typed array, and the isolate stopped answering until the watchdog
+  ended it. They throw `TypeError`, as WebIDL says; `null` and `undefined` remain
+  the empty list. Found by a hostile-call test (`robustness-hostile-calls` in
+  the conformance suite: 1.8 M random calls with NaN, infinities, 2^32, BigInt, odd
+  typed arrays at the Canvas2D, WebGL and WebGL 2 contexts) which otherwise found
+  no crash and no other hang.
+- WebGL 2: `gl.HALF_FLOAT` was `undefined` (the constant was never declared), so a
+  half-float upload -- the `type` of every `RGBA16F` texture -- went to the driver
+  with no type.
+- WebGL: `isBuffer`, `isFramebuffer`, `isProgram`, `isRenderbuffer`, `isShader`
+  and `isTexture` exist (calling one was a `TypeError`), and `getShaderSource`,
+  `getBufferParameter`, `getTexParameter` and `getRenderbufferParameter` answer
+  from what the content set, without a round trip to the render thread. Not yet:
+  `getVertexAttrib`, `getVertexAttribOffset`, `getUniform`.
+- WebGL: a context on an offscreen canvas began with a 1x1 viewport and scissor
+  box. A GL context takes the size of the surface it is first made current with,
+  and an offscreen canvas is created as a 1x1 pbuffer and sized by the content
+  afterwards, so every draw was clipped to one pixel until the content called
+  `viewport` itself, and `enable(SCISSOR_TEST)` without a `scissor` call clipped
+  everything for good. `getParameter(VIEWPORT)` and `getParameter(SCISSOR_BOX)`
+  now start at the drawing buffer's size, set when the first GL command reaches
+  the canvas.
+- Canvas2D compositing: `source-in`, `source-out`, `destination-in`,
+  `destination-atop` and `copy` only changed the pixels of the shape being drawn.
+  The specification composites against a bitmap that is transparent beyond the
+  shape, so for these five everything else the clip allows is cleared (or kept,
+  per operator): drawing a circle with `destination-in` is how a picture is
+  cropped to a circle, and it cropped nothing. These draws now go through a layer
+  composited over the whole clip.
+- WebGL: a new offscreen canvas's drawing buffer could begin holding an earlier
+  canvas's pixels, the same defect as the Canvas2D one below (measured on macOS:
+  77-93 of 360 after the first ~90). A drawing buffer is specified as transparent
+  black, depth 1, stencil 0 when created and again when resized; the DrawingBuffer
+  is now cleared to that where it is allocated, and a pbuffer canvas at its first
+  use after it was created or resized, with the content's own clear values, write
+  masks, scissor and rasterizer-discard put back afterwards. Assigning a WebGL
+  canvas the size it already has now clears it too.
+- Canvas2D: a new canvas could begin holding an earlier canvas's pixels. The
+  framebuffer under a fresh surface is whatever the driver returns, and ANGLE's
+  Metal backend recycles the storage of destroyed surfaces without clearing it:
+  after a few hundred canvases had been created and collected, every new one
+  started with the pixels of one that had been freed (measured on macOS: 162 of
+  480). Every Canvas2D surface is now cleared when it is created, which also makes
+  assigning a canvas the size it already has clear it by construction.
+- Canvas2D: `ctx.ellipse(x, y, rx, ry, 0, 0, 2 * Math.PI)` -- a full turn, the
+  usual way to draw an ellipse -- drew nothing. Skia's `arc_to` treats a sweep of
+  360 degrees as degenerate; `arc` already split a full turn in two and
+  `ellipse` did not.
+- Canvas2D `getImageData` returned premultiplied colour for translucent pixels:
+  half-transparent red read back as `(127, 0, 0, 127)` where `ImageData` holds
+  straight alpha, `(255, 0, 0, 128)`. Every translucent edge was darker than it
+  is, and a read followed by a write would have darkened it again. The CPU read
+  of the snapshot behind `getImageData` now unpremultiplies.
+- Canvas2D shadows: `shadowOffsetX/Y` and `shadowBlur` are in device pixels and
+  not affected by the current transform, as the specification says; they were
+  carried through the matrix, so a context under `scale(2, 2)` -- every
+  device-pixel-ratio game -- drew its shadow twice as far and twice as soft as a
+  browser. And `globalAlpha` was applied to the shadow twice (once in the
+  silhouette, once in the shadow colour): at `globalAlpha = 0.5` the shadow was a
+  quarter transparent instead of half.
+- Canvas2D text on macOS and iOS: `serif`, `monospace`, `cursive`, `fantasy`,
+  `system-ui` (and `-apple-system`, `ui-monospace`, ...) now reach a system face.
+  Skia's CoreText font manager answers `Helvetica` and `Menlo` but none of the CSS
+  generic keywords, so each used to fall through to the bundled Noto Sans: a
+  `monospace` overlay came out proportional, a `serif` heading came out sans, and
+  text that named no installed family was drawn in a face no Apple browser picks.
+  The keywords now map to the faces Safari and Chrome use (`Helvetica`, `Times`,
+  `Menlo`, the system UI font, `Apple Chancery`/`Snell Roundhand`, `Papyrus`);
+  Android and Linux keep resolving them natively.
+- Canvas2D `measureText` and `getTextLineHeight`, every platform: the JS-thread
+  measurement resolved only the first name of the `font` list (plus `sans-serif`)
+  while `fillText` resolved the whole list, so `"Microsoft YaHei", serif`
+  measured one face and painted another and text laid out from the measurement
+  did not fit what was drawn. Both now resolve the same list.
+- Canvas2D: assigning `canvas.width` or `canvas.height` the value it already has
+  now clears the canvas and resets the context, as the specification says
+  (`canvas.width = canvas.width` is the old way to clear a canvas). It cleared
+  nothing and reset nothing on the renderer while the JavaScript half reset its
+  shadow of the state, so `fillStyle = "#000"` afterwards drew the previous
+  colour. A draw still queued when the canvas is resized, to any size, is
+  dropped with the old bitmap instead of landing on the new one. The engine's
+  own resizes to the size a canvas already has stay a no-op.
+- Canvas2D: a `getImageData` on an offscreen canvas could stop the on-screen
+  canvas from drawing or reading back anything afterwards. The snapshot code
+  kept one temporary framebuffer for every canvas, created in whichever EGL
+  context needed it first, and used that name in all the others; a framebuffer
+  is not shared between contexts, so in the on-screen canvas's context the name
+  was its DrawingBuffer, and each snapshot attached a texture to it and detached
+  it again. Each canvas now has its own temporary. Found by the first run of
+  the conformance suite on macOS; the same sequence on any platform reaches it.
+
+## v0.9.19 (2026-09-29)
+
+### Fixed
+- macOS: on a Mac with two GPUs held on its integrated one (`pmset gpuswitch 0`),
+  a game's frame loop ran and its window stayed black; even a Canvas2D read
+  back empty. ANGLE took the
+  system default GPU -- the discrete one -- whatever drove the display.
+  `MigoGameView` now sets its layer's device to the GPU that drives the
+  window's display and the engine renders on the layer's device, named to
+  ANGLE through `EGL_ANGLE_platform_angle_device_id`. A host attaching its own
+  `CAMetalLayer` through the C ABI does the same (`include/migo/platform/macos.h`).
+  Measured on a MacBookPro16,1 under each `gpuswitch` setting: the view renders
+  on the GPU that drives its display, integrated or discrete.
+
+## v0.9.18 (2026-09-29)
+
+### Removed
+- C ABI: the resource-lane declarations in `external_frames.h` --
+  `MigoResourceReservationDescriptor`, `MigoResourceOutcome`,
+  `MigoResourceState`, `MigoResourceError`. No entry point ever took them and
+  nothing implemented the lane; uploads larger than a frame packet are staged
+  in the command stream instead (below).
+
+### Fixed
+- iOS (Performance+): a WebGL upload larger than one frame packet -- 4 MiB --
+  was refused `OUT_OF_MEMORY` on the producer, so it drew nothing: a
+  2048-square RGBA texture (16 MiB), a 2048-square ASTC 4x4 one (exactly
+  4 MiB), a large vertex buffer. Its bytes now cross ahead of the call as
+  staged chunks in the same command stream, over as many packets as they
+  need, and the host moves them into the upload whole; up to the 64 MiB one
+  upload may carry on every lane. Uploads that fit a packet are sent exactly as
+  before. A simulator acceptance test draws with an 8 MiB texture and a 5 MiB
+  vertex buffer and reads back both halves of the texture.
+- iOS (Performance+): a record that filled the last 8 bytes of a frame packet
+  threw instead of being sent -- the writer asked for 8 bytes more than the
+  check before it had allowed for.
+- Docs: the developer docs describe iOS and macOS as shipped -- an Apple SDK
+  reference for `MigoGameView`, six platforms on the home and architecture
+  pages -- Linux as the released C ABI SDK it is, and the English architecture
+  diagrams render.
+
+## v0.9.17 (2026-09-28)
+
+### Fixed
+- Android: the engine's frame-rate request never reached the display.
+  `ANativeWindow_setFrameRate` (Android 11+) was not called at all, from
+  v0.9.5 on, because the wrapper every window surface passes through did not
+  forward the request, so the display picked its refresh rate from its own
+  heuristics rather than from the rate the game presents at. On an Android 14
+  emulator the game's layer now carries a 60 Hz vote with Default
+  compatibility; before the fix it carried none.
+
+## v0.9.16 (2026-09-28)
+
+### Fixed
+- iOS (Performance+): a game could start to a black screen, its frame loop
+  running and nothing drawn, in about one launch in four on an iPhone XS Max
+  under load. WebKit keeps firing a Worker's timers while the Worker is
+  blocked in a synchronous request -- the channel the engine's synchronous
+  calls (`getImageData`, `getStorageSync`, WebGL queries) take -- so a timer
+  could run in the middle of the script that made the call. The web adapter's
+  `load` event, queued on a zero-delay timer, then fired while a Phaser bundle
+  was still being evaluated, before the game registered for it, and the game
+  never started. The producer now holds every timer and socket event that
+  arrives during a synchronous call until the script that made it has
+  finished, and runs them in arrival order, each as a task of its own. The
+  engine's synchronous channel was designed on `Atomics.wait`, which
+  dispatches nothing; this restores what it assumed. A device acceptance test
+  arms a timer before 300 ms of synchronous calls: without the fix it ran
+  inside them on every run. The black screen reproduced on v0.9.14 and v0.9.15
+  alike.
+- Docs: the Apple guide says the game's orientation has to hold before
+  `MigoGameView`'s first layout, not only eventually.
+
+## v0.9.15 (2026-09-28)
+
+### Added
+- C ABI (external-frames product): `migo_session_start_frame_endpoint`,
+  `migo_session_stop_frame_endpoint` and
+  `migo_session_get_frame_transport_statistics` with its
+  `MigoFrameTransportStatistics` record. While the endpoint runs it owns the
+  downlink, so `migo_session_take_downlink`,
+  `migo_session_take_service_message` and `migo_session_set_downlink_waker`
+  return `MIGO_ERROR_INVALID_STATE`; a host that brings its own transport keeps
+  using them as before.
+
+### Changed
+- iOS (Performance+): the engine terminates the producer's socket itself. The
+  loopback WebSocket the WebContent producer sends frames on and hears its
+  verdicts, frame-clock ticks and answers from used to be the host's --
+  Network.framework, every message copied across the C boundary and the
+  downlink pumped from a GCD queue -- and on devices that was about a quarter
+  of the App process's CPU samples while a game ran (iPhone 15 Pro: 23%, ~3.4%
+  of a core), with three queue hops between the frame clock and the socket. Now
+  an uplink message is one read and a submit on the engine thread that read it,
+  and a downlink message one unpark and one write, with Nagle's algorithm off
+  and `SO_NOSIGPIPE` on every connection. Measured on an iPhone XS Max against
+  v0.9.14 built the same way, interleaved, 30-second windows, one message each
+  way per frame in both: the App process's CPU fell by 4.7 and 5.2 points
+  (bunnymark, endless-runner) and was unchanged on canvasmark, and frames
+  presented late fell from 13 in 9 runs to 4 in 8. The WebKit helper processes'
+  CPU time rose by about as much as the App's fell -- every process ran on the
+  efficiency cores, whose clock they share -- so the device's total CPU time is
+  about the same; an energy measurement needs a phone that runs Power Profiler.
+  `MigoFrameChannel` keeps the content origin's half and its `Statistics`, now
+  counted by the engine for both uplinks alike.
+
+### Removed
+- Swift: `MigoFrameTransport`, the host-side Network.framework socket the
+  engine's frame endpoint replaces.
+
+## v0.9.14 (2026-09-28)
+
+### Fixed
+- iOS (Performance+): the web view that hosts the producer is window-sized
+  again (still off-screen), undoing v0.9.13's one-point shape. At one point the
+  Canvas2D bench game presented more late frames in every one of six
+  interleaved 30-second pairs on an iPhone 15 Pro -- 6.3 against 4.0 per 30 s,
+  with both builds made the same way and differing only in that frame -- while
+  the WebGL game showed no difference. Frame pacing outranks the 11 MiB of
+  WebContent memory the smaller view saved, so the window's size stays until
+  the cause is understood. v0.9.13's canvas-sized drawable is unaffected.
+
+## v0.9.13 (2026-09-27)
+
+### Changed
+- iOS and macOS: when the onscreen canvas is smaller than the window -- as the
+  canvas of a game that sizes it in logical pixels is -- the drawable now takes
+  the canvas's size and Core Animation scales it to the view, the way a browser
+  composites a canvas, instead of the engine upscaling into three window-sized
+  drawables every frame. On an iPhone 15 Pro the Performance+ lane's footprint
+  fell 41-47 MiB per bench game (bunnymark 184 to 137 MiB, endless-runner 229
+  to 188, canvasmark 164 to 119) with CPU unchanged, and frames still present
+  at 60 per second with a 16.67 ms p99 interval. It needs fixed-size window
+  surfaces, which ANGLE implements only for D3D, so the Apple ANGLE build now
+  carries them for Metal (`angle-apple-52f59428-p2`). The drawable's size is
+  the engine's: a host must not set `CAMetalLayer.drawableSize`, and
+  `MigoGameView` no longer does (`include/migo/platform/ios.h`, `macos.h`).
+- iOS (Performance+): the web view that hosts the producer is one point square
+  just off the window's edge instead of window-sized. WebKit keeps a backing
+  store for the page at the view's size even though the page draws nothing;
+  at the window's size that was 11 MiB of WebContent's memory on an iPhone 15
+  Pro, with frame rate and CPU unchanged at one point.
+- Developer documentation: the Apple page is an integration guide for the
+  released SwiftPM package -- the two products and their minimum OS, content
+  signing, platform notes, the device capabilities `MigoGameView` answers and
+  the ones it refuses, and what has been verified where -- in place of a
+  description of the skeleton.
+
+## v0.9.12 (2026-09-27)
+
+### Changed
+- iOS and macOS (Performance+): a frame now crosses the WebContent boundary as
+  one message each way instead of two. A presenting packet is also the request
+  for the next frame-clock tick, and its verdict travels with that tick unless
+  the producer cannot wait for it (a refusal, an empty window, or no tick
+  owed). On an iPhone XS Max at 60 fps the Performance+ lane's CPU time fell
+  7-20% across the bench games, most of it in WebKit's network process, with
+  frame rate and memory unchanged. No wire-format change: a host that drains
+  after every submit, or a producer that still sends every request, stays
+  correct (`contracts/frame-wire/wire-v1.md`, amendment of 2026-09-27).
+
+## v0.9.11 (2026-09-27)
+
+### Fixed
+- Every platform: `WEBGL_lose_context.loseContext()` reset the whole GPU share
+  group instead of losing the one context it was called on. Pixi calls it on a
+  probe context while choosing a renderer, and a reset that landed after the
+  game had built its shaders took them away: on an iPhone, Pixi games stayed
+  black on their first launch after install. It now loses that context only, as
+  the extension specifies; the reset is still reachable for verification as
+  `MIGO_debug_gpu_reset`.
+- Every platform: `console.error(error)` logged an `Error` as `{}`. It now logs
+  its name, message and stack; `undefined`, functions and symbols, which logged
+  as nothing, log as their text.
+- iOS and macOS (Performance+): a game that draws only with Canvas2D showed a
+  black screen -- its batches were never marked for presentation.
+- iOS and macOS (Performance+): after a GL context loss every frame was refused
+  and the game froze on its last picture, because the producer was never told
+  the new resource epoch. The host now sends it (`DOWN_CONTEXT_STATE`, a
+  downlink-only addition to frame-wire v1), and content gets
+  `webglcontextlost`/`webglcontextrestored` as on every other platform.
+- iOS and macOS (Performance+): a web adapter's `XMLHttpRequest` shim broke the
+  engine's synchronous calls, and its timers threw `Illegal invocation`; the
+  producer now uses the platform objects it captured before content ran.
+- iOS and macOS (Performance+): content saw the WebKit Worker's own globals
+  (`importScripts`, `self`, `navigator`, ...). Phaser read `importScripts`,
+  decided it was in a Web Worker and refused to start. Content now sees the
+  same global names the engine publishes on every other platform.
+
+## v0.9.10 (2026-09-26)
+
+### Fixed
+- Android C ABI: JPEG images still failed to decode after v0.9.9's fix -- Skia,
+  as this engine links it, decodes PNG but not JPEG, and the Java SDK's
+  BitmapFactory fallback is out of a C host's reach. The C ABI package now
+  carries the Rust image decoders every other platform's C ABI already has; the
+  Java SDK's AAR is unchanged. Found by the conformance suite's new image-decode
+  bundle, which runs every decode path on both Android embeddings.
+
+## v0.9.9 (2026-09-26)
+
+### Fixed
+- Android C ABI: images never decoded, so every WebGL game rendered black while
+  its frame loop kept running. Android builds leave the Rust image decoders out
+  and rely on the Java SDK to register BitmapFactory at load time, which a C
+  host never runs. The C ABI now registers Skia's decoders -- straight into an
+  `AHardwareBuffer` where the renderer can import one, into RGBA memory where an
+  image must be CPU-backed -- at no binary cost, since Skia is already linked
+  for rendering. The Android C host's on-device check now paints its first frame
+  from decoded images on both paths, so this cannot pass unnoticed again.
+
+## v0.9.8 (2026-09-26)
+
+### Changed
+- The engine now waits up to ten seconds, not two, for the renderer to report
+  its GPU capabilities before it runs content. The wait only guards against a
+  renderer that has stopped: one that fails reports it immediately, and one
+  that comes up is waited for only as long as it takes. At two seconds, a
+  slow but healthy first start -- a cold driver shader cache on a low-end
+  device, or software rendering on a loaded machine -- was treated as a failure
+  and the session refused its content for good.
+
+### Fixed
+- Windows: no session could start when a host's files, cache or code-cache
+  directory was spelled with `..`, such as the examples' `<files>\..\cache`
+  ("initialize sandbox filesystem: failed to pin sandbox roots"). Sandbox roots
+  were opened in Win32's `\\?\` namespace, where `..` is a file name rather
+  than a step up. A root is now given the meaning Win32 itself gives it before
+  it is opened; relative roots are still refused. The Windows arms of the
+  sandbox filesystem and the atomic writer now run in CI, which they had never
+  done.
+- Linux: the offscreen (headless) target needed a window server after all.
+  It asked EGL for the default display, which Mesa resolves to X11, so it
+  failed to start wherever `DISPLAY` was unset -- every CI runner and server.
+  It now uses Mesa's surfaceless platform when the driver offers it, and asks
+  only for the pbuffer configuration a headless target renders into.
+- iOS and macOS: after `migo_surface_release_query` reported RELEASED, the
+  host's `CAMetalLayer` could still be alive for a moment, released on the
+  render thread just afterwards. Objects ANGLE autoreleased during the surface
+  teardown lived until the render loop's pool drained, which came after
+  RELEASED. Teardown now drains them before RELEASED is published, on detach,
+  on surface replacement and at shutdown.
+
+## v0.9.7 (2026-09-25)
+
+### Added
+- iOS and macOS SDK: `migo-<version>-apple-sdk.zip`, a Swift package with one
+  view per platform. `MigoGameView` (`MigoApplePerformancePlus` on iOS,
+  `MigoMacV8` on macOS) takes an installed game and owns everything between it
+  and pixels -- engine session, `CAMetalLayer`, display clock, input, app
+  lifecycle, and on iOS the audio session and WebContent crash recovery.
+  `MigoGameInstaller` installs a package atomically and skips a version that is
+  already there. Both products ship a privacy manifest that a gate checks
+  against the engine's sources in both directions. The zip carries its own
+  `.attestation.json`, like every other SDK archive, and a runnable app for
+  each platform is `apple-swift/` in migo-examples.
+- iOS and macOS: the soft keyboard. `migo.showKeyboard` opens the system
+  keyboard on iOS and a text field along the game's bottom edge on macOS; the
+  player's text comes back as `onKeyboardInput`/`Confirm`/`Complete`. On the
+  iOS lane the three keyboard ops became host commands to the same keyboard
+  service the embedded runtime calls, so a host with no keyboard refuses them
+  in the same words.
+- iOS and macOS: the device. `vibrateShort`/`vibrateLong` drive the Taptic
+  Engine on iOS; `setKeepScreenOn` holds the display awake (the idle timer on
+  iOS, a power assertion on macOS) and gives it back when the game ends;
+  `getGameLogManager().log` entries reach the app as `MigoGameView.Event.gameLog`;
+  `getNetworkType`/`onNetworkStatusChange` follow `NWPathMonitor`, and on iOS
+  `getBatteryInfo` reports the battery and Low Power Mode. A Mac has nothing to
+  vibrate and no battery API a game should need, so those answer "not
+  supported" there, as on a device without the hardware.
+- C ABI: device capabilities. Three optional, independent callbacks appended to
+  `MigoHostCallbacks` -- `on_vibrate`, `on_keep_screen_on`, `on_game_log` -- each
+  offered to content exactly when installed, and two report functions,
+  `migo_session_set_network_status` and `migo_session_set_battery_status`,
+  whose last report the engine answers content's synchronous reads from and
+  forwards a network change while content listens. An older host is
+  zero-extended to none of them, which is the previous behaviour.
+- C ABI: `MigoEngineConfig.code_signing_public_key`, the Ed25519 key signed
+  content is verified against. Until now a C ABI host could not supply one, so
+  its only configuration that loaded content was
+  `MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT`. Appended to the record: a host
+  passing the old size is zero-extended to "no key" and behaves as before.
+  Setting the key and the unsigned flag together is refused.
+
+- macOS: a host-owned `CAMetalLayer` can be attached through the C ABI.
+  `MIGO_PLATFORM_MACOS_CA_METAL_LAYER` now appears in the library's advertised
+  attachable kinds, and it appears because an attach ran, not because a backend
+  compiled: `apple-sdk.yml` run 34017950809 built a real `CAMetalLayer` on a
+  hosted macOS runner, carried it through `migo_session_attach_surface` as
+  generation 1, and completed the whole retirement handshake — `begin_detach`,
+  poll to `MIGO_SURFACE_RELEASE_RELEASED`, `migo_surface_release_destroy`,
+  `migo_session_destroy`, `migo_engine_destroy` — before releasing the layer.
+  An `NSView` is refused rather than resolved to a layer, so the host keeps
+  ownership of its own drawable. The same run loaded the pinned ANGLE under the
+  name the recipe declares and got an EGL display back from it. iOS is
+  deliberately not included: its arm of the same module compiles everywhere and
+  has attached nothing anywhere.
+- Images with transparency are transcoded to ASTC at package ingest on devices
+  whose GPU decodes it, and stay on ETC2 elsewhere. The block footprint is
+  chosen per image by what it reconstructs: the encoder grades its own output
+  against the source and takes the largest block whose worst channel error stays
+  within budget, so a smooth image lands at 0.25 bytes per pixel — a quarter of
+  ETC2 RGBA, at higher fidelity — while a sprite with a hard alpha edge stays at
+  one byte per pixel rather than losing the edge. Opaque images stay on ETC2 RGB
+  everywhere, because at half a byte per pixel it is smaller than any ASTC
+  footprint. The choice is per image and per device, which is only possible
+  because ingest runs on the device.
+- Apple: ANGLE over Metal is built from source and pinned
+  (`contracts/artifact-manifest/apple-angle.lock.json` +
+  `scripts/build-angle-apple.sh` + `scripts/fetch-apple-angle.sh`) for every
+  slice group the engine is built for — iOS, the iOS simulator and macOS, five
+  configurations in all. ANGLE publishes no official prebuilt binaries for any
+  platform, so these are self-hosted and hash-verified before use, the same
+  model the Windows ANGLE runtime and the V8 archives already follow. It exists
+  because there is no GL framework on iOS: rustc's own link line for the Apple
+  slices asks for `-framework OpenGL` on macOS and for no GL framework at all on
+  iOS, while Skia is configured for its GL backend. Metal is the only backend
+  built; the desktop GL backend, which defaults to on for macOS, is pinned off
+  so both Apple platforms resolve the same renderer. The published shape differs
+  per platform because upstream's does — a framework bundle on iOS, where Apple
+  accepts an embedded framework and rejects a bare dylib, and a shared library
+  on macOS — and it is deliberately not evened out: `libEGL` locates `libGLESv2`
+  at run time by composing a name against a directory, and that name and
+  directory are platform-specific, so repackaging either side would leave ANGLE
+  searching where its dispatch library is not. `--print-loader-layout` is what
+  answers where each library has to sit; the xcframeworks are split along the
+  same axis instead, one per library per platform family.
+- The runtime reports how many times a frame's drawing crossed from JavaScript
+  into native, on a five-second window, at `info` level: `[boundary] frames=…
+  crossings/frame=… worst=… commands/frame=… commands/crossing=…`. The ratio is
+  what a command stream exists to move, and it was previously only observable
+  from inside a test.
+
+### Changed
+- Canvas2D commands cross the JavaScript/native boundary as a binary command
+  stream rather than one op per call, sharing one buffer and one opcode space
+  with the WebGL stream so the order between the two survives the crossing
+  without a barrier between every pair of commands. A frame that issues three
+  hundred 2D calls now crosses once.
+
+### Fixed
+- iOS: installing an update over a game that had already run under code
+  signing failed on an iPhone ("you don't have permission"): Darwin refuses to
+  rename a directory its caller cannot write, and the engine seals the package
+  read-only. The installer now restores the owner's write bit on the sealed
+  root alone before moving it aside. The simulator's host file system had let
+  the rename through.
+- iOS and macOS: the engine's render and session threads ran at the default
+  quality-of-service class, so the main thread waiting on the session's
+  startup was a priority inversion and the frame work could land on efficiency
+  cores. They are now user-interactive; decode and IO threads are utility.
+
+- iOS: signed content was not verified. The Performance+ lane mounted the
+  installed package as it was, so a host that configured a signing key got no
+  verification at all. It now runs the embedded execution's launch sequence
+  before anything is mounted -- sealed-receipt check, else a full manifest and
+  file-hash verification that seals the tree -- and refuses the load on any
+  mismatch, or on signing with no key.
+- `MigoGameInstaller` could not update a game that had run under signing: the
+  engine seals a verified tree read-only, and the installer replaced it in
+  place. An update now renames the sealed tree aside, renames the new one in
+  and removes the old one as a trusted uninstall.
+- iOS: a game that called `migo.exitMiniProgram()` stopped drawing and the app
+  was never told. The external-frame session ended on the request without the
+  exit notification the in-process runtime sends; it now sends it.
+- The Apple SDK could not put its iOS and macOS engines in one xcframework:
+  assembly required byte-identical header directories, and each group's module
+  map lists the frameworks its own archive links. Only the C headers are now
+  compared across groups.
+- SBOMs listed crates the shipped build never compiles. `cargo metadata`
+  resolves features for the whole workspace, so a crate any member enabled was
+  in every artifact's graph -- the iOS SDK, built without a JavaScript engine,
+  would have listed `v8`. Each SBOM is now cut to its build's own `cargo tree`.
+- ASTC 8x8 textures upload again. The engine mapped
+  `VK_FORMAT_ASTC_8x8_UNORM_BLOCK` to `0x93B9`, which is the token for a 10x6
+  block, so `glCompressedTexImage2D` rejected every such texture with
+  `GL_INVALID_VALUE`. It had never fired because nothing produced ASTC 8x8, and
+  the test that covered it asserted the same wrong number, copied from the
+  constant it was checking; the tokens are now derived from the block size the
+  extension assigns them to.
+- `ctx.fillStyle = "transparent"` no longer paints opaque black. The keyword was
+  missing from the engine's named-colour table, so it fell through to the
+  unknown-name branch, which reads black -- the loudest possible wrong answer for
+  a keyword whose meaning is "do not paint". `strokeStyle` and `shadowColor` had
+  the same fault, and gradient colour stops were unaffected.
+
+---
+
+## v0.9.6 (2026-08-30)
+
+A hotfix for a WebGL regression in v0.9.5.
+
+### Fixed
+- `bufferData(target, ArrayBuffer, usage)` uploads its data again. v0.9.5 added
+  a `size < 0` guard to `bufferData` that ran before the code checked whether a
+  payload was supplied, and the JS binding passes `size = -1` on the data path
+  because the field is unused there. So the most common WebGL upload -- vertex
+  and index buffers -- became a silent no-op that also recorded a spurious
+  `INVALID_VALUE`, and every WebGL draw painted black. The op had no test;
+  the conformance suite's `webgl-basics` bundle caught it on the first run against
+  the v0.9.5 release AAR. The negative-size check now runs only on the
+  size-only form, and `op_buffer_data` has a regression test on both forms.
+
+---
+
+## v0.9.5 (2026-08-29)
+
+A correctness and efficiency pass over io, graphics and audio. Redundant GL
+calls that slipped past the state shadow are deduplicated and the shadow itself
+stopped hashing to decide; `measureText` and per-sample `AudioParam` automation
+stop allocating and re-walking on every call; `AnalyserNode`'s scalar
+parameters take effect; `compressImage` shares a two-thread pool instead of
+spawning one thread per image. A symlink race in sub-package and ZIP extraction
+is closed, a WebGL context loss no longer strands a game between frames, and
+`getUpdateManager()` stops inventing updates. Host frame-timestamp jitter no
+longer drops frames for the rest of a session, and `MigoRuntime` reports the
+real engine version.
+
+### Added
+- `AnalyserNode`'s scalar parameters take effect. `minDecibels`, `maxDecibels`
+  and `smoothingTimeConstant` were accepted and then ignored, so
+  `getByteFrequencyData` / `getFloatFrequencyData` returned unsmoothed data over
+  a fixed range regardless of what content set. They now reach the audio thread
+  through a dedicated op and apply.
+- `scripts/build-aar.sh --jitless` builds an engine that asks V8 to stop
+  generating machine code (`--jitless`). HarmonyOS 5.0.0(12) forbids a
+  third-party VM from making memory executable, so Migo runs interpreted on
+  NEXT whether it asks to or not; this is the build that produces the size of
+  that penalty rather than guessing at it. Off by default, selected by no
+  release path, and the artifact is named so it cannot be mistaken for one. The
+  measured numbers are in `migo-bench/JITLESS.md`.
+
+### Changed
+- `migo.compressImage` no longer starts one OS thread per call. A batch — a
+  screenshot sheet, an avatar pipeline — got a thread per image, each with a
+  1 MB stack, all competing with the render thread. It now uses a shared,
+  daemon pool of two.
+- `PRESCREEN.md` and the prescreen report now say which published names are
+  no-op stubs and which fail loudly, rather than covering all of them with one
+  sentence true of only some. The two stubs that were failing silently now
+  answer `"<api>:fail not supported"` like the other 86.
+- On Android, `requestVsync` resolves its Java method ID once per process
+  instead of hashing the method name and signature against the JNI method cache
+  on every frame. The lookup is off the frame-scheduling path now; the id is a
+  process-lifetime constant.
+- The GitHub Release notes now lead with this file's `## v<version>` section.
+  They previously carried only the asset table, verification steps, and GitHub's
+  raw commit list — the curated record of what changed was in the repo but not
+  on the release page. `write-release-notes.sh` refuses to write notes for a
+  version whose section is missing or empty.
+- Redundant GL calls stop reaching the driver on two more paths. `glScissor`
+  could not be deduplicated before, because the dirty-region Canvas2D batcher
+  and the DrawingBuffer blit both moved the scissor box outside the state
+  shadow; both now route through it. The texture-unit, `glEnable`/`glDisable`
+  and vertex-attribute shadows were rebuilt from hash maps and sets keyed by GL
+  enum or `(vao, index)` into arrays and bitmasks, so deciding that a call is
+  redundant no longer hashes.
+- `AudioParam` automation is evaluated once per 128-sample block instead of once
+  per sample. A parameter driven by `setValueAtTime`, a ramp, `setTargetAtTime`
+  or `setValueCurveAtTime` walked its whole event timeline for every sample in
+  the block; it now makes one forward pass.
+- `measureText` and the Canvas2D font ops no longer allocate on every call. They
+  cloned the whole text string to keep a character count for a render-thread
+  timeout branch they rarely reach; they now take the count first and move the
+  original.
+- WebGL error reporting under queue pressure follows the spec. Past the
+  per-context cap the queue used to discard the oldest un-retrieved error; it
+  now keeps the oldest, drops the newest, reserves the last slot for a sticky
+  `OUT_OF_MEMORY`, and counts the drops in the render diagnostics.
+- `chacha20` (pulled in transitively by `rand`) is updated off a yanked
+  release. No advisory attached; `cargo audit` stays clean.
+
+### Fixed
+- A re-linked WebGL program's uniforms reach the driver again. `glLinkProgram`
+  gives a program fresh, zeroed uniform storage; the per-`(program, location)`
+  dedup cache was not cleared across it, so content that re-linked a program and
+  then re-uploaded an unchanged uniform value had that upload silently dropped —
+  the draw used the reset value, with no GL error and nothing in a log.
+- Sub-package and ZIP extraction is no longer open to a symlink race. An entry's
+  path was validated as a string and then resolved again by a separate syscall;
+  a path component could turn into a symlink in between and let the entry write
+  outside its destination directory. Every component is now reached with
+  `openat` under `O_NOFOLLOW` from a held directory descriptor, so a swapped
+  component fails with `ELOOP` at the moment of use rather than after a passed
+  check.
+- `fetch` no longer puts the sandbox's internal path layout in a request to a
+  remote server.
+- Terminating a Worker while it is still starting up is no longer a silent
+  no-op. The handle the host holds was published only after the worker runtime
+  finished initialising, so `terminate()` called in that window did nothing and
+  the worker ran to completion.
+- A game is no longer stranded after a WebGL context loss and restore. The
+  render drain dispatches `webglcontextlost` / `webglcontextrestored` into JS;
+  a handler that resolves a promise or requests a frame leaves a pending task,
+  and the event loop stayed parked on it until some unrelated host command
+  arrived — which, for a game between frames, it never did.
+- The C ABI's minimum `struct_size` for `MigoHostCallbacks` was wrong on ILP32.
+  It used a literal `32`, correct for LP64's pointer width; a 32-bit host
+  passing a struct that fully contained `dispatch` (minimum `20` there) was
+  refused with `MIGO_ERROR_INVALID_ARGUMENT`. The minimum is now derived from
+  the field offset.
+- `migo.getUpdateManager()` no longer invents updates. It was deciding with
+  `Math.random() < 0.3` at construction whether to fire
+  `onCheckForUpdate({hasUpdate: true})`, so roughly a quarter of launches
+  showed the game's own "new version — restart?" prompt and then `applyUpdate()`
+  restarted nothing. This runtime has no update channel; the manager now says so
+  instead of pretending.
+- Non-Android hosts (Linux, Windows, OpenHarmony, bare C embedders) now remove
+  a session's sandbox `/tmp` directory when the session ends. `GamePaths::clean_temp`
+  had no caller outside Android's Java SDK, so every session left its
+  `tmp/{id}` subtree under the cache root for the life of the install.
+- Host timestamp jitter no longer drops frames for the rest of a session. The
+  vsync decimator admitted a frame within a fixed 0.25 ms of its deadline, and
+  every useful cadence puts that deadline exactly on a vsync — so a host whose
+  frame-callback timestamps jittered by more than that dropped frames
+  permanently: a replayed 60 Hz stream with 0.4 ms of jitter rendered 14 of 24
+  vsyncs, a 60 fps request running at ~35 and staying there. The tolerance is
+  now half the smaller of the last two delivered-vsync gaps, taking the frame
+  nearest its deadline rather than the first past it. The frame rate the
+  content asked for now also reaches Android's display-mode hint, so a request
+  that is a whole divisor of the panel's rate gets an even cadence; and the
+  requested-rate range and default, which four copies of the rule disagreed on
+  (`2^31` and non-finite handled differently on each side, a 24 fps request
+  silently raised to 30, a ceiling of 120 that left 144 Hz panels unreachable),
+  now live in one module.
+- `MigoRuntime.getNativeVersion()` and the public `MigoRuntime.SDK_VERSION`
+  constant report the running engine's version. Both had frozen to an early
+  release's number while the AAR's own `versionName` tracked `release/VERSION`,
+  and since they were the same frozen string the SDK's skew check compared a
+  value against itself and could never fire. The JNI `version()` now derives
+  from `CARGO_PKG_VERSION` and `SDK_VERSION` from `BuildInfo.VERSION`, both of
+  which `scripts/test-release-version-contract.sh` holds equal to
+  `release/VERSION`.
+
+---
+
+## v0.9.4 (2026-08-24)
+
+Android delivery gets more flexible — the engine can be kept out of the first
+install and handed over at first launch — and Android cold start moves ahead of
+the system WebView on every benchmark game. A sweep of the game-facing API by
+behaviour rather than by reading turned up several that failed silently. The
+`wx` namespace is gone.
+
+### Added
+- `MigoGameActivity.onCreateRuntimeConfig()`. A config handed to
+  `buildLaunchIntent` travels through an in-process table keyed by a token in
+  the intent, so it reaches the activity only when whatever started it was in
+  the same process. A game opened from a deep link, a notification, a launcher
+  shortcut or `am start` is not: the token is absent and the launch silently ran
+  on a default config, whatever the host had configured everywhere else.
+  Overriding this describes how the app runs games once, and it applies however
+  the activity was reached. The default returns `null`, which is exactly the
+  previous behaviour.
+- `MigoNativeLoader.prepare(context, file)`, for hosts that deliver the engine
+  themselves. It runs the same verification the load already does, on the
+  thread the caller is on. It does not make the load safer -- what it changes
+  is when a bad file is found: a truncated download or a mirror serving the
+  previous release is otherwise discovered when a user opens a game, as a
+  launch failure, rather than by the download code that still has the network
+  connection. It also keeps the check off the main thread; verification is
+  41 ms for a 45 MB release engine on a Mate 30 Pro, and the load afterwards
+  finds the result recorded and hashes nothing.
+- The first `readPixels` on a WebGL context no longer returns an empty buffer.
+  While one canvas exists and nothing has read the default framebuffer, WebGL
+  renders straight to the window surface and the intermediate DrawingBuffer is
+  bypassed. The first readback ends that bypass -- a read needs a real FBO --
+  and the engine bound the DrawingBuffer without putting anything in it, so the
+  read returned `[0,0,0,0]` for pixels the game had just drawn. It happens once
+  per context, at startup, which is the hardest kind of bug to notice and the
+  easiest to blame on the content; content that builds textures by drawing and
+  reading back gets one empty texture. `signal_default_fbo_readback` has
+  documented this snapshot since the flag was introduced -- only the code was
+  missing. Found by a new WebGL bundle in the conformance suite on its first run.
+- Android hosts can keep the engine out of their first install. `libmigo.so`
+  is ~17 MB of store download and ~45 MB installed per ABI, paid by every
+  user whether or not they ever open a mini-game. Two new release assets let
+  that cost move to the first game launch: `migo-<version>-android-nojni.aar`
+  (the published AAR with `jni/**` deleted) and
+  `migo-<version>-jni-android-<arch>.tar.gz` (the bytes it no longer carries).
+  A host installs a `NativeLibraryProvider` through the new `MigoNativeLoader`
+  and hands over the file; Migo verifies it against the artifact manifest the
+  AAR already embeds before loading it, so a partial download or a mirror
+  still serving the previous release fails with a readable reason instead of
+  crashing inside the engine. Migo downloads nothing itself: on Google Play
+  the only compliant source is Play Feature Delivery, and stores without it
+  expect the host to serve the file, so one built-in downloader would be
+  wrong for one of the two.
+- `scripts/test-android-nojni-aar-contract.sh`, which holds the engine-less
+  AAR to being a deletion rather than a second build -- identical
+  `classes.jar`, identical embedded artifact identities, and every removed
+  byte accounted for in exactly one engine archive.
+
+### Changed
+- The native library now loads on first use rather than in
+  `MigoRuntime.getInstance()`. Every accessor that needs native calls loads
+  first, so the packaged default behaves exactly as before; what changes is
+  that merely obtaining the singleton no longer pulls the engine into the
+  process.
+- `LEGAL.md` states that hosting the engine binary to deliver it into your
+  own app is covered by the Additional Use Grant and is not a Competitive
+  Offering.
+- Android cold start is materially faster, and now leads the system WebView on
+  both metrics for all three benchmark games. Five costs sat on that path and
+  none had to. Full-screen immersive mode was applied from `createSession` --
+  after the window had been laid out with the system bars and the surface
+  created at that smaller size -- so every launch resized the window and made
+  the engine rebuild its GPU-side surface mid-startup; it is now applied in
+  `MigoGameActivity.onCreate`, before the surface exists. And the session was
+  created inside the `surfaceCreated` callback, holding the main thread for
+  ~114 ms in the middle of the traversal that draws the window; it is now
+  posted so the traversal can finish and draw first. The three engine-side
+  costs are the entries below. Measured on a Mate 30 Pro against the device's
+  Android System WebView, medians of 3 cold runs: first frame 385→274 ms
+  (bunnymark), 384→258 (canvasmark), 523→344 (endless-runner); game-ready
+  523→400, 378→336, 804→605. Steady-state fps and memory are unchanged.
+- Session creation is ~38 ms cheaper. Building the Canvas2D text context
+  costs 35-41 ms on an arm64 device -- `SkFontMgr_Android` parses
+  `/system/etc/fonts.xml` and enumerates the system families, then the
+  bundled fallback face is parsed on top -- and it was being done on the host
+  thread inside `RenderThread::spawn`, before the render thread existed. Every
+  session therefore delayed the start of EGL/Skia initialization by that much
+  and then waited for it, whether or not the game ever drew a glyph. The
+  context is now built by the render thread once its GPU capabilities are
+  published: off the host's critical path, and still long before any game code
+  can ask for a glyph, so no first `fillText` pays for it either. `Host::new`
+  drops from 88-99 ms to 50-58 ms; game-ready improves by 16-53 ms across the
+  three benchmark games.
+- Creating a session no longer waits for the GPU. `Host::new` blocked on the
+  render thread publishing its capabilities -- 30-44 ms with the caller's
+  `createSession` blocked behind it -- although nothing between that point and
+  the first line of launch JS reads them. The wait moved to just before any
+  prelude or module runs, which is where the invariant it protects was always
+  written down: no untrusted JS may observe the provisional all-false
+  capability snapshot. A GPU failure is now reported from `startGame` rather
+  than from `createSession`. Game-ready improves a further 10-21 ms.
+- The dev player deploys a whole game bundle, not just `game.js` and
+  `game.json`. It copied those two files by name, so it could not run any
+  bundle carrying an asset -- a font, an image, a sub-package -- which made a
+  whole category of conformance test impossible to write.
+- The GLES dispatch table is built once per session instead of twice.
+  `glow::Context::from_loader_function` resolves 709 symbols through
+  `eglGetProcAddress`, which costs 41-50 ms on an arm64 device, and it was
+  being paid twice: once by `CanvasManager`, with the host thread waiting on
+  it, and again by the render thread immediately afterwards, delaying the
+  first frame by the same amount. Both were built on the render thread from
+  EGL contexts in one share group, so the manager's table now serves both.
+  Game-ready drops a further 40-53 ms.
+- The log level a host configures now takes effect. `tracing` caches what it
+  thinks of a callsite the first time it sees one, and the dynamic level filter
+  did not opt out of that: a callsite first reached while the process default
+  was `Warn` was cached as disabled and stayed dead, so a host that asked for
+  `Info` got silence -- including for the startup timings, which are emitted
+  while the host is being built and so could never be seen.
+- The host event loop no longer logs a warning when it parks with nothing
+  pending. It does that three times on every single launch, in the window
+  before the game registers its first `requestAnimationFrame`; a warning on
+  the guaranteed path is how a log teaches its reader to skip warnings.
+- On arm64, `libmigo.so` is about 1.85 MiB smaller. `.rela.dyn` was 2.17 MB,
+  99.8% of it single-word `R_AARCH64_RELATIVE` entries at 24 bytes each;
+  `--pack-dyn-relocs=android` group-encodes them, and bionic has decoded that
+  format since API 23. `.text` is byte-for-byte identical. A first size-budget
+  gate holds the engine to a ceiling from here on, with the unchanged previous
+  release as its red case.
+- The thirteen rustflags `engine/.cargo/config.toml` declares for each Android
+  target now reach the AAR link. Cargo replaces rather than merges
+  `[target.<triple>].rustflags` when `RUSTFLAGS` is set in the environment, and
+  the AAR build sets it — so on the one build that ships, the config's flags
+  were silently discarded.
+- `createVideoDecoder`'s stub answers `"createVideoDecoder:fail not supported"`
+  instead of accepting `start()` and then never delivering a frame or an event.
+  Content that polled `getFrameData()` or waited on a listener waited forever,
+  with nothing in the log.
+- The BSL `Change Date` is re-stamped to publication + 4 years on every release
+  and gated against decaying, exceeding the four-year ceiling BSL 1.1 itself
+  imposes, or drifting from `LEGAL.md` and the READMEs.
+- The C ABI header no longer implies that a production host can both clear
+  `MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT` and load content: doing so without
+  also supplying a code-signing public key fails with `CodeSignatureInvalid`.
+  The two paths that actually work — signing enabled with a key, or the flag
+  set — are now stated.
+
+### Removed
+- The `wx` namespace. The engine used to install both `migo` and `wx` at
+  bootstrap; it now installs only `migo`. Content written for a mini-game
+  platform gets that platform's global from an external compatibility adapter
+  (`migo-wx-adapter`), which is where that surface belongs. `adapter/` left the
+  repository with it — Migo is a pure engine.
+
+### Fixed
+- `test-android-host-api-contract.sh` froze nothing an embedder reaches by
+  subclassing. It read the surface with `javap -public`, so
+  `MigoGameActivity`'s `onCreateGameListener`, `onLaunchFailed`,
+  `onSessionCreated` and `getGameSession` -- the documented, "zero-boilerplate"
+  integration path -- were outside the freeze along with every other protected
+  member. R8 once marked exactly those methods `final` in the release AAR and
+  external subclasses stopped compiling; this gate could not have seen it. It
+  now reads `-protected`, and the baseline grew by the 13 members that were
+  never pinned.
+- An unparseable `ctx.font` assignment is a no-op again, on both sides of the
+  engine. WHATWG says an invalid value leaves the previous font in effect, and
+  the render thread already did that -- it rejected the shorthand and kept its
+  state. The JS thread did not: it stored the string and `measureText` answered
+  from a best-effort parse of it. So a typo'd font string measured at one size
+  and painted at another, silently. `ctx.font = "definitely not a font"` after
+  `64px "..."` measured 36 px of text the engine painted 221 px of. The check
+  now happens once, in `op_set_font`, ahead of both -- so an invalid value never
+  reaches either side and `ctx.font` never reports one. The strict parser moved
+  to `shared` to make that possible, which is also what finally makes the
+  "one parser, one source of truth" comment in the 2D context true.
+- `login`, `getUserInfo` and `getPhoneNumber` return a Promise, like every
+  other API on that surface. They resolved immediately on `undefined`, so
+  `await migo.login()` did not wait and content ran on as though sign-in had
+  finished.
+- Concurrent first `setStorage` calls no longer lose the SQLite WAL pragma
+  race. Ten writes issued together intermittently failed one; the same ten
+  issued sequentially never did.
+- A throwing content callback no longer swallows the callbacks queued after it.
+  A `success` handler that threw stopped `complete` from running, so content
+  that hid a loading spinner there left it on screen.
+- The image-cache cumulative trim-bytes counter saturates instead of wrapping.
+- Three engine frame-loop internals are non-enumerable on `globalThis`, like
+  their siblings — a `for...in` over the global no longer walks them.
+- `libc++_shared.so` is no longer packed next to `libmigo.so`. Nothing loaded
+  it: `librusty_v8.a` carries Chromium's libc++ statically and `libmigo.so`
+  declares no `DT_NEEDED` for the shared one. Two megabytes per ABI, gone.
+- `minimp3`'s safe wrapper is dropped, taking `slice-ring-buffer`
+  (RUSTSEC-2025-0044, four double-frees reachable through safe APIs, no fixed
+  version) out of the tree. Only the raw `mp3dec_*` C entry points were ever
+  called. `cargo audit` is clean.
+- Several WebGL state calls (`bindBuffer`, `blendColor`, `polygonOffset`,
+  `bindTexture`) now go through the same redundant-call dedup cache as their
+  peers.
+
+---
+
+## v0.9.3 (2026-08-15)
+
+The last platform gap closes: Android, Linux, Windows, and OpenHarmony each
+now build and publish both their x86_64 and arm64 release assets entirely in
+CI. No platform's release depends on a local or native-machine build step
+any more — release-windows-arm64 and Linux's arm64 addition are this cycle's
+own new jobs, and this is the first tag either has ever actually run under.
+
+### Added
+- `release-linux` now builds and publishes `aarch64-unknown-linux-gnu`
+  alongside `x86_64`, cross-compiled from the same x86_64 runner
+- V8 built for `aarch64-pc-windows-msvc`
+- ANGLE built from source for Windows arm64 -- the first ANGLE-from-source
+  pipeline for any Windows arch this project has shipped
+- `release-windows-arm64`, a native `windows-11-arm` CI job producing a real
+  Windows arm64 SDK package, wired into `publish`
+- Runtime generation fencing, callback correlation, and verification lanes
+- Per-session isolate support
+- BLE notification path and audio realtime gates
+- OpenHarmony API floor declaration gate
+- Session delivery and verification lanes (A12)
+
+### Fixed
+- `fetch-v8-archives.sh`'s Windows-target file naming matched the literal
+  `x86_64-pc-windows-msvc` only, so `aarch64-pc-windows-msvc` fell through to
+  a Unix-style name (`librusty_v8-aarch64-pc-windows-msvc.a`) that was never
+  published, 404-ing every fetch
+- The x86_64 V8 component manifest's recorded hash and toolchain provenance
+  described a rebuild that was never actually uploaded to the archive
+  release, so `release-windows` failed sha256 verification against the
+  archive that was actually still there
+- `engine/.cargo/config.toml` pinned `CC`/`CXX` to `clang-cl` for
+  `x86_64-pc-windows-msvc` only; `aarch64-pc-windows-msvc` had no
+  corresponding pin, so `cc-rs` fell back to probing versioned compiler names
+  (`clang-18`, ...) that don't exist on a runner with only choco's LLVM on
+  PATH, failing `ring`'s build script
+- A canvas the content never sized now follows a surface that was destroyed and
+  recreated at a different size, instead of keeping the size derived from the
+  previous one. Rotating while the app is in the background takes that path on
+  every Android device, and content came back to a `canvas.width`/`height`
+  describing the window it was suspended on, stretched across the new one by the
+  presentation blit while `migo.getSystemInfoSync()` reported the real extent.
+- A canvas the content *did* size with `canvas.width` is no longer moved when the
+  surface resizes. It had been rescaled in proportion to the surface, so a game
+  that picked a fixed resolution kept drawing in coordinates its own backing
+  store no longer had — into a corner of it.
+
+### Changed
+- `MigoSurfaceDescriptor.generation` now documents the rule the C ABI already
+  enforced: every attach must carry a generation strictly greater than any the
+  session has accepted, and a metrics update carries the live attachment's own.
+  A host that stamps a constant is refused with `MIGO_ERROR_STALE_SURFACE` from
+  its second attach onwards, which any platform that destroys and recreates its
+  window — Android on every trip through the background — reaches on the first
+  resume.
+
+---
+
+## v0.9.2 (2026-08-13)
+
+One release, one asset naming scheme, one publisher. Every platform is now
+built and staged the same way and named `migo-<version>[-capi]-<platform>[-<arch>].<ext>`,
+replacing the three schemes v0.9.1 shipped side by side
+(`migo-full-release-arm64-v8a.aar`, `migo-sdk-android-arm64-v8a.tar.gz`,
+`migo-linux-x86_64.tar.gz`). This is also the first release where the Windows
+and OpenHarmony packages are produced by the same reproducible path as
+Android and Linux, rather than hand-tarred.
+
+### Added
+- `migo-<version>-android.aar` — the single Java/Kotlin AAR (universal, both
+  ABIs); the slim and arm64-only AAR variants are no longer published (a
+  consumer's own `abiFilters`/App Bundle already owns that choice)
+- `migo-<version>-capi-<platform>-<arch>.tar.gz` for `android`, `linux`,
+  `windows`, and `ohos`, each with a package manifest and reproducible
+  packaging (`scripts/package-sdk.sh`)
+- `migo-<version>-sbom.cdx.json`, `SHA256SUMS.txt`, `version.json`
+- V8 startup snapshots now embed on Linux (host + worker, full profile), not
+  only Android — `runtime-v8/build.rs` dispatches embedding by `(os, arch)`
+  instead of an Android-only check. Snapshot filenames carry an OS segment
+  (`SNAPSHOT-<profile>-<os>-<arch>.bin`) so android-x86_64 and linux-x86_64,
+  previously colliding, are distinct files
+- `scripts/test-capi-snapshot-embedding-contract.sh`: proves a shipped C-ABI
+  static/shared library actually contains the snapshot bytes its package
+  manifest claims, the same property the AAR contract already proved for
+  `libmigo.so`
+- Windows: `x86_64-pc-windows-msvc` V8 built and its component manifest
+  sealed for the first time; the archive (`rusty_v8.lib` + `rusty_v8.dll` +
+  import library) is published on the `v8-archives-e6a88b3` release and
+  fetchable via `scripts/fetch-v8-archives.sh x86_64-pc-windows-msvc`
+- Windows: ANGLE's runtime (`libEGL.dll`, `libGLESv2.dll`,
+  `d3dcompiler_47.dll`) is pinned to a verified download
+  (`contracts/artifact-manifest/windows-angle.lock.json` +
+  `scripts/fetch-windows-angle.sh`) instead of an ad hoc local directory —
+  ANGLE publishes no official prebuilt Windows binaries, so these are
+  self-hosted on the same release tag the V8 archives use
+- OpenHarmony: `librusty_v8-{aarch64,x86_64}-linux-ohos.a` published on
+  `v8-archives-e6a88b3`, and OHOS builds in CI (`release-ohos`)
+- `scripts/verify-release-assets.sh`: enforces that every published asset is
+  covered either by `SHA256SUMS.txt` or its own `.attestation.json`, checked
+  against the live GitHub release rather than build intent
+- `scripts/test-release-asset-naming-contract.sh` and
+  `test-release-asset-ordering-contract.sh` guard the naming scheme and the
+  publish job's asset list against drift
+
+### Changed
+- `release.yml` restructured per platform: `release-android`, `release-linux`,
+  and `release-ohos` build and stage in parallel; a single `publish` job merges
+  every platform's staged output, generates one `SHA256SUMS.txt` covering the
+  whole release (previously only the Android job's output), and performs one
+  upload. Windows is not in CI yet (`build-windows-sdk.sh` needs WSL/`cmd.exe`
+  interop a `windows-latest` runner does not have) and is built and uploaded
+  by hand until a Windows-native job exists
+- The Android V8 archive directories and release asset names moved from bare
+  architecture words to full target triples (`aarch64` →
+  `aarch64-linux-android`, `x86_64` → `x86_64-linux-android`), matching the
+  vocabulary the Linux and OpenHarmony directories already used
+- `scripts/publish-release.sh`, whose `required_files` still named v0.9.0-era
+  assets and had fully diverged from `release.yml`, is removed
+
+### Fixed
+- `SHA256SUMS.txt` no longer silently covers only the Android job's output
+  while implying whole-release coverage — see the `release.yml` restructuring
+  above
+- A release AAR could previously claim an embedded snapshot in its slice
+  manifest without the shipped `.so` actually containing it (`build.rs` fails
+  safe and only warns on a stale/invalid snapshot); `scripts/test-android-
+  snapshot-embedding-contract.sh` and its new C-ABI sibling now read the
+  shipped bytes to prove this rather than trusting the manifest
+
+---
+
+## Engine — v0.9.0 (2026-07-28)
+
+First public engine release. Ships the Rust multi-crate engine with a C ABI
+(`libmigo_capi`) on four platforms: Android, Linux, Windows, and OpenHarmony.
+
+### Added
+- WebAudio-style runtime with `AudioContext`, `AudioBuffer`, and
+  `InnerAudioContext` APIs compatible with mini-game style
+- Audio decoders for MP3, OGG, and WAV formats; streaming and caching pipeline
+- Canvas 2D and WebGL rendering APIs
+- File I/O (sync and async), network fetch, and touch input
+- C ABI (`migo-capi`) with a documented, controlled export surface (`migo_*`) --
+  still a candidate today, not yet frozen; see `include/migo/README.md`
+- Android JNI bindings and AAR packaging (`migo-full-release.aar`,
+  `migo-slim-release.aar`); Android demo project in
+  [migo-examples](https://github.com/minigame-labs/migo-examples)
+- Android C-API SDK tarballs (`migo-sdk-android-arm64-v8a.tar.gz`,
+  `migo-sdk-android-x86_64.tar.gz`)
+- Linux x86_64 C-API SDK (`migo-sdk-linux-x86_64.tar.gz`); see `linux-sdk-0.1.0`
+  below
+- Windows x86_64 C-API SDK (`migo-sdk-windows-x86_64.tar.gz`); see
+  `windows-sdk-0.1.1` below
+- OpenHarmony (aarch64 and x86_64) builds and contract gates; no published
+  release yet (see known gaps in `dist/migo-ohos-x86_64/share/migo/ohos-x86_64-manifest.json`)
+- Prebuilt V8 archives for Android and Linux distributed via release assets
+  (release `v8-archives-e6a88b3`, 2026-07-25)
+- `scripts/fetch-v8-archives.sh` fetches and verifies prebuilt V8 archives
+  against committed component manifests
+- `release/VERSION` as the single version source; `scripts/test-release-version-contract.sh`
+  enforces that all build consumers derive from it
+
+### Changed
+- Renamed project from `minigame_host` to `migo`
+- Renamed SO library from `libminigame_host.so` to `libmigo.so`
+- V8 archives moved from Git LFS to release assets to avoid LFS quota exhaustion
+
+---
+
+## Linux SDK — linux-sdk-0.1.0 (2026-07-28)
+
+Packaged alongside `v0.9.0`. The Linux SDK carries its own version series because
+it is a separately consumable artifact with its own ABI and loader-floor contract,
+distinct from the engine's feature version.
+
+### Added
+- `libmigo.so` (versioned, soname `libmigo.so.1`) and `libmigo.a` for
+  `x86_64-unknown-linux-gnu`
+- glibc 2.31 / GLIBCXX 3.4.28 loader floor, enforced by building against the
+  Debian bullseye amd64 sysroot (Chromium's pinned sysroot)
+- Export surface controlled by a version script; only the documented `migo_*`
+  entry points are exported
+- CMake `find_package(migo)` support, `pkg-config` `.pc`, and public headers
+- Package manifest (`linux-x86_64-manifest.json`) with sha256 hashes and
+  provenance; verified by `scripts/test-linux-sdk-contract.sh`
+- Qt 6 host kit (`platforms/linux/host-kit/`) with X11 surface view and managed
+  session; gated by `scripts/test-linux-qt-host-kit.sh`
+
+---
+
+## Windows SDK — windows-sdk-0.1.1 (2026-07-29)
+
+The Windows SDK carries its own version series for the same reason as the Linux
+SDK. `windows-sdk-0.1.1` supersedes `windows-sdk-0.1.0` (never publicly tagged):
+`0.1.0` shipped a DLL that loaded and exported all entry points but could attach
+no Win32 surface; `0.1.1` adds the Win32 HWND platform layer.
+
+### Added
+- `migo.dll` (x86_64, MSVC) with a `.def`-controlled export surface restricted to
+  documented `migo_*` entry points
+- `migo.lib` import library, `rusty_v8.dll`, and ANGLE runtime DLLs
+  (`libEGL.dll`, `libGLESv2.dll`, `d3dcompiler_47.dll`) shipped alongside
+- CMake `find_package(migo)` support targeting the MSVC toolchain
+- Win32 HWND surface platform layer; the DLL loads and reports
+  `MIGO_PLATFORM_WIN32_HWND` as an attachable kind
+- Contract gate (`scripts/test-windows-sdk-contract.sh`) that loads the DLL and
+  exercises `migo_query_capabilities` to verify surface support is present
+
+---
+
+## Versioning
+
+This project uses [Semantic Versioning](https://semver.org/):
+
+- **MAJOR**: Incompatible API changes
+- **MINOR**: New functionality (backward compatible)
+- **PATCH**: Bug fixes (backward compatible)
+
+Per-platform SDKs (Linux, Windows) carry their own version series
+(`linux-sdk-X.Y.Z`, `windows-sdk-X.Y.Z`) because each is a separately consumable
+artifact with its own ABI contract. The engine version (`v0.9.0`) and the
+per-platform SDK versions can move independently.
+
+### Pre-1.0 Policy
+
+While the version is below 1.0.0:
+- MINOR version bumps may include breaking changes
+- PATCH version bumps are backward compatible

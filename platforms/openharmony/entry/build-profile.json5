@@ -1,0 +1,54 @@
+{
+  "apiType": "stageMode",
+  "buildOption": {
+    "resOptions": {
+      "copyCodeResource": {
+        "enable": false
+      }
+    },
+    "externalNativeOptions": {
+      "path": "./src/main/cpp/CMakeLists.txt",
+      "arguments": "",
+      "cppFlags": "",
+      // x86_64 only, deliberately: that is what the emulator runs, and it is
+      // the architecture whose V8 and capi archives are built. Adding arm64
+      // here without staging its archive fails the CMake existence check with
+      // a clear message rather than linking something stale.
+      "abiFilters": [
+        "x86_64"
+      ]
+    }
+  },
+  "buildOptionSet": [
+    {
+      "name": "debug",
+      "externalNativeOptions": {
+        "arguments": "-DMIGO_OHOS_ALLOW_UNSIGNED_CONTENT=1"
+      }
+    },
+    {
+      "name": "release",
+      "externalNativeOptions": {
+        "arguments": ""
+      },
+      "arkOptions": {
+        "obfuscation": {
+          "ruleOptions": {
+            "enable": false,
+            "files": [
+              "./obfuscation-rules.txt"
+            ]
+          }
+        }
+      }
+    },
+  ],
+  "targets": [
+    {
+      "name": "default"
+    },
+    {
+      "name": "ohosTest",
+    }
+  ]
+}

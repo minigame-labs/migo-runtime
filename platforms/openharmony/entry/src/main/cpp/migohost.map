@@ -1,0 +1,15 @@
+/*
+ * Everything is local.
+ *
+ * A NAPI module is reached through the constructor that calls
+ * napi_module_register, not through an exported symbol, so this .so has no
+ * public surface of its own. Saying so is what lets --gc-sections work: in a
+ * shared library every global symbol is an entry point by default, so nothing
+ * is collectable and skia-bindings' JPEG/PDF/pathops wrappers -- which
+ * reference symbols this Skia build does not contain -- stay live and fail the
+ * link. The same reasoning is why the Linux SDK links its .so from the static
+ * archive under a version script.
+ */
+{
+  local: *;
+};

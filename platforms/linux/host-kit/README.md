@@ -1,0 +1,330 @@
+# Migo Linux Host Kit
+
+This directory contains source-level adapters for embedding Migo in an
+application-owned Linux UI. It does not create an application, a top-level
+window, or an event loop.
+
+What is claimed:
+
+- `migo::linux-surface-host` is a toolkit-neutral C++17 lifecycle controller
+  for X11 and Wayland handles supplied by a host.
+- `migo::qt6-x11-surface-view` is a Qt 6.4+ Widgets adapter for the `xcb`
+  platform plugin, using a native child `QWidget`. It carries the Surface
+  lifecycle, input, focus, IME composition and the frame request.
+- `migo::qt6-host-services` is the host-service channel for Qt: a reply that
+  answers a call exactly once, from any thread, and reaches nobody once its
+  Session's channel is closed; the provider interface an App answers its own
+  services through; and `MigoQtBuiltInHostServices`, which answers with Qt's own
+  what a desktop already offers -- the clipboard; the game's toasts, loading
+  indicators, modals and action sheets, standing over the game and taking none of
+  its input; the window's size, state, cursor and pointer lock (the cursor hidden,
+  XInput 2's raw motion moving content's pointer, Esc releasing it); and the
+  screen's orientation -- the game's shape, which `setDeviceOrientation` turns the
+  window to -- its brightness -- the backlight's, read from sysfs and set through
+  logind over Qt's D-Bus -- and `setEnableDebug`, which `MigoManagedSession`
+  answers with a panel of the frames a second and content's console over the game;
+  and images: `compressImage` with Qt's image readers and writers, the pickers
+  (`chooseImage`, `chooseMedia`'s images, `chooseMessageFile`) and
+  `saveFileToDisk` through the file dialog -- the desktop's, through its portal,
+  wherever Qt finds one -- and `saveImageToPhotosAlbum` into the player's Pictures
+  folder; the previews in a viewer over the game (http(s) images downloaded over
+  Qt's network). What the game is given is a copy, staged in the App's cache
+  until the engine takes it; the camera is refused, and videos unless the App
+  gives video support (`migo::qt6-media`); where the device is, GeoClue's
+  (through the desktop portal inside a sandbox); and the scopes the desktop
+  decides -- `scope.userLocation` by GeoClue's agent or the portal asking
+  the player, `scope.writePhotosAlbum` granted -- recorded as decided; and the
+  motion sensors the kernel shows through IIO (found with libudev, turned into
+  the screen's frame by udev's or the kernel's mount matrix), the compass and the
+  device's orientation worked out as Android's SensorManager does; and Bluetooth
+  as a BLE central, BlueZ's, answered as the Apple SDK answers it.
+- `migo::qt6-managed-session` is the Managed ownership shape: `MigoManagedSession`
+  owns the Session, its callback table and the view, and installs the built-in
+  services; it holds content's `setKeepScreenOn` off the desktop's idle through
+  the XDG desktop portal's Inhibit, or the freedesktop screen saver where no
+  portal answers, and lets go when the game stops asking or ends; and it reports
+  the battery as UPower shows it (with power-profiles-daemon's saver as the
+  low-power mode), the network and the Wi-Fi switch as NetworkManager does, each
+  time they change; content runs while its window is shown and not minimized,
+  and shows while it is also exposed; the App's authorisations -- all the
+  system could gate, outside a sandbox -- are reported once; and the desktop's
+  warnings that memory runs low reach content, heard where GLib hears them; and
+  the gamepads the kernel shows (evdev, found through udev) reach content, in the
+  W3C standard layout where the pad follows the kernel's gamepad layout, with
+  their rumble. Its `Options` carry the network policy, the launch options, the
+  App's own services and its video support; what the App names is its, the
+  built-in services answer the rest. The Bound shape is the view driven by an
+  App-owned `SurfaceHost`. They are separate targets, so an App that owns its own
+  Session never links a type that creates and destroys Sessions.
+- `migo::qt6-media` (optional: `-DMIGO_LINUX_HOST_KIT_BUILD_QT6_MEDIA=ON`) is
+  videos, through GStreamer: `chooseMedia` picks videos, described by their
+  length, size as shown and cover; `previewMedia` plays them; and `createVideo`'s
+  players play over the game -- each an X window inside the game's view, which
+  the X server keeps above the game's frames and which moves, hides and goes
+  with it, so no window manager is involved. As the Android and Apple SDKs' do,
+  a player shows its poster until it plays, fits its picture as `objectFit`
+  says, holds still while the game is paused, and has the controls content asks
+  for: the play button in the middle, the bar a click shows (play or pause, the
+  time, a progress bar, full screen -- the game's whole view), the progress
+  line, the double click and the sideways drag; with none of them, a click on it
+  is the game's. It is the microphone too: `getRecorderManager` records the
+  desktop's default input, written as the Android and Apple SDKs write a
+  recording (PCM, wav, and AAC as an `.m4a` file or, with frames, an ADTS
+  stream), and `scope.record` is granted. An App links it and gives a
+  `MigoQtMedia` to the Session (`MigoManagedSession::Options::videos` and
+  `::microphone`); without it, videos are refused, `createVideo` and the
+  recorder are the App's to answer, and nothing links GStreamer.
+- Qt Wayland, Qt Quick and GTK 4 are not claimed, and the last two are blocked
+  on the same thing -- see "Render-path limits".
+
+## Managed or Bound
+
+| | Bound | Managed |
+|---|---|---|
+| Session owner | the App | `MigoManagedSession` |
+| Callback table | the App installs it | the wrapper installs it |
+| `MigoEngine` | the App | the App -- the wrapper never owns one |
+| View disappears | only the attachment retires; the Session can stay paused and bind a new view | Surface retires, then the Session is destroyed |
+
+They are two types rather than one type with a flag, because what differs is who
+is responsible for an asynchronous teardown, and a boolean cannot answer that.
+
+`MigoManagedSession` supplies the soft keyboard, whole: the mini-game input
+model migo mirrors has the host own a text field and report its whole current
+value, and the three callbacks install together. A desktop has no soft keyboard
+and content no field of its own -- key and composition events reach it through
+the view, but they are not text a game reads as typed -- so content's
+`migo.showKeyboard` opens a field along the bottom of the game, in a window of
+its own over it, holding the keyboard's focus while it shows; its height is the
+keyboard height content is told. Enter confirms a one-line field, Esc or turning
+away closes it, and an on-screen keyboard that follows the focused field opens
+for it.
+
+Teardown is the C ABI's three steps and cannot be shortened: `close()` begins
+the detach and returns immediately, the view's release observer reports
+`RELEASED`, and only then is the Session destroyed. Destroying the wrapper while
+it is still running terminates, for the same reason the view does.
+
+A whole App on the Managed shape -- an engine, a window, a game with its network
+policy and launch options, closing on the game's exit or the window's -- is
+`tests/qt_host/linux/main.cpp`; `scripts/dev-run-qt-host.sh` builds and runs it
+against a game directory. The conformance suite's Host Kit lane runs it, so what
+that lane verifies is this shape as an App uses it.
+
+## Input, focus and frames
+
+Translation happens in the view's own event handlers on the GUI thread. There is
+no event filter of any kind, no private Qt API, no polling and no thread hop: a
+call from another thread returns `MIGO_ERROR_WRONG_THREAD` before touching Qt
+state or entering Migo.
+
+- **Coordinates are CSS pixels, which need no conversion.** Qt's logical
+  position is physical pixels divided by the device pixel ratio, and that is the
+  same ratio the view reports as `scale_factor` at attach. Multiplying by it
+  here -- the conversion that looks missing -- puts every tap in the wrong place
+  on a HiDPI screen.
+- **A mouse drives both streams by default.** Mini-game content written for a phone
+  listens for touch; content written for a PC mini-game platform listens for the mouse.
+  Neither is synthesized from the other by the engine, so the view sends both
+  and `setPointerDelivery()` narrows it. Content that listens for both would
+  otherwise act on one press twice. Hover reaches the mouse stream only:
+  mini-game content on a phone has no hover concept.
+- **`code` comes from the hardware scan code, `key` from the layout.** The key
+  that produces "a" on a French keyboard is still `KeyQ`, so WASD movement works
+  for every layout. A key this build cannot name is reported as
+  `"Unidentified"`, never as an empty `code`, which the C ABI rejects.
+- **Losing focus retracts what is still in progress**: a held press becomes a
+  touch cancel and an open preedit is ended. Both are states with no later event
+  that would correct them.
+- **Frames follow Qt's clock.** The App calls `requestFrame()` from its own
+  `on_request_frame` callback -- the view never installs the callback table --
+  and the view arms `QWindow::requestUpdate()`. A repaint Qt performs for its
+  own reasons is not reported as a frame boundary. There is no interval timer
+  driving frames anywhere in this adapter.
+- **The delivery path allocates nothing per event**, verified by counting
+  `malloc` (Qt's containers do not use `operator new`) across a delivered burst
+  against an identical undelivered one.
+
+Deliberately not delivered, so they are not mistaken for gaps to be filled
+later:
+
+- **The preedit's cursor and selection.** `QInputMethodEvent` carries them, but
+  the DOM `CompositionEvent` does not, so a browser does not give them to canvas
+  content either. Matching the Web contract is the point; adding them would be
+  Migo-specific API that no existing HTML5 game reads.
+- **A synthetic key release on focus loss.** A browser does not synthesize one,
+  and inventing an "up" for a key the user may still be holding is its own wrong
+  answer. Unlike a press or a preedit, the engine makes no promise about held
+  keys across a focus change.
+- **Hover as touch.** mini-game content has no hover concept; a free motion stream
+  would be events no game reads.
+
+The public Migo C ABI is still marked `MIGO_C_ABI_CANDIDATE`. Treat this Host
+Kit as an integration preview until that ABI is frozen.
+
+## Ownership contract
+
+The application owns the `MigoSession`, `SurfaceHost`, parent widget and native
+window. Keep both dependency chains valid:
+
+```text
+QApplication > parent QWidget > MigoQtX11SurfaceView
+MigoSession > SurfaceHost ───────> MigoQtX11SurfaceView
+```
+
+Create exactly one `SurfaceHost` for a Session and keep it at a stable address
+for that Session's surface lifetime. Replacement views borrow the same
+controller so surface generations stay strictly increasing. A Session has at
+most one Attached or Retiring view; attach a replacement only after the prior
+release reaches RELEASED. A replacement may be constructed earlier, but it
+remains passive: its resize, close and destruction cannot act on the current
+owner's generation. The controller
+never owns the Session, X11 `Display`, XID, `wl_display`, or `wl_surface`.
+`QApplication` must already exist before the Qt view and must outlive its final
+release, because Qt owns the X11 connection and GUI event loop. The
+toolkit-neutral `SurfaceHost` itself has no such Qt dependency.
+After a view successfully attaches, use that view's resize/detach/poll path for
+its generation; calling the borrowed controller directly would bypass the
+native-window lifetime guards.
+
+Before deleting the view or any ancestor that owns its native child window,
+call `close()` or `beginDetach()`, then keep the widget and GUI event loop alive
+until `surfaceReleased` is emitted. A pending release is a real driver lease;
+destroying the window early is a use-after-free. The adapter fails fast if Qt
+tries to destroy the native surface before release instead of hiding this bug.
+Polling is fast only during the expected short retirement window, then backs
+off; after two seconds `surfaceReleaseStalled` fires once for diagnostics while
+the authoritative observer remains alive and continues to be checked.
+If the ABI query/destroy operation itself returns an error, automatic polling
+pauses to avoid an error storm but the view stays Retiring and keeps ownership;
+the host must diagnose the error and explicitly call `pollDetach()` to retry.
+Reparenting may recreate the XID and therefore is allowed only after the view is
+Detached; attach it again after the new parent/native child is established.
+`hide()` alone does not retire the native target or change Session lifecycle;
+the Bound host decides whether a hidden pane stays warm, pauses the Session, or
+calls `beginDetach()` to release presentation resources.
+
+Construct `SurfaceHost` on the Qt GUI thread that owns the Session. All methods
+must stay on that thread and be serialized with other calls through the same
+Session; foreign-thread calls return `MIGO_ERROR_WRONG_THREAD` before entering
+the C ABI. The QWidget adapter also rejects a foreign thread before reading or
+mutating any Qt state. The Bound Session host remains responsible for
+callbacks, lifecycle/focus, content loading, input and audio-focus policy. Migo
+continues to own its default audio renderer; this surface-only adapter neither
+opens an audio device nor provides a host-mixer API.
+
+## Build and consume from source
+
+On Ubuntu 24.04, the exact dependency set for the current Qt Widgets/X11
+adapter and its contract tests is:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  cmake ninja-build g++ ripgrep xvfb xauth \
+  qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
+  libx11-dev libxkbcommon-x11-dev libxcb-cursor0 \
+  pkg-config libxcb-xinput-dev libxtst-dev dbus
+```
+
+The adapter's compile-time API uses Qt Core/Gui/Widgets/DBus, Xlib and xcb's XInput 2
+(`libxcb-xinput`, found through pkg-config), which a pointer lock reads the mouse's
+raw motion with. The remaining packages supply the xcb platform plugin's runtime
+dependencies and the isolated Xvfb positive-path test, whose mouse and keyboard
+XTest (`libxtst`) drives and whose logind answers on a session bus of its own
+(`dbus-run-session`). A native Wayland host that consumes only the
+toolkit-neutral controller also needs its distribution's Wayland development
+package (on Ubuntu: `libwayland-dev`), but that does not turn the Qt adapter
+into a Wayland implementation. Do not install Qt private-header packages for
+this Host Kit.
+
+The effective deployment floor is the stricter of the core SDK manifest
+(`glibc`, GLIBCXX, arch and CPU baseline) and the Qt distribution selected by
+the application. “Qt 6.4+” is an adapter API floor, not a claim that every Qt
+6.4 package runs on every glibc 2.31 distribution. Official prebuilt Host Kit
+artifacts, if introduced later, must record both identities in their own
+artifact manifest plus the exact compatible core SDK manifest hash (which pins
+V8 revision, GN arguments and snapshot policy/inputs). The current source build
+inherits the application's toolchain and Qt ABI instead.
+
+After installing or staging the Migo Linux SDK so `find_package(migo)` works:
+
+```cmake
+find_package(migo CONFIG REQUIRED)
+add_subdirectory(path/to/migo/platforms/linux/host-kit migo-host-kit)
+
+target_link_libraries(my_app PRIVATE migo::qt6-x11-surface-view)
+```
+
+Applications that provide their own native integration can link only
+`migo::linux-surface-host`; this keeps Qt out of their dependency graph. The
+Host Kit can also be installed and consumed. Install rules default to ON
+for a standalone Host Kit configure and OFF when it is an App subdirectory, so
+embedding it cannot silently change the App's install manifest:
+
+```bash
+cmake -S platforms/linux/host-kit -B build/host-kit \
+  -DCMAKE_PREFIX_PATH=/path/to/migo-sdk \
+  -DCMAKE_INSTALL_PREFIX=/path/to/prefix \
+  -DMIGO_LINUX_HOST_KIT_ENABLE_INSTALL=ON
+cmake --build build/host-kit
+cmake --install build/host-kit
+```
+
+The installed consumer then uses:
+
+```cmake
+find_package(migo-linux-host-kit CONFIG REQUIRED)
+target_link_libraries(my_app PRIVATE migo::qt6-x11-surface-view)
+```
+
+Minimal construction after the application has created a Session:
+
+```cpp
+class GamePane final : public QWidget {
+public:
+    GamePane(MigoSession *session, QWidget &parent)
+        : QWidget(&parent), surface_host_(session), game_view_(surface_host_, *this) {
+        layout_.addWidget(&game_view_);
+        setLayout(&layout_);
+    }
+
+private:
+    QVBoxLayout layout_;
+    migo::linux_host::SurfaceHost surface_host_;
+    migo::linux_host::qt6::MigoQtX11SurfaceView game_view_;
+};
+```
+
+Production shutdown must wait for `surfaceReleased` before destroying
+`GamePane`. A real application should connect that signal to its asynchronous
+window/session shutdown coordinator rather than blocking the GUI thread.
+
+## Render-path limits
+
+The X11 widget is a direct native-surface path: Migo presents to the child XID
+without CPU copies, `QPainter`, framebuffer readback or an intermediate Qt
+texture. It keeps the host's ancestor widgets non-native, so embedding one game
+surface does not impose native-window painting and resize costs on the whole UI
+tree. Qt Quick uses a compositor-owned scene graph, so a child-window
+overlay would break clipping, transforms and frame scheduling. It remains
+unsupported until Migo exposes an explicit zero-copy texture plus synchronization
+contract. Qt 6.4 also does not expose the Wayland display/surface pair needed by
+this adapter through a supported public API; private Qt headers are forbidden.
+
+GTK 4 is blocked by the same missing contract, which is not obvious from the
+roadmap's ordering: it gives a `GdkSurface` only to widgets implementing
+`GtkNative` -- the toplevel and popovers -- and removed `GtkSocket`/`GtkPlug`, so
+there is no public way to place a native target inside an App's layout for Migo
+to present into. The only thing on offer is the toplevel's own surface, and
+presenting there ignores layout, clipping and z-order, which is precisely the
+child-window overlay this project refuses as a fallback.
+`scripts/test-gtk4-surface-capability.sh` runs a probe that establishes this, so
+the claim is evidence rather than a documentation reading -- and so that the day
+GTK 4 changes its answer, the gate fails and somebody re-reads the roadmap.
+
+Run the isolated contract without building V8:
+
+```bash
+bash scripts/test-linux-qt-host-kit.sh
+```
