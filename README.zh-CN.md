@@ -53,13 +53,15 @@
 | **Android** 8.0+ | AAR（Java/Kotlin）· 面向 NDK 的 C ABI | V8，JIT |
 | **iOS** 15.2+ | Swift 包 | WebKit，JIT |
 | **macOS** 11+ | Swift 包 | V8，JIT |
-| **HarmonyOS NEXT / OpenHarmony** | 面向 ArkUI `XComponent` 的 C ABI | V8，解释执行¹ |
+| **HarmonyOS NEXT / OpenHarmony** | 面向 ArkUI `XComponent` 的 C ABI | V8，手机上解释执行¹ |
 | **Windows** | `migo.dll` + CMake | V8，JIT |
 | **Linux** | `.so` / `.a` + CMake、pkg-config · Qt 6 宿主套件 | V8，JIT |
 
-<sub>各平台均支持 arm64 与 x86_64。¹ HarmonyOS NEXT 只允许系统引擎使用 JIT。</sub>
+<sub>各平台均支持 arm64 与 x86_64。¹ HarmonyOS NEXT 手机不允许应用把内存设为可执行，V8 在那里解释执行，WebAssembly 不可用；获得 `ALLOW_WRITABLE_CODE_MEMORY` 权限的平板与 2in1 设备、以及开源 OpenHarmony 保留 JIT。Migo 启动时向系统确认。</sub>
 
 引擎只安装 `migo.*` 这一套 API，其余接口由接入方选用的适配层提供（[migo-wx-adapter](https://github.com/minigame-labs/migo-wx-adapter)、[migo-web-adapter](https://github.com/minigame-labs/migo-web-adapter)）。iOS 上游戏代码运行在 WebKit 带 JIT 的系统进程中，每一帧由 Migo 在 App 内渲染。
+
+小游戏平台文档列出的每个 API，在 Android、iOS、macOS 上都有答案：由引擎或该平台的宿主层实现，由你的 App 接一个入口，或写明原因不提供。Linux 与 Windows 还差少数几个硬件类接口，OpenHarmony 目前差得多。每个 API 在每个平台上的情况见[API 平台支持](https://minigame-labs.com/docs/capabilities/api-support/)（由契约生成）；做游戏的人请从[游戏开发者指南](https://minigame-labs.com/docs/getting-started/game-developers/)开始。
 
 ## 快速开始
 
@@ -116,6 +118,7 @@ migo_session_notify_vsync(...);         // 每个显示帧
 ## 下载
 
 - **Release**：[下载](https://github.com/minigame-labs/migo-runtime/releases)后用 `sha256sum -c SHA256SUMS.txt` 校验（[校验方法](https://minigame-labs.com/docs/release/download-verification/)）。
+- **我的游戏能跑吗**：每个版本都附带 `migo-<版本>-prescreen.zip`：在你自己的机器上扫描游戏包（Python 3.8，不联网，游戏包不离开本机），列出游戏用到、而该版本没有提供的接口。用法见包里的 `README.txt`。
 - **缩小 Android 安装包**：采用 `android-nojni` AAR，引擎在首次使用时下载（见 [Android 接入指南](https://minigame-labs.com/docs/getting-started/android/)）。
 - **版本升级**：[各版本之间的变化](https://minigame-labs.com/docs/release/upgrading/)与 [CHANGELOG](CHANGELOG.md)。
 

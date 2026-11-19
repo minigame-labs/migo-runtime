@@ -55,13 +55,15 @@ runtime's source code is not published here.
 | **Android** 8.0+ | AAR (Java/Kotlin) · C ABI for the NDK | V8, JIT |
 | **iOS** 15.2+ | Swift package | WebKit, JIT |
 | **macOS** 11+ | Swift package | V8, JIT |
-| **HarmonyOS NEXT / OpenHarmony** | C ABI for ArkUI `XComponent` | V8, interpreted¹ |
+| **HarmonyOS NEXT / OpenHarmony** | C ABI for ArkUI `XComponent` | V8, interpreted on phones¹ |
 | **Windows** | `migo.dll` + CMake | V8, JIT |
 | **Linux** | `.so` / `.a` + CMake, pkg-config · Qt 6 host kit | V8, JIT |
 
-<sub>arm64 and x86_64 on every platform. ¹ HarmonyOS NEXT reserves JIT for the system engine.</sub>
+<sub>arm64 and x86_64 on every platform. ¹ A HarmonyOS NEXT phone does not let an app make memory executable, so V8 runs interpreted there and WebAssembly is unavailable; tablets and 2in1 devices granted `ALLOW_WRITABLE_CODE_MEMORY`, and open-source OpenHarmony, keep the JIT. Migo asks the system at startup.</sub>
 
 `migo.*` is the only API the engine installs; everything else comes from an adapter you choose ([migo-wx-adapter](https://github.com/minigame-labs/migo-wx-adapter), [migo-web-adapter](https://github.com/minigame-labs/migo-web-adapter)). On iOS, game code runs in WebKit's JIT-enabled process and Migo renders each frame in your app.
+
+Every API the mini-game platform documents has an answer on Android, iOS and macOS: implemented by the engine or by that platform's host layer, a hook for your app to fill, or not provided for a stated reason. Linux and Windows still lack a few hardware APIs, and OpenHarmony far more for now. [API platform support](https://minigame-labs.com/docs/en/capabilities/api-support/) has each API on each platform, generated from the contracts; if you make games, start at [running your game on Migo](https://minigame-labs.com/docs/en/getting-started/game-developers/).
 
 ## Quick start
 
@@ -118,6 +120,7 @@ Headers and a CMake package ship inside every `capi` archive. [C ABI reference �
 ## Download
 
 - **Releases** — [download](https://github.com/minigame-labs/migo-runtime/releases), then verify with `sha256sum -c SHA256SUMS.txt` ([how to verify](https://minigame-labs.com/docs/en/release/download-verification/)).
+- **Will my game run?** — every release carries `migo-<version>-prescreen.zip`: it scans a game package on your own machine (Python 3.8, no network, the game never leaves it) and lists what the game calls that the release does not publish. How to run it is in its `README.txt`.
 - **Smaller Android installs** — download the engine on first use with the `android-nojni` AAR ([Android guide](https://minigame-labs.com/docs/en/getting-started/android/)).
 - **Upgrading** — [what changes between versions](https://minigame-labs.com/docs/en/release/upgrading/) and the [CHANGELOG](CHANGELOG.md).
 
