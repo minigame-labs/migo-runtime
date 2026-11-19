@@ -31,7 +31,7 @@ This repository is where Migo is released: SDK packages for every platform,
 checksums, SBOMs, and the license, security and data-handling documents. The
 runtime's source code is not published here.
 
-| **47–58%** | **2.3–3.0×** | **1–240 fps** | **6** |
+| **45–56%** | **2.4–2.9×** | **1–240 fps** | **6** |
 |:---:|:---:|:---:|:---:|
 | less memory than WebView | less CPU than WebView | set by the game or your app | platforms, one engine |
 
